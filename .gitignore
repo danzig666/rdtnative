@@ -1,0 +1,4 @@
+/target
+# Live API output and local secrets from the Phase 0 spike: never commit.
+/spike-out/
+.rdt-spike.json

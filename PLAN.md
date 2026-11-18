@@ -10,6 +10,16 @@ reference**, in the same way SmartTube was for ytnative. Its Java code is not po
 Licence: GPL-3.0, because the plx crates are GPL-3.0. ReSync is a reconstruction of a closed app,
 so we copy **no code and no assets** from it, only knowledge: endpoints, link rules and UX.
 
+## Status
+
+- **Decisions:** bring your own client ID (§2); NSFW **supported**, behind an age gate and a setting,
+  blurred by default; **minimum webOS 4**, the same as ytnative. On webOS 4 the video goes full
+  screen instead of sitting beside the comments.
+- **Phase 0 in progress:** `rd-core` (auth, session, rate limits, posts, comment trees + morechildren)
+  with 19 unit tests, the `rd-spike` CLI, the sign-in callback page (`site/callback.html`), and CI
+  (tests, clippy, ARM cross-build). The ARM build runs under emulation and reaches Reddit. It still
+  needs a real client ID run on a PC and the TV; see [docs/phase0.md](docs/phase0.md).
+
 ---
 
 ## 1. Feasibility in short
@@ -188,8 +198,8 @@ behaviour (`CommentNavigation`, `CommentsStateHelper`), filters (`FilterHelper`)
 sort and view helpers, and the settings inventory (`res/xml` preference screens), as the feature
 matrix.
 
-## 7. Open questions for the owner
+## 7. Decided
 
-1. Should NSFW content be supported at all? It affects the media resolvers and needs an age gate in settings.
-2. What is the minimum webOS? ytnative supports 4+; webOS 4 has no hardware video plane resize,
-   so the split view would show video full screen there.
+- NSFW: supported. Settings has show, blur (the default) or hide, and the first use asks for an age
+  confirmation. Media resolvers include the NSFW hosts that ReSync handles (redgifs).
+- Minimum webOS: 4 (ytnative's floor).

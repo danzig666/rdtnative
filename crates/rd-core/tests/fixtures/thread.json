@@ -1,0 +1,12 @@
+[{"kind":"Listing","data":{"after":null,"before":null,"children":[
+  {"kind":"t3","data":{"id":"1abc001","name":"t3_1abc001","subreddit":"pics","title":"A picture","author":"alice","score":15234,"num_comments":49,"permalink":"/r/pics/comments/1abc001/a_picture/","url":"https://i.redd.it/xyz.jpeg","is_self":false}}]}},
+ {"kind":"Listing","data":{"after":null,"before":null,"children":[
+  {"kind":"t1","data":{"id":"c1","name":"t1_c1","parent_id":"t3_1abc001","link_id":"t3_1abc001","author":"alice","body":"Top comment with a [link](https://example.com) & stuff","score":120,"score_hidden":false,"created_utc":1763400100,"depth":0,"is_submitter":true,"distinguished":null,"stickied":false,"collapsed":false,"likes":null,
+   "replies":{"kind":"Listing","data":{"after":null,"children":[
+    {"kind":"t1","data":{"id":"c2","name":"t1_c2","parent_id":"t1_c1","author":"bob","body":"reply","score":30,"created_utc":1763400200,"depth":1,"collapsed":false,
+     "replies":{"kind":"Listing","data":{"children":[
+      {"kind":"t1","data":{"id":"c3","name":"t1_c3","parent_id":"t1_c2","author":"carol","body":"deeper","score":3,"created_utc":1763400300,"depth":2,"collapsed":false,"replies":""}}]}}}},
+    {"kind":"more","data":{"id":"m1","name":"t1_m1","parent_id":"t1_c1","count":5,"depth":1,"children":["c5","c6","c7","c8","c9"]}}]}}}},
+  {"kind":"t1","data":{"id":"c4","name":"t1_c4","parent_id":"t3_1abc001","author":"dave","body":"downvoted","score":-12,"created_utc":1763400400,"depth":0,"collapsed":true,"distinguished":null,"replies":""}},
+  {"kind":"more","data":{"id":"m2","name":"t1_m2","parent_id":"t3_1abc001","count":40,"depth":0,"children":["c10","c11","c12"]}}
+ ]}}]

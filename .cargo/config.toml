@@ -1,0 +1,14 @@
+# TV target: LG webOS userland is 32-bit ARM, soft-float ABI. Same flags as ytnative (no NEON so one
+# binary runs on every webOS 4+ SoC; frame pointers for crash traces; getrandom by raw syscall because
+# webOS 4's glibc has no getrandom() and the dev-mode jail has no /dev/random).
+# The linker shims are the Windows .cmd ones (the main dev box); on Linux/macOS use tools/build-tv.sh,
+# which points Cargo at the .sh twins.
+[target.armv7-unknown-linux-gnueabi]
+linker = "tools/zig-cc-armv7.cmd"
+rustflags = ["-C", "target-cpu=cortex-a9", "-C", "target-feature=-neon,-soft-float", "-C", "force-frame-pointers=yes",
+    "-C", "link-arg=-Wl,--build-id=sha1",
+    "--cfg", "getrandom_backend=\"linux_raw\""]
+
+[env]
+CC_armv7_unknown_linux_gnueabi = { value = "tools/zig-cc-armv7.cmd", relative = true }
+AR_armv7_unknown_linux_gnueabi = { value = "tools/zig-ar.cmd", relative = true }

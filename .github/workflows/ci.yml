@@ -1,0 +1,25 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: armv7-unknown-linux-gnueabi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ziglang==0.13.0
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Cross-build the spike for the TV
+        run: tools/build-tv.sh -p rd-spike
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rd-spike-armv7
+          path: target/armv7-unknown-linux-gnueabi/release/rd-spike

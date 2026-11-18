@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/rd-core", "crates/rd-spike"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/danzig666/rdtnative"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Same HTTP stack as ytnative (rustls, blocking). Native roots are added so a corporate/proxy CA
+# in the system store works on a PC; the TV build uses the bundled webpki roots.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "rustls-tls-native-roots", "gzip"] }
+getrandom = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
