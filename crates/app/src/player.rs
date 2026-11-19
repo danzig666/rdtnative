@@ -122,6 +122,11 @@ mod tv {
             let (status, media_id) = (self.status.clone(), self.media_id.clone());
             let spawned = plx_base::task::spawn("play", move || {
                 let live = || gen.load(std::sync::atomic::Ordering::SeqCst) == my_gen;
+                let url = first_served(&candidates(&url));
+                if !live() {
+                    return;
+                }
+                status.lock().unwrap().url = url.clone();
                 let app_id = plx_base::paths::app_id();
                 let load = format!(
                     r#"{{"uri":{},"type":"media","payload":{{"option":{{"appId":{},"windowId":{}}}}}}}"#,
@@ -266,7 +271,7 @@ mod sim {
             self.active
         }
         pub fn start(&mut self, url: String, looping: bool) {
-            *self.status.lock().unwrap() = Status { phase: Phase::Playing, url, looping, duration_ms: 60_000, width: 1280, height: 720, ..Default::default() };
+            *self.status.lock().unwrap() = Status { phase: Phase::Playing, url: candidates(&url).first().map_or_else(String::new, |u| u.to_string()), looping, duration_ms: 60_000, width: 1280, height: 720, ..Default::default() };
             self.started = Some(std::time::Instant::now());
             self.base_ms = 0;
             self.active = true;
@@ -321,13 +326,39 @@ pub use tv::Player;
 
 /// The stream to play for a Reddit video, by the "Video stream" setting: HLS (video and sound; the
 /// default, as Reddit's other clients play it), DASH, or the plain MP4 (no sound on v.redd.it).
+/// The video's addresses in the preferred order, one per line: the player plays the first one
+/// the server serves (Reddit refuses the HLS playlist of some videos and the DASH one of others).
 pub fn pick_url(v: &rd_core::media::Video, pref: &str) -> Option<String> {
     let order: [&Option<String>; 3] = match pref {
         "dash" => [&v.dash, &v.hls, &v.mp4],
         "mp4" => [&v.mp4, &v.hls, &v.dash],
         _ => [&v.hls, &v.dash, &v.mp4],
     };
-    order.into_iter().flatten().next().cloned()
+    let all: Vec<&str> = order.into_iter().flatten().map(String::as_str).collect();
+    (!all.is_empty()).then(|| all.join("\n"))
+}
+
+/// The candidates `pick_url` packed (one address per line).
+pub fn candidates(urls: &str) -> Vec<&str> {
+    urls.lines().map(str::trim).filter(|u| !u.is_empty()).collect()
+}
+
+/// The first candidate the server serves (asked for one byte; a 403 or 404 moves on). Without an
+/// answer from any (no network, all refused), the first one: the TV's player says why.
+#[cfg(not(any(windows, feature = "sim")))]
+fn first_served(urls: &[&str]) -> String {
+    if urls.len() > 1 {
+        if let Ok(http) = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(6)).build() {
+            for u in urls {
+                match http.get(*u).header("Range", "bytes=0-0").send() {
+                    Ok(r) if r.status().is_success() => return u.to_string(),
+                    Ok(r) => crate::log(&format!("player: {} for {}", r.status().as_u16(), u)),
+                    Err(e) => crate::log(&format!("player: {e} for {}", u)),
+                }
+            }
+        }
+    }
+    urls.first().map_or_else(String::new, |u| u.to_string())
 }
 
 #[cfg(test)]
@@ -335,13 +366,14 @@ mod tests {
     #[test]
     fn stream_preference() {
         let v = rd_core::media::Video { hls: Some("h".into()), dash: Some("d".into()), mp4: Some("m".into()), w: 0, h: 0, duration: 0, gif: false, poster: None };
-        assert_eq!(super::pick_url(&v, "dash").as_deref(), Some("d"));
-        assert_eq!(super::pick_url(&v, "hls").as_deref(), Some("h"));
-        assert_eq!(super::pick_url(&v, "").as_deref(), Some("h"));
-        assert_eq!(super::pick_url(&v, "hls").as_deref(), Some("h"));
-        assert_eq!(super::pick_url(&v, "mp4").as_deref(), Some("m"));
+        let first = |pref: &str| super::pick_url(&v, pref).map(|u| super::candidates(&u).join(","));
+        assert_eq!(first("dash").as_deref(), Some("d,h,m"));
+        assert_eq!(first("hls").as_deref(), Some("h,d,m"));
+        assert_eq!(first("").as_deref(), Some("h,d,m"));
+        assert_eq!(first("mp4").as_deref(), Some("m,h,d"));
         let only = rd_core::media::Video { hls: None, dash: None, ..v };
         assert_eq!(super::pick_url(&only, "dash").as_deref(), Some("m"));
+        assert!(super::pick_url(&rd_core::media::Video { mp4: None, ..only }, "").is_none());
     }
 }
 
