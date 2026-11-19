@@ -272,6 +272,8 @@ pub struct Store {
     pub gen: u32,
     /// The video player's state, copied each frame.
     pub play: crate::player::Status,
+    /// A page to open, from a background job (a resolved share link); taken by the frame loop.
+    pub nav_request: Option<crate::host::RdArg>,
 }
 
 impl Store {
@@ -301,6 +303,7 @@ impl Store {
             imgur_pending: HashSet::new(),
             gen: 0,
             play: Default::default(),
+            nav_request: None,
         }
     }
 

@@ -253,7 +253,8 @@ impl PostScreen {
                     return head + 2.0 * 12.0;
                 }
                 let laid = richtext::cached(name, body, w - x - 34.0, ui::csz(25));
-                12.0 + head + 6.0 + laid.h + 14.0
+                let pics = comment_pictures(body).len() as f32;
+                12.0 + head + 6.0 + laid.h + pics * (COMMENT_PIC_H + 12.0) + 14.0
             }
             CItem::More { .. } => ms as f32 * 1.42 + 24.0,
         }
@@ -385,6 +386,28 @@ impl PostScreen {
     }
 }
 
+/// Height of a picture shown under a comment.
+const COMMENT_PIC_H: f32 = 300.0;
+
+/// Pictures a comment links to (Reddit and Imgur uploads), at most two: shown under its text.
+fn comment_pictures(body: &str) -> Vec<String> {
+    if !body.contains("redd.it/") && !body.contains("imgur.com/") {
+        return Vec::new();
+    }
+    let blocks = rd_core::markdown::parse(body);
+    rd_core::markdown::links(&blocks)
+        .into_iter()
+        .map(|(u, _)| rd_core::media::unwrap_media_url(&u))
+        .filter(|u| {
+            let host = rd_core::media::host(u);
+            let path = u.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+            let pic = [".jpg", ".jpeg", ".png", ".webp"].iter().any(|e| path.ends_with(e));
+            pic && matches!(host.as_str(), "i.redd.it" | "preview.redd.it" | "i.imgur.com")
+        })
+        .take(2)
+        .collect()
+}
+
 /// Opens a reddit.com link inside the app.
 pub fn open_reddit_link(link: rd_core::listing::RedditLink, fx: &mut Effects<'_, RdHost>) {
     use rd_core::listing::RedditLink;
@@ -392,6 +415,10 @@ pub fn open_reddit_link(link: rd_core::listing::RedditLink, fx: &mut Effects<'_,
         RedditLink::Sub(s) => RdArg::Feed(Feed::Sub(s)),
         RedditLink::User(u) => RdArg::Feed(Feed::User(u, UserTab::Submitted)),
         RedditLink::Post(id, c) => RdArg::Post { id, comment: c },
+        RedditLink::Share(url) => {
+            fx.push(Fx::App(RdFx::OpenShare(url)));
+            return;
+        }
     };
     fx.push(Fx::Nav(NavOp::Push(arg)));
 }
@@ -843,7 +870,18 @@ impl PostScreen {
                     // The same width `comment_h` laid it out at.
                     let laid = richtext::cached(name, body, r.x + r.w - x - 34.0, ui::csz(25));
                     let reveal = self.revealed.borrow().contains(name);
-                    richtext::draw(p, &laid, x, y + ms as f32 * 1.42 + 6.0, self.right.rect, [0.93, 0.93, 0.95, 1.0], reveal);
+                    let ty = y + ms as f32 * 1.42 + 6.0;
+                    richtext::draw(p, &laid, x, ty, self.right.rect, [0.93, 0.93, 0.95, 1.0], reveal);
+                    // Pictures linked in the comment, under its text.
+                    let mut py = ty + laid.h + 10.0;
+                    for url in comment_pictures(body) {
+                        let box_ = Rect::new(x, py, (r.x + r.w - x - 34.0).min(COMMENT_PIC_H * 1.8), COMMENT_PIC_H);
+                        ui::fill(p, box_, 10.0, [0.0, 0.0, 0.0, 0.35]);
+                        if let images::Drawn::Loading = images::draw(p, images::THUMB, &url, box_, 10.0, Fit::Contain, ui::WHITE) {
+                            ui::spinner(p, cx.views.now_ms, box_.x + box_.w / 2.0, box_.y + box_.h / 2.0);
+                        }
+                        py += COMMENT_PIC_H + 12.0;
+                    }
                 }
             }
             CItem::More { count, cont, id, .. } => {

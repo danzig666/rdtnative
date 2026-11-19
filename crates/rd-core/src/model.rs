@@ -98,7 +98,7 @@ impl Post {
             spoiler: b(d, "spoiler"),
             stickied: b(d, "stickied"),
             locked: b(d, "locked"),
-            link_flair_text: opt_s(d, "link_flair_text"),
+            link_flair_text: flair(d, "link_flair_richtext", "link_flair_text"),
             likes: d["likes"].as_bool(),
             saved: b(d, "saved"),
             post_hint: opt_s(d, "post_hint"),
@@ -107,6 +107,17 @@ impl Post {
             raw: d.clone(),
         }
     }
+}
+
+/// A flair's text: from its richtext parts when there are any (so `:emoji:` codes are left
+/// out), else the plain text.
+pub(crate) fn flair(d: &Value, rich: &str, plain: &str) -> Option<String> {
+    if let Some(parts) = d[rich].as_array().filter(|a| !a.is_empty()) {
+        let t: String = parts.iter().filter(|p| p["e"] == "text").filter_map(|p| p["t"].as_str()).collect::<String>();
+        let t = t.trim().to_string();
+        return (!t.is_empty()).then_some(t);
+    }
+    opt_s(d, plain).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 pub fn parse_posts(v: &Value) -> Result<Listing<Post>, RdError> {

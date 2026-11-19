@@ -86,7 +86,7 @@ fn parse_thing(t: &Value) -> Option<Node> {
             stickied: b(d, "stickied"),
             collapsed: b(d, "collapsed"),
             likes: d["likes"].as_bool(),
-            author_flair_text: opt_s(d, "author_flair_text"),
+            author_flair_text: crate::model::flair(d, "author_flair_richtext", "author_flair_text"),
             // `replies` is "" when empty, otherwise a Listing.
             replies: d["replies"]["data"]["children"]
                 .as_array()
@@ -127,6 +127,61 @@ pub fn parse_thread(v: &Value) -> Result<Thread, RdError> {
         .map(|c| c.iter().filter_map(parse_thing).collect())
         .unwrap_or_default();
     Ok(Thread { post, comments })
+}
+
+/// "Load more" without `/api/morechildren`, which Reddit has blocked ("blocked by network
+/// security") since late October 2026: focused comment listings,
+/// `/comments/{post}/_/{comment}?context=0`, one per parent (a reply row) or per comment (a
+/// top-level row). The answer is a thread whose comments start at the focused comment.
+pub fn focused_request(post_id: &str, comment_id: &str, sort: &str) -> (String, Vec<(String, String)>) {
+    (
+        format!("/comments/{post_id}/_/{comment_id}"),
+        vec![("context".into(), "0".into()), ("limit".into(), "500".into()), ("sort".into(), sort.into())],
+    )
+}
+
+/// How many comments a top-level "load more" fetches one by one per press.
+pub const FOCUSED_BATCH: usize = 20;
+
+/// A subtree pulled apart into a flat list in display order (each node's replies emptied): the
+/// shape [`splice_more`] rebuilds by `parent_id`.
+pub fn flatten_nodes(nodes: Vec<Node>, out: &mut Vec<Node>) {
+    for n in nodes {
+        match n {
+            Node::Comment(mut c) => {
+                let replies = std::mem::take(&mut c.replies);
+                out.push(Node::Comment(c));
+                flatten_nodes(replies, out);
+            }
+            more => out.push(more),
+        }
+    }
+}
+
+/// From a focused listing of the parent comment: its replies whose IDs are `wanted`, flattened,
+/// and the IDs that came back (descendants included).
+pub fn take_wanted_replies(focused: Vec<Node>, wanted: &[String]) -> (Vec<Node>, HashSet<String>) {
+    let mut got = HashSet::new();
+    let mut out = Vec::new();
+    for root in focused {
+        if let Node::Comment(c) = root {
+            for r in c.replies {
+                if let Node::Comment(rc) = &r {
+                    if wanted.contains(&rc.id) {
+                        let mut flat = Vec::new();
+                        flatten_nodes(vec![r], &mut flat);
+                        for f in &flat {
+                            if let Node::Comment(fc) = f {
+                                got.insert(fc.id.clone());
+                            }
+                        }
+                        out.extend(flat);
+                    }
+                }
+            }
+        }
+    }
+    (out, got)
 }
 
 /// Query for `GET /api/morechildren`. Reddit accepts at most 100 IDs per call; `next_batch`
@@ -316,6 +371,31 @@ mod tests {
         let rows = flatten(&t.comments, &HashSet::new());
         assert_eq!(names(&rows), ["c1", "  c2", "    c3", "  c5", "    c6", "  c7", "  more(2)", "c4", "more(40)"]);
         assert!(!splice_more(&mut t.comments, "nope", vec![], vec![]));
+    }
+
+    #[test]
+    fn focused_listings_fill_a_more_row() {
+        let mut t = parse_thread(&fixture("thread.json")).unwrap();
+        // A focused listing of c1 returns c1 with all its replies; m1 wanted c5, c7 (and more).
+        let things = parse_morechildren(&fixture("morechildren.json")).unwrap();
+        let mut c1 = match &t.comments[0] { Node::Comment(c) => c.clone(), _ => panic!() };
+        // Rebuild c1's replies as the focused listing would: c2 (already shown) + the new ones.
+        let mut rebuilt: Vec<Node> = Vec::new();
+        for n in things {
+            if !attach(&mut rebuilt, n.parent_id().to_string(), &n) {
+                rebuilt.push(n);
+            }
+        }
+        c1.replies.extend(rebuilt);
+        let wanted: Vec<String> = ["c5", "c7", "c8"].iter().map(|s| s.to_string()).collect();
+        let (flat, got) = take_wanted_replies(vec![Node::Comment(c1)], &wanted);
+        assert!(got.contains("c5") && got.contains("c6") && got.contains("c7") && !got.contains("c2"));
+        let remaining: Vec<String> = wanted.into_iter().filter(|w| !got.contains(w)).collect();
+        assert_eq!(remaining, ["c8"]);
+        assert!(splice_more(&mut t.comments, "m1", flat, remaining));
+        let rows = flatten(&t.comments, &HashSet::new());
+        assert_eq!(names(&rows), ["c1", "  c2", "    c3", "  c5", "    c6", "  c7", "  more(1)", "c4", "more(40)"]);
+        assert_eq!(focused_request("abc", "c1", "top").0, "/comments/abc/_/c1");
     }
 
     #[test]

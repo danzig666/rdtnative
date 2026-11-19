@@ -182,6 +182,8 @@ pub enum RdFx {
     SeekVideo(i64),
     /// Play a YouTube video in ytnative (or LG's YouTube app).
     OpenYouTube(String),
+    /// Open a reddit.com share link (resolved in the background, then opened).
+    OpenShare(String),
 }
 
 pub enum RdMsg {
@@ -272,6 +274,8 @@ enum Work {
     SignedIn { result: Result<Saved, String> },
     /// The session's token changed: keep it.
     Saved(Saved),
+    /// Open this page (a share link was resolved).
+    Navigate(Option<RdArg>),
 }
 
 pub struct AppRig {
@@ -632,6 +636,10 @@ impl AppRig {
                     }
                 }
             }
+            Work::Navigate(arg) => match arg {
+                Some(a) => self.store.nav_request = Some(a),
+                None => self.store.toast("Couldn't open that share link", now),
+            },
             Work::Saved(s) => {
                 if self.store.saved.as_ref().is_some_and(|old| old.client_id == s.client_id && old.access_token != s.access_token) {
                     let _ = store::store_saved(&s);
@@ -810,14 +818,56 @@ impl AppRig {
         let sort = st.sort;
         let epoch = self.epoch;
         self.spawn(from, "more", move || {
-            let (ids, remaining) = comments::next_batch(&more);
-            let link = format!("t3_{post}");
-            let q = comments::morechildren_query(&link, &ids, sort.key());
-            let result = s
-                .get("/api/morechildren", &q, Priority::Page)
-                .and_then(|r| comments::parse_morechildren(&r.json))
-                .map(|things| (things, remaining))
-                .map_err(|e| e.to_string());
+            // Focused listings (Reddit blocks /api/morechildren since late October 2026).
+            let focused = |id: &str| -> Result<Vec<Node>, String> {
+                let (path, q) = comments::focused_request(&post, id, sort.key());
+                let q: Vec<(&str, &str)> = q.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+                s.get(&path, &q, Priority::Page).and_then(|r| comments::parse_thread(&r.json)).map(|t| t.comments).map_err(|e| e.to_string())
+            };
+            let wanted = more.children.clone();
+            let mut things: Vec<Node> = Vec::new();
+            let mut got: HashSet<String> = HashSet::new();
+            let mut error = None;
+            // A row of replies: one listing of the parent brings them all.
+            if let Some(parent) = more.parent_id.strip_prefix("t1_") {
+                match focused(parent) {
+                    Ok(nodes) => {
+                        let (t, g) = comments::take_wanted_replies(nodes, &wanted);
+                        things = t;
+                        got = g;
+                    }
+                    Err(e) => error = Some(e),
+                }
+            }
+            // Top-level rows (and whatever the parent's listing left out): one comment at a time.
+            let mut asked = 0;
+            for id in &wanted {
+                if got.contains(id) || asked >= comments::FOCUSED_BATCH || error.is_some() && things.is_empty() && asked > 0 {
+                    continue;
+                }
+                asked += 1;
+                match focused(id) {
+                    Ok(nodes) => {
+                        let mut flat = Vec::new();
+                        comments::flatten_nodes(nodes, &mut flat);
+                        for n in flat {
+                            if let Node::Comment(c) = &n {
+                                if !got.insert(c.id.clone()) {
+                                    continue;
+                                }
+                            }
+                            things.push(n);
+                        }
+                        got.insert(id.clone());
+                    }
+                    Err(e) => {
+                        crate::log(&format!("more: {id}: {e}"));
+                        error.get_or_insert(e);
+                    }
+                }
+            }
+            let remaining: Vec<String> = wanted.into_iter().filter(|w| !got.contains(w)).collect();
+            let result = if things.is_empty() { Err(error.unwrap_or_else(|| "nothing came back".into())) } else { Ok((things, remaining)) };
             Work::More { epoch, post, more_id, result }
         });
     }
@@ -828,21 +878,28 @@ impl AppRig {
         if !self.store.imgur_pending.insert(id.to_string()) {
             return;
         }
-        let url = media::imgur_api(r);
+        let r = r.clone();
+        let url = media::imgur_api(&r);
         let client = self.store.prefs.imgur_id().to_string();
         let id = id.to_string();
-        self.spawn(from, "imgur", move || {
+        self.spawn(from, "remote-media", move || {
             let http = rd_core::session::http_client();
-            let media = http
-                .get(&url)
-                .header("Authorization", format!("Client-ID {client}"))
-                .send()
-                .ok()
-                .filter(|r| r.status().is_success())
-                .and_then(|r| r.json::<serde_json::Value>().ok())
-                .and_then(|v| media::parse_imgur(&v));
+            let get = |auth: String| {
+                http.get(&url)
+                    .header("Authorization", auth)
+                    .header("User-Agent", rd_core::ua::user_agent(rd_core::ua::host_platform(), None))
+                    .send()
+                    .ok()
+                    .filter(|r| r.status().is_success())
+                    .and_then(|r| r.json::<serde_json::Value>().ok())
+            };
+            let media = match &r {
+                media::ImgurRef::Redgifs(_) => redgifs_token(&http).and_then(|t| get(format!("Bearer {t}"))).and_then(|v| media::parse_redgifs(&v)),
+                media::ImgurRef::Streamable(_) => http.get(&url).send().ok().filter(|r| r.status().is_success()).and_then(|r| r.json::<serde_json::Value>().ok()).and_then(|v| media::parse_streamable(&v)),
+                _ => get(format!("Client-ID {client}")).and_then(|v| media::parse_imgur(&v)),
+            };
             if media.is_none() {
-                crate::log(&format!("imgur {url}: no media"));
+                crate::log(&format!("{} {url}: no media", r.service()));
             }
             Work::Imgur { id, media }
         });
@@ -1233,6 +1290,36 @@ impl AppRig {
     }
 }
 
+/// RedGIFs' temporary token, fetched once and kept for 20 hours.
+fn redgifs_token(http: &reqwest::blocking::Client) -> Option<String> {
+    static TOKEN: Mutex<Option<(String, std::time::Instant)>> = Mutex::new(None);
+    if let Some((t, at)) = TOKEN.lock().unwrap().clone() {
+        if at.elapsed() < std::time::Duration::from_secs(20 * 3600) {
+            return Some(t);
+        }
+    }
+    let v: serde_json::Value = http.get(media::REDGIFS_TOKEN_URL).send().ok()?.json().ok()?;
+    let t = v["token"].as_str()?.to_string();
+    *TOKEN.lock().unwrap() = Some((t.clone(), std::time::Instant::now()));
+    Some(t)
+}
+
+/// Follows a share link's redirects (on www.reddit.com, without the API) to the post it shares.
+fn resolve_share(url: &str) -> Option<rd_core::listing::RedditLink> {
+    let http = reqwest::blocking::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(15)).build().ok()?;
+    let mut cur = url.to_string();
+    for _ in 0..4 {
+        let r = http.head(&cur).header("User-Agent", rd_core::ua::user_agent(rd_core::ua::host_platform(), None)).send().ok()?;
+        let loc = r.headers().get("location")?.to_str().ok()?.to_string();
+        let loc = if loc.starts_with('/') { format!("https://www.reddit.com{loc}") } else { loc };
+        if let Some(l) = rd_core::listing::share_target(&loc) {
+            return Some(l);
+        }
+        cur = loc;
+    }
+    None
+}
+
 fn new_thread(sort: CommentSort) -> ThreadState {
     ThreadState { tree: Vec::new(), toggled: HashSet::new(), loading: false, error: None, sort, loading_more: HashSet::new(), gen: 0 }
 }
@@ -1435,6 +1522,18 @@ impl Rig<RdHost> for AppRig {
             }
             RdFx::PauseVideo => self.player.toggle_pause(),
             RdFx::SeekVideo(d) => self.player.seek_by(d),
+            RdFx::OpenShare(url) => {
+                self.store.toast("Opening the shared link\u{2026}", now);
+                self.spawn(from, "share", move || {
+                    use rd_core::listing::RedditLink;
+                    Work::Navigate(resolve_share(&url).map(|l| match l {
+                        RedditLink::Sub(s) => RdArg::Feed(Feed::Sub(s)),
+                        RedditLink::User(u) => RdArg::Feed(Feed::User(u, rd_core::listing::UserTab::Submitted)),
+                        RedditLink::Post(id, c) => RdArg::Post { id, comment: c },
+                        RedditLink::Share(_) => RdArg::Link(url.clone()),
+                    }))
+                });
+            }
             RdFx::OpenYouTube(id) => {
                 self.store.toast("Opening the video in ytnative…", now);
                 self.spawn(from, "youtube", move || match crate::player::launch_youtube(&id) {

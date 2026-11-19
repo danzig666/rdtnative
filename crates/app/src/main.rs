@@ -337,6 +337,9 @@ fn main() {
             }
             // The automatic update check found a newer version: ask once, on the feed (never over
             // a video or a page being read).
+            if let Some(arg) = rig.store.nav_request.take() {
+                d.request(MachineId::Nav, NavOp::Push(arg));
+            }
             if d.top_screen().map(|s| s.name()) == Some("feed") && update::take_prompt() {
                 d.request(MachineId::Nav, NavOp::Present(RdArg::Menu(host::MenuKind::Update)));
             }

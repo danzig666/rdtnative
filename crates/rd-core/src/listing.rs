@@ -208,6 +208,8 @@ impl Feed {
                 }
                 .into()));
                 q.push(("type".into(), "link".into()));
+                // NSFW results come too; the app's NSFW setting hides or blurs them.
+                q.push(("include_over_18".into(), "on".into()));
                 match sub {
                     Some(s) => {
                         q.push(("restrict_sr".into(), "on".into()));
@@ -338,9 +340,19 @@ pub enum RedditLink {
     User(String),
     /// (post id, optional comment id)
     Post(String, Option<String>),
+    /// A share link (`/r/x/s/<code>`): Reddit redirects it to the real address (see
+    /// [`share_target`]).
+    Share(String),
+}
+
+/// Where a share link points, from the `Location` of Reddit's redirect (follow at most a few).
+pub fn share_target(location: &str) -> Option<RedditLink> {
+    parse_reddit_link(location).filter(|l| !matches!(l, RedditLink::Share(_)))
 }
 
 pub fn parse_reddit_link(url: &str) -> Option<RedditLink> {
+    let unwrapped = crate::media::unwrap_media_url(url);
+    let url = unwrapped.as_str();
     let rest = url.split("://").nth(1).unwrap_or(url);
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
     let host = host.to_ascii_lowercase();
@@ -353,8 +365,10 @@ pub fn parse_reddit_link(url: &str) -> Option<RedditLink> {
     }
     let seg: Vec<&str> = path.split(['?', '#']).next()?.split('/').filter(|s| !s.is_empty()).collect();
     match seg.as_slice() {
-        ["r", _, "comments", id, _, c, ..] => Some(RedditLink::Post(id.to_string(), Some(c.to_string()))),
-        ["r", _, "comments", id, ..] | ["comments", id, ..] => Some(RedditLink::Post(id.to_string(), None)),
+        // Share links: /r/x/s/<code>, /u/x/s/<code>, /s/<code>.
+        [.., "s", code] if code.len() >= 5 => Some(RedditLink::Share(url.to_string())),
+        ["r" | "u" | "user", _, "comments", id, _, c, ..] => Some(RedditLink::Post(id.to_string(), Some(c.to_string()))),
+        ["r" | "u" | "user", _, "comments", id, ..] | ["comments", id, ..] | ["gallery", id, ..] => Some(RedditLink::Post(id.to_string(), None)),
         ["r", sub, ..] => Some(RedditLink::Sub(sub.to_string())),
         ["u" | "user", name, ..] => Some(RedditLink::User(name.to_string())),
         _ => None,
@@ -399,5 +413,10 @@ mod tests {
         assert_eq!(parse_reddit_link("https://reddit.com/u/spez"), Some(RedditLink::User("spez".into())));
         assert_eq!(parse_reddit_link("https://redd.it/xyz"), Some(RedditLink::Post("xyz".into(), None)));
         assert_eq!(parse_reddit_link("https://example.com/r/x"), None);
+        assert_eq!(parse_reddit_link("https://www.reddit.com/r/pics/s/AbCdE12345"), Some(RedditLink::Share("https://www.reddit.com/r/pics/s/AbCdE12345".into())));
+        assert_eq!(parse_reddit_link("https://www.reddit.com/user/bob/comments/xyz/title/"), Some(RedditLink::Post("xyz".into(), None)));
+        assert_eq!(parse_reddit_link("https://www.reddit.com/gallery/g1"), Some(RedditLink::Post("g1".into(), None)));
+        assert_eq!(parse_reddit_link("https://www.reddit.com/media?url=https%3A%2F%2Fwww.reddit.com%2Fr%2Frust%2F"), Some(RedditLink::Sub("rust".into())));
+        assert_eq!(share_target("https://www.reddit.com/r/pics/comments/abc/t/?share_id=x"), Some(RedditLink::Post("abc".into(), None)));
     }
 }

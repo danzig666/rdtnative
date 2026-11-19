@@ -233,10 +233,30 @@ impl Session {
                     continue;
                 }
                 401 => return Err(RdError::Unauthorized),
+                // A signed-out token Reddit no longer likes answers 403: mint a new one, once.
+                403 if !retried && matches!(self.identity, Identity::AppOnly { .. }) && crate::error::forbidden_reason(&body).as_deref() != Some("blocked by Reddit's network security") => {
+                    retried = true;
+                    *self.token.lock().unwrap() = None;
+                    continue;
+                }
                 403 => {
                     return Err(RdError::Forbidden { what: what.to_string(), reason: crate::error::forbidden_reason(&body) })
                 }
                 404 => return Err(RdError::NotFound(what.to_string())),
+                429 if !retried && prio != Priority::Action => {
+                    let wait = headers
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .or(rate.map(|r| r.reset_secs))
+                        .unwrap_or(2);
+                    if wait <= 10 {
+                        retried = true;
+                        std::thread::sleep(std::time::Duration::from_secs(wait.max(1)));
+                        continue;
+                    }
+                    return Err(RdError::RateLimited { reset_secs: wait });
+                }
                 429 => {
                     return Err(RdError::RateLimited { reset_secs: rate.map(|r| r.reset_secs).unwrap_or(60) })
                 }

@@ -122,9 +122,9 @@ pub const OPTS: &[Opt] = &[
     Opt {
         key: "video_stream",
         label: "Video stream",
-        help: "How Reddit videos are played. DASH and HLS have sound; MP4 is the simplest and has no sound. Try another if a video does not play.",
-        values: &[("dash", "DASH (default)"), ("hls", "HLS"), ("mp4", "MP4 (no sound)")],
-        default: "dash",
+        help: "How Reddit videos are played. HLS and DASH have sound; MP4 is the simplest and has no sound. Try another if a video does not play.",
+        values: &[("hls", "HLS (default)"), ("dash", "DASH"), ("mp4", "MP4 (no sound)")],
+        default: "hls",
     },
     Opt { key: "hide_stickied", label: "Hide pinned posts", help: "Leave out the moderators' pinned posts at the top of subreddits.", values: OFF_ON, default: "off" },
     // Browsing

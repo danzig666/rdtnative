@@ -34,6 +34,7 @@ enum Act {
     SetPref(&'static str, String),
     Adult,
     InstallUpdate,
+    Share(String),
     Close,
 }
 
@@ -188,6 +189,7 @@ impl MenuScreen {
                         Some(rd_core::listing::RedditLink::Sub(s)) => Act::Push(RdArg::Feed(Feed::Sub(s))),
                         Some(rd_core::listing::RedditLink::User(n)) => Act::Push(RdArg::Feed(Feed::User(n, UserTab::Submitted))),
                         Some(rd_core::listing::RedditLink::Post(id, c)) => Act::Push(RdArg::Post { id, comment: c }),
+                        Some(rd_core::listing::RedditLink::Share(s)) => Act::Share(s),
                         None => Act::Link(u.clone()),
                     };
                     rows.push((Row::new(label).icon(Icon::Leave).raw(), act));
@@ -287,6 +289,10 @@ impl MenuScreen {
             Act::Adult => {
                 close(fx);
                 fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::AdultCheck))));
+            }
+            Act::Share(url) => {
+                close(fx);
+                fx.push(Fx::App(RdFx::OpenShare(url)));
             }
             Act::InstallUpdate => {
                 close(fx);

@@ -319,13 +319,13 @@ pub use sim::Player;
 #[cfg(not(any(windows, feature = "sim")))]
 pub use tv::Player;
 
-/// The stream to play for a Reddit video, by the "Video stream" setting: DASH (video and sound),
-/// HLS (video and sound) or the plain MP4 (no sound on v.redd.it).
+/// The stream to play for a Reddit video, by the "Video stream" setting: HLS (video and sound; the
+/// default, as Reddit's other clients play it), DASH, or the plain MP4 (no sound on v.redd.it).
 pub fn pick_url(v: &rd_core::media::Video, pref: &str) -> Option<String> {
     let order: [&Option<String>; 3] = match pref {
-        "hls" => [&v.hls, &v.dash, &v.mp4],
-        "mp4" => [&v.mp4, &v.dash, &v.hls],
-        _ => [&v.dash, &v.hls, &v.mp4],
+        "dash" => [&v.dash, &v.hls, &v.mp4],
+        "mp4" => [&v.mp4, &v.hls, &v.dash],
+        _ => [&v.hls, &v.dash, &v.mp4],
     };
     order.into_iter().flatten().next().cloned()
 }
@@ -336,6 +336,8 @@ mod tests {
     fn stream_preference() {
         let v = rd_core::media::Video { hls: Some("h".into()), dash: Some("d".into()), mp4: Some("m".into()), w: 0, h: 0, duration: 0, gif: false, poster: None };
         assert_eq!(super::pick_url(&v, "dash").as_deref(), Some("d"));
+        assert_eq!(super::pick_url(&v, "hls").as_deref(), Some("h"));
+        assert_eq!(super::pick_url(&v, "").as_deref(), Some("h"));
         assert_eq!(super::pick_url(&v, "hls").as_deref(), Some("h"));
         assert_eq!(super::pick_url(&v, "mp4").as_deref(), Some("m"));
         let only = rd_core::media::Video { hls: None, dash: None, ..v };

@@ -170,7 +170,7 @@ pub fn media_badge(item: &PostItem) -> Option<String> {
         Media::Video(_) => Some("\u{25B6} VIDEO".into()),
         Media::YouTube { .. } => Some("\u{25B6} YOUTUBE".into()),
         Media::Link { url, .. } => Some(format!("\u{2197} {}", rd_core::media::host(url))),
-        Media::Imgur(_) => Some("IMGUR".into()),
+        Media::Imgur(r) => Some(r.service().into()),
         _ => None,
     }
 }
