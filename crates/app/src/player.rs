@@ -31,6 +31,9 @@ pub struct Status {
     pub height: u32,
     /// Loops silently (GIFs).
     pub looping: bool,
+    /// Set when the stream failed before playing and other addresses are left (one per line):
+    /// the main thread starts them on its next tick.
+    pub retry: Option<String>,
 }
 
 #[cfg(not(any(windows, feature = "sim")))]
@@ -122,7 +125,12 @@ mod tv {
             let (status, media_id) = (self.status.clone(), self.media_id.clone());
             let spawned = plx_base::task::spawn("play", move || {
                 let live = || gen.load(std::sync::atomic::Ordering::SeqCst) == my_gen;
-                let url = first_served(&candidates(&url));
+                let all = candidates(&url);
+                let url = first_served(&all);
+                // The probe can pass an address the TV's player is then refused (v.redd.it answers
+                // 403 to it): the ones after it are tried if the stream fails before it plays.
+                let rest: Vec<&str> = all.iter().skip_while(|u| **u != url).skip(1).copied().collect();
+                let rest = Arc::new(Mutex::new((!rest.is_empty()).then(|| rest.join("\n"))));
                 if !live() {
                     return;
                 }
@@ -152,7 +160,7 @@ mod tv {
                 let (st, current, me) = (status.clone(), media_id.clone(), mid.clone());
                 luna.subscribe("luna://com.webos.media/subscribe", &format!(r#"{{"mediaId":{},"subscribe":true}}"#, json_str(&mid)), move |msg| {
                     if current.lock().unwrap().as_deref() == Some(me.as_str()) {
-                        on_event(&st, msg, luna, &me);
+                        on_event(&st, msg, luna, &me, &rest);
                     }
                 });
                 luna.call("luna://com.webos.media/notifyForeground", &format!(r#"{{"connectionId":{}}}"#, json_str(&mid)));
@@ -210,10 +218,19 @@ mod tv {
             self.status.lock().unwrap().phase = Phase::Idle;
         }
 
-        pub fn tick(&mut self) {}
+        pub fn tick(&mut self) {
+            let retry = {
+                let mut s = self.status.lock().unwrap();
+                s.retry.take().map(|r| (r, s.looping))
+            };
+            if let Some((urls, looping)) = retry {
+                crate::log("player: stream refused, trying the next one");
+                self.start(urls, looping);
+            }
+        }
     }
 
-    fn on_event(status: &Mutex<Status>, msg: &str, luna: &'static Luna, mid: &str) {
+    fn on_event(status: &Mutex<Status>, msg: &str, luna: &'static Luna, mid: &str, rest: &Mutex<Option<String>>) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(msg) else { return };
         let mut s = status.lock().unwrap();
         if let Some(t) = v["currentTime"]["currentTime"].as_u64() {
@@ -242,6 +259,17 @@ mod tv {
             s.duration_ms = d;
         } else if let Some(e) = v.get("error") {
             crate::log(&format!("player: media error {e}"));
+            if s.phase == Phase::Loading && s.position_ms == 0 {
+                if let Some(next) = rest.lock().unwrap().take() {
+                    s.retry = Some(next);
+                    drop(s);
+                    plx_machine::present::wake_from_worker();
+                    return;
+                }
+            }
+            if s.retry.is_some() {
+                return;
+            }
             s.phase = Phase::Failed(e["errorText"].as_str().unwrap_or("playback error").to_string());
         } else {
             return;
