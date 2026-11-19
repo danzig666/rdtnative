@@ -15,6 +15,9 @@ so we copy **no code and no assets** from it, only knowledge: endpoints, link ru
 - **Decisions:** bring your own client ID (§2); NSFW **supported**, behind an age gate and a setting,
   blurred by default; **minimum webOS 4**, the same as ytnative. On webOS 4 the video goes full
   screen instead of sitting beside the comments.
+- **API settings entry** (client ID, redirect URI, user agent): typed on the TV or entered on a
+  phone via a QR code, the same as RustCouch. Done in `rd-core::config` + `rd-phone`; the TV screen
+  itself comes with the app shell (Phase 1/3).
 - **Phase 0 in progress:** `rd-core` (auth, session, rate limits, posts, comment trees + morechildren)
   with 19 unit tests, the `rd-spike` CLI, the sign-in callback page (`site/callback.html`), and CI
   (tests, clippy, ARM cross-build). The ARM build runs under emulation and reaches Reddit. It still
@@ -86,6 +89,23 @@ page shows "Done, look at your TV"
 - **Errors to show clearly:** an invalid client ID (401 on the token request), a wrong app type
   (the app must be "installed", not "web"), a redirect URI mismatch, and a revoked refresh token.
   Each gets a plain-language screen that points back to the setup QR code.
+
+### Entering the settings on the TV (implemented in `rd-core::config` + `rd-phone`)
+**Settings › Reddit API** shows three fields: **OAuth client ID**, **Redirect URI** and
+**User agent**. The last two are optional and show their defaults as placeholders. Each field opens
+on OK:
+- **On the TV:** the on-screen keyboard (ytnative's OSK), or a USB keyboard.
+- **On a phone:** an **Enter on phone** button shows a QR code. It works the same way as RustCouch's
+  "Type on phone" (danzig666/webos-rustdesk-client): a one-time page on the TV's LAN address, with a
+  random port, a random 128-bit path and one valid submission, open for 10 minutes. It has all three
+  fields pre-filled, plus a link to reddit.com/prefs/apps so the client ID can be copied and pasted
+  on the phone. Wrong values come back with a message under each field. The TV shows "Opened on your
+  phone…" and fills in the fields when the form is sent.
+
+Labels, help text, limits and validation are defined once (`rd_core::config::api_fields`,
+`ApiConfig::from_fields`), so the TV editor and the phone page always agree. A custom redirect URI
+works, but then the sign-in code is not handed to the TV automatically: the user pastes it on the
+phone page or types it. A custom user agent is sent unchanged.
 
 ### Design rule (unchanged)
 All of Reddit sits behind a `Session` trait in `rd-core` (`get`, `post`, `token`, `identity`), with

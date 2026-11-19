@@ -19,10 +19,13 @@ it in `.rdt-spike.json`, which is git-ignored and readable only by you.
 cargo build -p rd-spike
 alias rds=target/debug/rd-spike          # or target\debug\rd-spike.exe on Windows
 
-rds setup <your-client-id>
+rds setup <your-client-id>                         # manual entry (defaults for the rest)
+rds setup <id> --redirect-uri <uri> --user-agent "<ua>"   # your own redirect URI / user agent
+rds setup --phone                                  # or: scan the QR code and fill the form on your phone
 rds token                  # app-only token + 5 posts from /hot (no account needed)
 rds fixtures               # saves front page, a subreddit, r/all, popular subs, search, a thread, morechildren
 rds login                  # optional: open the URL, approve, paste the URL you land on
+rds login --phone          # same, but paste the URL on your phone via a QR code
 rds fixtures               # again, now with /best and your subscriptions
 rds soak 30 10             # 30 min, one request every 10 s: logs the rate-limit window
 ```
@@ -70,3 +73,12 @@ publishes `site/` on every push to `main` that touches it. `site/callback.html` 
 - [ ] sign-in with code flow works and the refresh token survives `rds whoami` the next day
 - [ ] all `fixtures` steps parse
 - [ ] rate-limit headers present; `soak` shows no unexpected 403/429
+
+## Entering the settings on a phone
+
+`setup --phone` and `login --phone` work like RustCouch's **Type on phone**. A one-time page opens on
+the home network: it uses the machine's LAN address, a random port and a random 128-bit path. It
+accepts one valid submission and then stops. It also stops after 10 minutes, or when the tool exits.
+A wrong value re-shows the page with a message under that field. The page is plain HTTP, so use it
+on a home network you trust. The TV app uses the same `rd-phone` crate and the same field
+definitions (`rd_core::config::api_fields`) for its on-screen editor.

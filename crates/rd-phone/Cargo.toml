@@ -1,0 +1,10 @@
+[package]
+name = "rd-phone"
+description = "One-time LAN form so a phone can fill in TV fields (QR code), after RustCouch's 'Type on phone'"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+getrandom.workspace = true
+qrcode = { version = "0.14", default-features = false }

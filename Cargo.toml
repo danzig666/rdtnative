@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rd-core", "crates/rd-spike"]
+members = ["crates/rd-core", "crates/rd-phone", "crates/rd-spike"]
 
 [workspace.package]
 version = "0.1.0"

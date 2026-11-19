@@ -16,6 +16,12 @@ const EXPIRY_SKEW: u64 = 120;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Saved {
     pub client_id: String,
+    /// The redirect URI registered on the user's Reddit app (`None` = rdtnative's callback page).
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
+    /// User-Agent override (`None` = rdtnative's default).
+    #[serde(default)]
+    pub user_agent: Option<String>,
     /// Stable per install; used for app-only tokens.
     pub device_id: String,
     /// Present once the user has signed in.
@@ -29,6 +35,24 @@ pub struct Saved {
     pub expires_at: u64,
 }
 
+impl Saved {
+    /// A fresh app-only identity for `cfg` (new device ID, no tokens).
+    pub fn from_config(cfg: &crate::config::ApiConfig) -> Saved {
+        Saved {
+            client_id: cfg.client_id.clone(),
+            redirect_uri: Some(cfg.redirect_uri.clone()),
+            user_agent: cfg.user_agent.clone(),
+            device_id: crate::auth::new_device_id(),
+            ..Saved::default()
+        }
+    }
+
+    /// The redirect URI to use for sign-in.
+    pub fn redirect(&self) -> &str {
+        self.redirect_uri.as_deref().filter(|r| !r.is_empty()).unwrap_or(crate::DEFAULT_REDIRECT_URI)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Identity {
     AppOnly { device_id: String },
@@ -40,6 +64,8 @@ pub struct Session {
     client: ClientId,
     identity: Identity,
     platform: String,
+    ua_override: Option<String>,
+    redirect_uri: Option<String>,
     username: Mutex<Option<String>>,
     token: Mutex<Option<Token>>,
     rate: Mutex<Option<RateLimit>>,
@@ -60,6 +86,8 @@ impl Session {
             client,
             identity,
             platform: platform.to_string(),
+            ua_override: None,
+            redirect_uri: None,
             username: Mutex::new(None),
             token: Mutex::new(None),
             rate: Mutex::new(None),
@@ -73,7 +101,9 @@ impl Session {
             Some(rt) => Identity::User { refresh_token: rt.clone() },
             None => Identity::AppOnly { device_id: saved.device_id.clone() },
         };
-        let s = Session::new(http, client, identity, platform);
+        let mut s = Session::new(http, client, identity, platform);
+        s.ua_override = saved.user_agent.clone().filter(|u| !u.is_empty());
+        s.redirect_uri = saved.redirect_uri.clone().filter(|u| !u.is_empty());
         *s.username.lock().unwrap() = saved.username.clone();
         if let Some(at) = &saved.access_token {
             *s.token.lock().unwrap() = Some(Token {
@@ -90,6 +120,8 @@ impl Session {
         let tok = self.token.lock().unwrap().clone();
         Saved {
             client_id: self.client.as_str().to_string(),
+            redirect_uri: self.redirect_uri.clone(),
+            user_agent: self.ua_override.clone(),
             device_id: device_id.to_string(),
             refresh_token: match &self.identity {
                 Identity::User { refresh_token } => Some(refresh_token.clone()),
@@ -109,7 +141,11 @@ impl Session {
         matches!(self.identity, Identity::User { .. })
     }
 
+    /// The override when the user set one, otherwise Reddit's recommended format.
     pub fn user_agent(&self) -> String {
+        if let Some(u) = &self.ua_override {
+            return u.clone();
+        }
         crate::ua::user_agent(&self.platform, self.username.lock().unwrap().as_deref())
     }
 
@@ -233,6 +269,8 @@ mod tests {
     fn saved_round_trip_keeps_identity_and_token() {
         let saved = Saved {
             client_id: "abcdefghijklmn".into(),
+            redirect_uri: None,
+            user_agent: None,
             device_id: "d".repeat(30),
             refresh_token: Some("RT".into()),
             username: Some("alice".into()),
@@ -247,6 +285,11 @@ mod tests {
         let anon = Saved { refresh_token: None, username: None, access_token: None, expires_at: 0, ..saved.clone() };
         let s = Session::from_saved(http_client(), &anon, "linux").unwrap();
         assert_eq!(s.identity(), &Identity::AppOnly { device_id: "d".repeat(30) });
-        assert!(Session::from_saved(http_client(), &Saved { client_id: "bad id".into(), ..anon }, "linux").is_none());
+        assert!(Session::from_saved(http_client(), &Saved { client_id: "bad id".into(), ..anon.clone() }, "linux").is_none());
+
+        let custom = Saved { user_agent: Some("webos:x.y:v9 (by /u/me)".into()), redirect_uri: Some("http://localhost/cb".into()), ..anon };
+        let s = Session::from_saved(http_client(), &custom, "linux").unwrap();
+        assert_eq!(s.user_agent(), "webos:x.y:v9 (by /u/me)");
+        assert_eq!(s.to_saved(&custom.device_id), custom);
     }
 }

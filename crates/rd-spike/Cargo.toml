@@ -7,5 +7,6 @@ license.workspace = true
 
 [dependencies]
 rd-core = { path = "../rd-core" }
+rd-phone = { path = "../rd-phone" }
 anyhow.workspace = true
 serde_json.workspace = true

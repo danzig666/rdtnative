@@ -7,6 +7,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use rd_core::auth::{self, Callback, ClientId, Grant, State};
 use rd_core::comments::{self, Node};
+use rd_core::config::{self, ApiConfig};
+use rd_phone::{Field, Form, Kind, PhoneForm, Values};
 use rd_core::model;
 use rd_core::ratelimit::Priority;
 use rd_core::session::{http_client, Identity, Saved, Session};
@@ -18,9 +20,12 @@ use std::time::{Duration, Instant};
 const USAGE: &str = "rd-spike: Reddit API spike for rdtnative
 
 USAGE:
-  rd-spike setup <client-id>        store your installed-app client ID (or set RDT_CLIENT_ID)
+  rd-spike setup <client-id> [--redirect-uri <uri>] [--user-agent <ua>]
+                                    store your Reddit API settings (or set RDT_CLIENT_ID)
+  rd-spike setup --phone            the same, entered on a phone: scan the QR code (same Wi-Fi)
   rd-spike token                    get an app-only token (browse without an account)
-  rd-spike login [redirect-uri]     sign in: open the printed URL, paste the URL you land on
+  rd-spike login [--phone]          sign in: open the printed URL, paste the URL you land on
+                                    (--phone: paste it on your phone instead, via a QR code)
   rd-spike whoami                   show the stored identity
   rd-spike logout                   revoke the refresh token and forget it
   rd-spike get <path> [k=v ...]     GET oauth.reddit.com<path>, print JSON + rate limit
@@ -88,11 +93,31 @@ fn run(args: &[String]) -> Result<()> {
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     match cmd {
         "setup" => {
-            let raw = args.get(1).ok_or_else(|| anyhow!("usage: rd-spike setup <client-id>"))?;
-            let id = ClientId::parse(raw).map_err(|e| anyhow!(e))?;
-            let saved = Saved { client_id: id.as_str().into(), device_id: auth::new_device_id(), ..Saved::default() };
+            let cfg = if args.get(1).map(String::as_str) == Some("--phone") {
+                setup_on_phone()?
+            } else {
+                let mut client_id = None;
+                let (mut redirect, mut ua) = (String::new(), String::new());
+                let mut it = args[1..].iter();
+                while let Some(a) = it.next() {
+                    match a.as_str() {
+                        "--redirect-uri" => redirect = it.next().cloned().ok_or_else(|| anyhow!("--redirect-uri needs a value"))?,
+                        "--user-agent" => ua = it.next().cloned().ok_or_else(|| anyhow!("--user-agent needs a value"))?,
+                        v if client_id.is_none() && !v.starts_with("--") => client_id = Some(v.to_string()),
+                        v => bail!("unexpected argument {v:?}"),
+                    }
+                }
+                let id = client_id.ok_or_else(|| anyhow!("usage: rd-spike setup <client-id> [--redirect-uri <uri>] [--user-agent <ua>] | --phone"))?;
+                ApiConfig::from_fields(&id, &redirect, &ua).map_err(|e| {
+                    anyhow!(e.iter().map(|e| format!("{}: {}", e.field, e.message)).collect::<Vec<_>>().join("; "))
+                })?
+            };
+            let saved = Saved::from_config(&cfg);
             store(&saved)?;
-            println!("stored client ID in {} (device id {})", state_path().display(), saved.device_id);
+            println!("stored in {}:", state_path().display());
+            println!("  client ID     {}", cfg.client_id);
+            println!("  redirect URI  {}", cfg.redirect_uri);
+            println!("  user agent    {}", cfg.user_agent.as_deref().unwrap_or("(default)"));
             Ok(())
         }
         "token" => {
@@ -121,13 +146,27 @@ fn run(args: &[String]) -> Result<()> {
         "login" => {
             let saved = load()?;
             let client = ClientId::parse(&saved.client_id).map_err(|e| anyhow!(e))?;
-            let redirect = args.get(1).cloned().unwrap_or_else(|| rd_core::DEFAULT_REDIRECT_URI.to_string());
+            let redirect = saved.redirect().to_string();
+            let on_phone = args.get(1).map(String::as_str) == Some("--phone");
             let state = State { nonce: rd_core::random_token(16), tv: None };
             println!("1. Open this URL in a browser where you are logged in to Reddit:\n\n{}\n", auth::authorize_url(&client, &redirect, &state.encode()));
-            println!("2. Approve. Then paste the full URL you land on (or just the code) and press Enter:");
-            std::io::stdout().flush()?;
-            let mut line = String::new();
-            std::io::stdin().lock().read_line(&mut line)?;
+            let line = if on_phone {
+                println!("2. Approve. Then scan this QR code and paste the URL you landed on (or the code):");
+                let mut form = Form::new("rdtnative sign-in");
+                form.intro.push("Paste the address of the page Reddit sent you to after you approved rdtnative, or just the code.".into());
+                form.fields.push(Field::new("callback", "Address or code").kind(Kind::Url).max_len(2048));
+                let v = run_phone_form(form, |v| match auth::parse_callback(&v["callback"]) {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(vec![("callback".into(), format!("That does not look right: {e}"))]),
+                })?;
+                v["callback"].clone()
+            } else {
+                println!("2. Approve. Then paste the full URL you land on (or just the code) and press Enter:");
+                std::io::stdout().flush()?;
+                let mut line = String::new();
+                std::io::stdin().lock().read_line(&mut line)?;
+                line
+            };
             let (code, back) = match auth::parse_callback(&line).map_err(|e| anyhow!(e))? {
                 Callback::Code { code, state } => (code, state),
                 Callback::Denied { error, .. } => bail!("Reddit says: {error}"),
@@ -338,4 +377,57 @@ fn soak(minutes: u64, every: u64) -> Result<()> {
     store(&s.to_saved(&saved.device_id))?;
     println!("soak done: {ok} ok, {errs} errors");
     Ok(())
+}
+
+/// Runs a one-time phone form: prints the QR code and address, waits for one valid submission.
+fn run_phone_form(form: Form, validate: impl Fn(&Values) -> Result<(), Vec<(String, String)>> + Send + Sync + 'static) -> Result<Values> {
+    let minutes = form.lifetime.as_secs() / 60;
+    let p = PhoneForm::start(form, Box::new(validate)).map_err(|e| anyhow!(e))?;
+    if let Some(q) = p.qr() {
+        println!("\n{}", q.to_terminal());
+    }
+    println!("Scan with a phone on the same network, or open {}", p.url);
+    println!("(one-time link: works once and for {minutes} minutes)");
+    let mut said_opened = false;
+    loop {
+        if let Some(v) = p.take() {
+            println!("received from the phone");
+            return Ok(v);
+        }
+        if !p.running() {
+            bail!("the phone link expired");
+        }
+        if p.opened() && !said_opened {
+            println!("opened on the phone…");
+            said_opened = true;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// The Reddit API settings form (client ID, redirect URI, user agent) on a phone.
+fn setup_on_phone() -> Result<ApiConfig> {
+    let current = load().ok().and_then(|s| {
+        ApiConfig::from_fields(&s.client_id, s.redirect_uri.as_deref().unwrap_or(""), s.user_agent.as_deref().unwrap_or("")).ok()
+    });
+    let mut form = Form::new("rdtnative: Reddit API settings");
+    form.intro = config::SETUP_STEPS.iter().map(|s| s.to_string()).collect();
+    form.links.push(("Open reddit.com/prefs/apps".into(), config::REDDIT_APPS_URL.into()));
+    for f in config::api_fields(current.as_ref()) {
+        form.fields.push(
+            Field::new(f.key, f.label)
+                .value(&f.value)
+                .placeholder(&f.placeholder)
+                .help(f.help)
+                .kind(if f.url { Kind::Url } else { Kind::Text })
+                .max_len(f.max_len),
+        );
+    }
+    let validate = |v: &Values| {
+        config::from_values(|k| v.get(k).cloned().unwrap_or_default())
+            .map(|_| ())
+            .map_err(|e| e.into_iter().map(|e| (e.field.to_string(), e.message)).collect())
+    };
+    let v = run_phone_form(form, validate)?;
+    config::from_values(|k| v.get(k).cloned().unwrap_or_default()).map_err(|_| anyhow!("validated on the phone"))
 }
