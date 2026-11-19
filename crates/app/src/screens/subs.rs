@@ -185,6 +185,15 @@ impl Machine<RdHost> for SubsScreen {
         if let Some(a) = common::press_commit_as_activate(ev, cx, |_| true) {
             return self.step(&a, cx, fx);
         }
+        if let Some(dy) = common::wheel_dy(ev) {
+            if self.flow.glide(dy) {
+                if let Some(j) = self.flow.focused(cx).and_then(|i| self.flow.keep_in_view(i)) {
+                    self.focus_req.set(Some(self.flow.elem(j)));
+                }
+                fx.invalidate(plx_machine::present::Provenance::Input);
+            }
+            return Handled::Yes;
+        }
         if let Some(e) = common::press_hold(ev, cx) {
             if let Some(r) = self.flow.index(e).and_then(|i| self.rows.borrow().get(i).cloned()) {
                 fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Sub(r.name)))));
@@ -430,6 +439,12 @@ impl Machine<RdHost> for InboxScreen {
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) -> Handled {
         if let Some(a) = common::press_commit_as_activate(ev, cx, |_| true) {
             return self.step(&a, cx, fx);
+        }
+        if let Some(dy) = common::wheel_dy(ev) {
+            if self.flow.glide(dy) {
+                fx.invalidate(plx_machine::present::Provenance::Input);
+            }
+            return Handled::Yes;
         }
         match ev {
             ScreenEvent::Mount => fx.push(Fx::App(RdFx::LoadInbox)),

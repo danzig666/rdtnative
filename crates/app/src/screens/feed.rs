@@ -98,6 +98,8 @@ pub struct FeedScreen {
     asked_more_at: Cell<usize>,
     /// Until the user moves focus, focus goes to the first post when posts arrive.
     auto_focus: Cell<bool>,
+    /// The post the two-pane preview shows, and since when (its fade-in).
+    preview_shown: std::cell::RefCell<(String, u32)>,
     state: State,
 }
 
@@ -157,6 +159,7 @@ impl FeedScreen {
             bar_rects: Default::default(),
             asked_more_at: Cell::new(usize::MAX),
             auto_focus: Cell::new(true),
+            preview_shown: Default::default(),
         };
         s.configure_flow(cx);
         s
@@ -615,6 +618,16 @@ impl Machine<RdHost> for FeedScreen {
         }
         if let Some(a) = common::press_commit_as_activate(ev, cx, |_| true) {
             return self.step(&a, cx, fx);
+        }
+        // The pointer edge glide: scroll by pixels, focus stays on a post in view.
+        if let Some(dy) = common::wheel_dy(ev) {
+            if self.flow.glide(dy) {
+                if let Some(j) = self.flow.focused(cx).and_then(|i| self.flow.keep_in_view(i)) {
+                    self.focus_req.set(Some(self.flow.elem(j)));
+                }
+                fx.invalidate(plx_machine::present::Provenance::Input);
+            }
+            return Handled::Yes;
         }
         // Holding OK on a post: its menu.
         if let Some(e) = common::press_hold(ev, cx) {
@@ -1095,7 +1108,14 @@ impl FeedScreen {
         let rad = 18.0;
         let with_sub = self.key.feed.sub().is_none();
         let show_scores = prefs.on("show_scores");
-        // Card ground and focus.
+        // Card ground and focus (easing in when focus lands on it).
+        let ft = if focused { self.flow.focus_t(cx.views.now_ms) } else { 0.0 };
+        let r = if focused && matches!(self.layout, Layout::Cards | Layout::Large) {
+            let k = 0.018 * ft;
+            Rect::new(r.x - r.w * k / 2.0, r.y - r.h * k / 2.0, r.w * (1.0 + k), r.h * (1.0 + k))
+        } else {
+            r
+        };
         if focused {
             p.shadow(r, rad, 34.0, 10.0, [0.0, 0.0, 0.0, 0.6]);
             ui::fill(p, r, rad, ui::surface(0.17));
@@ -1279,10 +1299,12 @@ impl FeedScreen {
             }
         }
         if focused {
+            let acc = ui::with_alpha(ui::accent(), 0.35 + 0.65 * ft);
             if matches!(self.layout, Layout::Dense | Layout::Split) {
-                ui::fill(p, Rect::new(r.x, r.y + 8.0, 6.0, r.h - 16.0), 3.0, ui::accent());
+                let h = (r.h - 16.0) * (0.4 + 0.6 * ft);
+                ui::fill(p, Rect::new(r.x, r.y + (r.h - h) / 2.0, 6.0, h), 3.0, acc);
             } else {
-                p.rring(r, rad, 4.0, ui::accent());
+                p.rring(r, rad, 4.0, acc);
             }
         }
     }
@@ -1297,6 +1319,20 @@ impl FeedScreen {
         let x0 = LEFT + SPLIT_W + 40.0;
         let pane = Rect::new(x0, header_h() + 8.0, 1920.0 - LEFT - x0, 1080.0 - header_h() - 40.0);
         ui::fill(p, pane, 22.0, ui::surface(0.05));
+        // A new selection fades in (and slides a little), instead of popping.
+        let now = cx.views.now_ms;
+        {
+            let mut shown = self.preview_shown.borrow_mut();
+            if shown.0 != it.post.id {
+                *shown = (it.post.id.clone(), now);
+            }
+        }
+        let t = if crate::flow::smooth() { now.wrapping_sub(self.preview_shown.borrow().1) as f32 / 180.0 } else { 1.0 };
+        if t < 1.0 {
+            ui::animating();
+        }
+        let a = ui::ease_out(t);
+        let p = p.alpha(a).translate(0.0, (1.0 - a) * 14.0);
         let _scope = plx_ui::screen::ClipScope::open_in(p, pane);
         let pad = 26.0;
         let (x, w) = (pane.x + pad, pane.w - 2.0 * pad);
@@ -1494,7 +1530,7 @@ impl Screen<RdHost> for FeedScreen {
             let focus = self.flow.focused(cx);
             let range = self.flow.visible();
             {
-                let _scope = plx_ui::screen::ClipScope::open_in(p, Rect::new(0.0, header_h() - 20.0, 1920.0, 1100.0 - header_h()));
+                let _scope = plx_ui::screen::ClipScope::open_in(p, Rect::new(0.0, header_h() - 2.0, 1920.0, 1082.0 - header_h()));
                 // The focused card last, so its shadow and ring lie over its neighbours.
                 for i in range.clone() {
                     if Some(i) == focus {

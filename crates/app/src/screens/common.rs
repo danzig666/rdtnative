@@ -56,6 +56,14 @@ pub fn color_key(ev: &ScreenEvent<RdHost>) -> Option<Color> {
     })
 }
 
+/// A smooth wheel step (the pointer edge glide): rows, > 0 toward the top.
+pub fn wheel_dy(ev: &ScreenEvent<RdHost>) -> Option<f32> {
+    match ev {
+        ScreenEvent::Input(InputEvent { kind: InputKind::Wheel { dy }, .. }) => Some(*dy),
+        _ => None,
+    }
+}
+
 /// BACK went down.
 pub fn back_down(ev: &ScreenEvent<RdHost>) -> bool {
     matches!(ev, ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Back, edge: Edge::Down, .. }, .. }))
@@ -75,7 +83,17 @@ pub fn logo(p: Painter, x: f32, y: f32) {
 
 /// A transient message at the bottom of the screen.
 pub fn toast(p: Painter, m: &dyn plx_machine::machine::Measure, cx: &Cx<'_, RdHost>) {
-    let Some((msg, _)) = &cx.views.store.toast else { return };
+    let Some((msg, until)) = &cx.views.store.toast else { return };
+    let now = cx.views.now_ms;
+    let shown = now.wrapping_sub(until.wrapping_sub(3500)) as f32;
+    let left = until.wrapping_sub(now) as f32;
+    let a = ui::ease_out(shown / 220.0).min(ui::ease_out(left / 320.0)).clamp(0.0, 1.0);
+    if a < 1.0 {
+        ui::animating();
+    }
+    let p = p.alpha(a);
+    let rise = (1.0 - a) * 24.0;
+    let p = p.translate(0.0, rise);
     let msg = crate::i18n::tr(msg);
     let size = ui::sz(28);
     let w = (ui::text_width(m, msg, size, false) + 80.0).min(1800.0);

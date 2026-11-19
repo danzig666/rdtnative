@@ -429,6 +429,18 @@ impl Machine<RdHost> for PostScreen {
         if let Some(a) = common::press_commit_as_activate(ev, cx, |_| true) {
             return self.step(&a, cx, fx);
         }
+        // The pointer edge glide: the pane under the pointer scrolls by pixels.
+        if let Some(dy) = common::wheel_dy(ev) {
+            let (x, _) = ui::pointer();
+            let flow = if self.left.contains_x(x) && !self.right.contains_x(x) { &self.left } else { &self.right };
+            if flow.glide(dy) {
+                if let Some(j) = flow.focused(cx).and_then(|i| flow.keep_in_view(i)) {
+                    self.focus_req.set(Some(flow.elem(j)));
+                }
+                fx.invalidate(plx_machine::present::Provenance::Input);
+            }
+            return Handled::Yes;
+        }
         if let Some(e) = common::press_hold(ev, cx) {
             if let Some(i) = self.right.index(e) {
                 if let Some(CItem::Comment { name, .. }) = self.comment_at(i) {
@@ -818,8 +830,9 @@ impl PostScreen {
         }
         let card = Rect::new(x0, r.y, r.x + r.w - x0, r.h);
         if focused {
-            ui::fill(p, card, 14.0, ui::surface(0.14));
-            p.rring(card, 14.0, 3.0, ui::with_alpha(ui::accent(), 0.9));
+            let t = self.right.focus_t(cx.views.now_ms);
+            ui::fill(p, card, 14.0, ui::surface(0.05 + 0.09 * t));
+            p.rring(card, 14.0, 3.0, ui::with_alpha(ui::accent(), 0.25 + 0.65 * t));
         } else {
             ui::fill(p, card, 14.0, ui::surface(0.05));
         }

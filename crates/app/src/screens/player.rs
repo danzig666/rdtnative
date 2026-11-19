@@ -126,7 +126,13 @@ impl Screen<RdHost> for PlayerScreen {
         let st = &cx.views.store.play;
         let now = cx.views.now_ms;
         let paused = matches!(st.phase, Phase::Paused | Phase::Ended);
-        let hud = paused || now.wrapping_sub(self.shown_at) < HUD_MS || !matches!(st.phase, Phase::Playing);
+        let since = now.wrapping_sub(self.shown_at);
+        let fade = if paused || !matches!(st.phase, Phase::Playing) { 1.0 } else { 1.0 - ui::ease_out((since as f32 - HUD_MS as f32) / 450.0).max(0.0) };
+        let hud = fade > 0.01;
+        if hud && fade < 1.0 {
+            ui::animating();
+        }
+        let p = p.alpha(fade.clamp(0.0, 1.0));
         match &st.phase {
             Phase::Loading | Phase::Idle => ui::spinner(p, now, 960.0, 540.0),
             Phase::Failed(e) => {

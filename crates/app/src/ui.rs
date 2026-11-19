@@ -146,6 +146,30 @@ pub fn take_animating() -> bool {
     ANIMATING.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The pointer's last position (for screens that glide the pane under it).
+static POINTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn set_pointer(x: f32, y: f32) {
+    POINTER.store(((x.to_bits() as u64) << 32) | y.to_bits() as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn pointer() -> (f32, f32) {
+    let v = POINTER.load(std::sync::atomic::Ordering::Relaxed);
+    (f32::from_bits((v >> 32) as u32), f32::from_bits(v as u32))
+}
+
+/// Screens whose lists glide smoothly under a pointer resting at the top or bottom edge (others
+/// step their rows). Not while a drop-down or menu is open over them.
+pub fn glides(screen: Option<&str>) -> bool {
+    !menu_open() && matches!(screen, Some("feed" | "post" | "subs" | "inbox"))
+}
+
+/// Eases `t` (0..1) out: quick start, soft landing.
+pub fn ease_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t)
+}
+
 /// Option menus open over a page: the wheel / pointer edges step their rows.
 pub static MENUS_OPEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 

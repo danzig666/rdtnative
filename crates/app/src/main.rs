@@ -309,7 +309,11 @@ fn main() {
             // rest, faster nearer the very edge (plx-native's edge glide, via ytnative).
             {
                 const V_BAND: f32 = 48.0;
-                let v_side = pointer_at.filter(|_| !mouse_down).and_then(|(_, y)| {
+                let top = d.top_screen().map(|s| s.name());
+                // Full-screen media (the video, the picture viewer) takes no edge scrolling: there
+                // Up/Down mean seek and caption.
+                let full_screen = matches!(top, Some("player" | "viewer"));
+                let v_side = pointer_at.filter(|_| !mouse_down && !full_screen).and_then(|(_, y)| {
                     if y < V_BAND {
                         Some((1i8, y, V_BAND))
                     } else if y >= 1080.0 - V_BAND {
@@ -320,12 +324,22 @@ fn main() {
                 });
                 let speed = EDGE_SPEED.load(std::sync::atomic::Ordering::Relaxed) as f32;
                 let v_side = v_side.filter(|_| speed > 0.0);
-                if let Some(dir) = edge_v.step(v_side, now, speed.max(1.0)) {
+                if let Some((x, y)) = pointer_at {
+                    ui::set_pointer(x, y);
+                }
+                if ui::glides(top) {
+                    // Scrolling pages glide by pixels (eased in, faster nearer the edge), as
+                    // ytnative's pages do; the screen keeps focus on what stays in view.
+                    if let Some((dir, share, dt)) = edge_v.frame(v_side, now) {
+                        inputs.push(input::wheel_event(dir as f32 * speed * 0.6 * share * dt, tick));
+                    }
+                } else if let Some(dir) = edge_v.step(v_side, now, speed.max(1.0)) {
                     inputs.extend(input::wheel(dir as i32, tick));
                 }
             }
-            // Idle pointer: hide it after a few seconds without motion.
-            if !cursor_hidden && !mouse_down && now.wrapping_sub(cursor_motion_at) > 5000 {
+            // Idle pointer: hide it after a few seconds without motion (sooner over a video).
+            let idle_ms = if d.top_screen().map(|s| s.name()) == Some("player") { 3000 } else { 5000 };
+            if !cursor_hidden && !mouse_down && now.wrapping_sub(cursor_motion_at) > idle_ms {
                 hide_cursor();
                 cursor_hidden = true;
                 pointer_at = None;

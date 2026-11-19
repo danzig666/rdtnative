@@ -32,6 +32,8 @@ pub struct Flow {
     content_h: Cell<f32>,
     last_ms: Cell<u32>,
     last_focus: Cell<Option<usize>>,
+    /// When focus last landed on an item (its ease-in).
+    focus_at: Cell<u32>,
 }
 
 pub fn smooth() -> bool {
@@ -58,6 +60,7 @@ impl Flow {
             content_h: Cell::new(0.0),
             last_ms: Cell::new(0),
             last_focus: Cell::new(None),
+            focus_at: Cell::new(0),
         }
     }
 
@@ -174,6 +177,54 @@ impl Flow {
         crate::ui::animating();
     }
 
+    /// How far the focused item's ease-in is (0..1), for its highlight.
+    pub fn focus_t(&self, now_ms: u32) -> f32 {
+        if !smooth() {
+            return 1.0;
+        }
+        let t = now_ms.wrapping_sub(self.focus_at.get()) as f32 / 160.0;
+        if t < 1.0 {
+            crate::ui::animating();
+        }
+        crate::ui::ease_out(t)
+    }
+
+    /// Glides the content by `rows` (a wheel or the pointer edge; > 0 moves toward the top), at
+    /// once and without easing (the input is already smooth). Returns whether it moved.
+    pub fn glide(&self, rows: f32) -> bool {
+        let row_px = 140.0;
+        let cur = self.target.get();
+        let t = (cur - rows * row_px).clamp(0.0, self.max_scroll());
+        if (t - cur).abs() < 0.01 {
+            return false;
+        }
+        self.target.set(t);
+        self.scroll.set(t);
+        crate::ui::animating();
+        true
+    }
+
+    /// The item to focus after a glide: `i` itself while it is still mostly in view, else the
+    /// nearest item that is.
+    pub fn keep_in_view(&self, i: usize) -> Option<usize> {
+        let boxes = self.boxes.borrow();
+        let (top, bot) = (self.scroll.get(), self.scroll.get() + self.rect.h);
+        let visible = |b: &Rect| b.y + b.h.min(self.rect.h) * 0.5 >= top && b.y + b.h.min(self.rect.h) * 0.5 <= bot;
+        if boxes.get(i).is_some_and(visible) {
+            return None;
+        }
+        let up = boxes.get(i).is_some_and(|b| b.y < top);
+        if up {
+            boxes.iter().position(visible)
+        } else {
+            boxes.iter().rposition(visible)
+        }
+    }
+
+    pub fn contains_x(&self, x: f32) -> bool {
+        x >= self.rect.x - 30.0 && x <= self.rect.x + self.rect.w + 30.0
+    }
+
     pub fn elem(&self, i: usize) -> u32 {
         self.base + i as u32
     }
@@ -192,6 +243,9 @@ impl Flow {
 
     /// Focus moved to `i`: keys reveal it; the pointer does not move the page under itself.
     pub fn on_focus(&self, i: usize, by_pointer: bool) {
+        if self.last_focus.get() != Some(i) {
+            self.focus_at.set(self.last_ms.get());
+        }
         self.last_focus.set(Some(i));
         if !by_pointer {
             self.reveal(i);
