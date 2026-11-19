@@ -1387,8 +1387,13 @@ impl FeedScreen {
             _ => None,
         });
         *self.preview_media.borrow_mut() = None;
+        // A picture or video post shows its media in the whole pane and no comments (they would
+        // shrink it when they arrive); link and text posts keep their top comments.
+        let media_post = pic.is_some()
+            && Self::thumbs_on(cx)
+            && matches!(it.media, Media::Image(_) | Media::Gallery(_) | Media::Video(_) | Media::Imgur(_) | Media::YouTube { .. });
         let has_comments = cx.views.store.thread(&it.post.id).is_some_and(|t| !t.tree.is_empty());
-        let max_media = if has_comments { (bottom - y) * 0.55 } else { bottom - y };
+        let max_media = if has_comments && !media_post { (bottom - y) * 0.55 } else { bottom - y };
         if let (Some((url, pw, ph)), true) = (pic, Self::thumbs_on(cx)) {
             let h = if pw > 0 && ph > 0 { (w * ph as f32 / pw as f32).min(max_media) } else { max_media.min(480.0) };
             let r = Rect::new(x, y, w, h.max(120.0));
@@ -1433,6 +1438,9 @@ impl FeedScreen {
         } else if let Media::Link { url, .. } = &it.media {
             ui::text_cut(p, m, url, x, y, w, ui::sz(21), ui::accent(), ui::ALIGN_LEFT, false);
             y += ui::sz(21) as f32 * 1.6;
+        }
+        if media_post {
+            return;
         }
         // Top comments.
         let Some(t) = cx.views.store.thread(&it.post.id) else {
