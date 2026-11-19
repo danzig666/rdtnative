@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/rd-core", "crates/rd-phone", "crates/rd-spike"]
+members = [
+    "crates/rd-core", "crates/rd-phone", "crates/rd-spike", "crates/app", "xtask",
+    # plx-native UI core (GPL-3.0-or-later), vendored via ytnative from github.com/GLinnik21/plx-native @ 31e6f24
+    "vendor/plx/rust-modules/base", "vendor/plx/rust-modules/machine", "vendor/plx/rust-modules/gfx",
+    "vendor/plx/rust-modules/platform", "vendor/plx/rust-modules/ui",
+]
+# `cargo test` / `cargo build` without -p: the host-buildable crates (the app needs the TV target
+# or the Windows simulator).
+default-members = ["crates/rd-core", "crates/rd-phone", "crates/rd-spike", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,11 +20,20 @@ repository = "https://github.com/danzig666/rdtnative"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+libc = "0.2"
 # Same HTTP stack as ytnative (rustls, blocking). Native roots are added so a corporate/proxy CA
 # in the system store works on a PC; the TV build uses the bundled webpki roots.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "rustls-tls-native-roots", "gzip"] }
 getrandom = "0.2"
 
+[workspace.lints.rust]
+# The vendored plx crates opt into workspace lints; keep them as warnings here.
+unexpected_cfgs = "allow"
+
 [profile.release]
 opt-level = "s"
 lto = true
+# The TV binary keeps line tables; `cargo xtask build` saves that as rdtnative.debug (for
+# `cargo xtask crash`) and ships a copy stripped with zig objcopy.
+strip = false
+debug = "line-tables-only"

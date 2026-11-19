@@ -18,11 +18,20 @@ so we copy **no code and no assets** from it, only knowledge: endpoints, link ru
 - **API settings entry** (client ID, redirect URI, user agent): typed on the TV or entered on a
   phone via a QR code, the same as RustCouch. Done in `rd-core::config` + `rd-phone`; the TV screen
   itself comes with the app shell (Phase 1/3).
-- **Phase 0 in progress:** `rd-core` (auth, session, rate limits, posts, comment trees + morechildren)
-  with 19 unit tests, the `rd-spike` CLI, the sign-in callback page (`site/callback.html`), and CI
-  (tests, clippy, ARM cross-build). The ARM build runs under emulation and reaches Reddit. It still
-  needs a real client ID run on a PC and the TV; see [docs/phase0.md](docs/phase0.md).
+- **Phase 0:** done in code. `rd-core`, `rd-spike` and the callback page are built; the spike is
+  still to be run with a real client ID on a PC and on the TV (see [docs/phase0.md](docs/phase0.md)).
+- **Phase 1 (app shell):** done. `crates/app` is a slim app on ytnative's TV-proven platform
+  modules (boot, input, Wayland surface, dev remote, crash tracer) and the vendored plx UI core.
+  It has these screens:
+  - Home: a welcome screen until an API is set up, then the front page (Hot) as a list.
+  - Settings › Reddit API: three fields, an on-screen keyboard with live checks, and Enter on phone.
 
+  Build tooling:
+  - `cargo xtask build`/`ipk` produce the TV package on Linux or Windows.
+  - CI builds the IPK.
+  - A **Linux simulator** (`--features sim`, Xvfb-friendly) joins ytnative's Windows one, so the UI
+    can be checked and screenshotted without a TV.
+  - Not yet run on a real TV.
 ---
 
 ## 1. Feasibility in short

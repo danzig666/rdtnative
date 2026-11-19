@@ -1,7 +1,22 @@
+# Tests, the TV cross-build + IPK, and the Linux simulator build on every push / pull request.
+#
+# The TV build links against stub libraries generated from ci/symbols/*.txt (tools/gen-stubs.py,
+# run by crates/app/build.rs), so no LG binary is needed here (the same approach as ytnative).
 name: ci
+
 on:
   push:
+    branches: ["**"]
+    tags-ignore: ["**"]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -10,16 +25,46 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-          targets: armv7-unknown-linux-gnueabi
+      - uses: Swatinem/rust-cache@v2
+      - name: Simulator libraries (SDL2, SDL2_ttf, GL)
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libgl-dev
+      - name: Core tests (rd-core, rd-phone, rd-spike, xtask)
+        run: cargo test
+      - name: App tests (built for the Linux simulator)
+        run: cargo test -p rdtnative-app --features sim
+      - name: Clippy (our crates)
+        run: cargo clippy -p rd-core -p rd-phone -p rd-spike --all-targets -- -D warnings
+      - name: Simulator build
+        run: cargo build -p rdtnative-app --features sim
+
+  tv-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install ziglang==0.13.0
-      - run: cargo test --workspace
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Cross-build the spike for the TV
+      - name: zig (via the ziglang wheel, same version as ytnative)
+        run: python -m pip install ziglang==0.13.0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-gnueabi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: armv7
+      - name: Cross-build (stub-only link) + DT_NEEDED check + IPK
+        run: cargo xtask ipk
+      - name: Crash symbolizer self-test
+        run: cargo xtask crash --selftest
+      - name: rd-spike for the TV
         run: tools/build-tv.sh -p rd-spike
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rdtnative-ci-ipk
+          path: target/ipk/*.ipk
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: rd-spike-armv7
           path: target/armv7-unknown-linux-gnueabi/release/rd-spike
+          retention-days: 14

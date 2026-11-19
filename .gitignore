@@ -2,3 +2,14 @@
 # Live API output and local secrets from the Phase 0 spike: never commit.
 /spike-out/
 .rdt-spike.json
+.tv-host
+*.ipk
+reddit.json
+
+# TV libraries pulled by `cargo xtask pull-sysroot` / firmware snapshots (LG binaries, never commit)
+/sysroot
+/sysroots
+# Windows simulator third-party libraries (tools/fetch-sim-deps.ps1; never committed)
+/third_party/win/
+# local Claude Code settings
+/.claude/

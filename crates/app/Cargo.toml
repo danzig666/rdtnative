@@ -1,0 +1,36 @@
+[package]
+name = "rdtnative-app"
+description = "rdtnative: native Reddit client for LG webOS (app shell on the plx-native UI core)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rdtnative"
+path = "src/main.rs"
+
+[features]
+default = []
+# Desktop simulator (Windows): turns on plx-native's `hostsim` behaviour in the vendored crates
+# (desktop GL shader preamble + VAO, steerable paths, no webOS bus). Never set for the TV build.
+sim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_gfx/hostsim", "plx_platform/hostsim", "dep:image"]
+
+[dependencies]
+libc.workspace = true
+plx_base = { path = "../../vendor/plx/rust-modules/base" }
+plx_machine = { path = "../../vendor/plx/rust-modules/machine" }
+plx_gfx = { path = "../../vendor/plx/rust-modules/gfx" }
+plx_platform = { path = "../../vendor/plx/rust-modules/platform" }
+plx_ui = { path = "../../vendor/plx/rust-modules/ui" }
+rd-core = { path = "../rd-core" }
+rd-phone = { path = "../rd-phone" }
+anyhow.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+reqwest.workspace = true
+
+# Simulator only: PNG screenshots (same crate/version the vendored gfx layer decodes with).
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[build-dependencies]
+cc = "1"

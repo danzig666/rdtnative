@@ -1,0 +1,14 @@
+{
+  "id": "io.github.danzig666.rdtnative",
+  "version": "0.1.0",
+  "vendor": "danzig666",
+  "type": "native",
+  "main": "rdtnative",
+  "title": "rdtnative",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "transparent": true,
+  "nativeLifeCycleInterfaceVersion": 2,
+  "requiredMemory": 200,
+  "iconColor": "#0B0B0C"
+}

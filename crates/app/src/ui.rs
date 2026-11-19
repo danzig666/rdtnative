@@ -1,0 +1,694 @@
+#![allow(dead_code)] // shared helper set from ytnative; screens use a growing part of it
+//! Small UI building blocks shared by the screens: text drawing, the vertical list (menus,
+//! settings) that plugs into plx's focus engine, choice boxes and line icons. Adapted from
+//! ytnative's `ui.rs` (GPL-3.0-or-later).
+
+use crate::host::RdHost;
+use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId};
+use plx_ui::screen::{AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
+use plx_ui::{Painter, Rect};
+use std::ffi::CString;
+
+pub const ALIGN_LEFT: i32 = 0;
+pub const ALIGN_CENTER: i32 = 1;
+pub const ALIGN_RIGHT: i32 = 2;
+
+pub const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+pub const DIM: [f32; 4] = [1.0, 1.0, 1.0, 0.62];
+pub const FAINT: [f32; 4] = [1.0, 1.0, 1.0, 0.35];
+/// The accent colour (default: an orange-red), chosen in settings.
+static ACCENT_IDX: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+const ACCENTS: [[f32; 4]; 5] = [
+    [1.0, 0.271, 0.0, 1.0],
+    [0.16, 0.47, 1.0, 1.0],
+    [0.12, 0.72, 0.38, 1.0],
+    [0.56, 0.32, 0.96, 1.0],
+    [1.0, 0.55, 0.1, 1.0],
+];
+
+pub fn accent() -> [f32; 4] {
+    ACCENTS[ACCENT_IDX.load(std::sync::atomic::Ordering::Relaxed) as usize % ACCENTS.len()]
+}
+
+static ANIMATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A time-driven animation (marquee, sliding sidebar, comments panel) needs another frame.
+pub fn animating() {
+    ANIMATING.store(true, std::sync::atomic::Ordering::Relaxed);
+    plx_machine::idle::note_motion();
+}
+
+/// Taken by the main loop once per frame: present the next frame too.
+pub fn take_animating() -> bool {
+    ANIMATING.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Option menus open over a page: the wheel / pointer edges step their rows.
+pub static MENUS_OPEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+pub fn spinner(p: Painter, now_ms: u32, x: f32, y: f32) {
+    let n = 10;
+    let head = (now_ms / 80) as usize % n;
+    for i in 0..n {
+        let a = i as f32 / n as f32 * std::f32::consts::TAU;
+        let (dx, dy) = (x + 40.0 * a.sin(), y - 40.0 * a.cos());
+        let age = (head + n - i) % n;
+        let alpha = 0.15 + 0.8 * (1.0 - age as f32 / n as f32);
+        fill(p, Rect::new(dx - 6.0, dy - 6.0, 12.0, 12.0), 6.0, [1.0, 1.0, 1.0, alpha]);
+    }
+    animating();
+}
+
+pub fn menu_open() -> bool {
+    MENUS_OPEN.load(std::sync::atomic::Ordering::Relaxed) > 0
+}
+
+static BLACK_BG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The app's ground: a dark slate (SmartTube draws its lists on black; a hair of lift keeps
+/// cards and panels readable on LCDs too).
+pub const GROUND: (f32, f32, f32) = (0.063, 0.066, 0.078);
+
+pub fn set_black_background(on: bool) {
+    BLACK_BG.store(on, std::sync::atomic::Ordering::Relaxed);
+    plx_gfx::gfx::tokens::set_clear_black(on);
+    plx_gfx::gfx::tokens::set_clear_app(GROUND);
+}
+
+/// The page background: the app's ground, or true black (OLED setting).
+pub fn bg_rgb() -> (f32, f32, f32) {
+    if BLACK_BG.load(std::sync::atomic::Ordering::Relaxed) {
+        (0.0, 0.0, 0.0)
+    } else {
+        GROUND
+    }
+}
+
+pub fn set_accent(name: &str) {
+    let i = match name {
+        "blue" => 1,
+        "green" => 2,
+        "purple" => 3,
+        "orange" => 4,
+        _ => 0,
+    };
+    ACCENT_IDX.store(i, std::sync::atomic::Ordering::Relaxed);
+}
+pub const PANEL: [f32; 4] = [0.06, 0.06, 0.08, 0.92];
+pub const ROW_FOCUS: [f32; 4] = [1.0, 1.0, 1.0, 0.16];
+pub const SCRIM: [f32; 4] = [0.0, 0.0, 0.0, 0.62];
+
+thread_local! {
+    /// Brightness of UI ink while it is drawn over HDR video (1 = normal).
+    static UI_DIM: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+
+/// While alive, [`text`], [`fill`] and [`icon::draw`] draw darker: the panel runs at HDR
+/// brightness, so the OSD and the comments over HDR video would glare otherwise.
+pub(crate) fn dimmed(col: [f32; 4]) -> [f32; 4] {
+    let k = UI_DIM.with(|d| d.get());
+    if k >= 1.0 {
+        return col;
+    }
+    if col[0].max(col[1]).max(col[2]) < 0.12 {
+        return [col[0], col[1], col[2], (col[3] * 1.3).min(1.0)];
+    }
+    [col[0] * k, col[1] * k, col[2] * k, col[3]]
+}
+
+/// Draws `s` with its top-left (or anchor edge per `align`) at x,y. Returns the text width.
+pub fn text(p: Painter, s: &str, x: f32, y: f32, size: i32, col: [f32; 4], align: i32, bold: bool) -> f32 {
+    let col = dimmed(col);
+    let s = crate::i18n::tr(s);
+    let Ok(c) = CString::new(s.replace('\0', "")) else { return 0.0 };
+    p.text(c.as_ptr(), x, y, size, col, align, bold as i32)
+}
+
+/// [`text`] without the translation lookup: for server and user content (titles, channel names,
+/// comments, captions, queries), which must be shown as it came even when it happens to equal one
+/// of the interface's strings.
+pub fn text_raw(p: Painter, s: &str, x: f32, y: f32, size: i32, col: [f32; 4], align: i32, bold: bool) -> f32 {
+    let col = dimmed(col);
+    let Ok(c) = CString::new(s.replace('\0', "")) else { return 0.0 };
+    p.text(c.as_ptr(), x, y, size, col, align, bold as i32)
+}
+
+/// How wide the soft end of a cut line is: text that does not fit dissolves over this width
+/// instead of ending in "…".
+pub const CUT_FADE: f32 = 44.0;
+
+/// [`text_raw`] (left-aligned) dissolving at its ends: `lead` and `trail` are (from, to) in px
+/// from the string's left edge, the glyphs fading in over `lead` and out over `trail`.
+#[allow(clippy::too_many_arguments)]
+pub fn text_fade_raw(p: Painter, s: &str, x: f32, y: f32, size: i32, col: [f32; 4], bold: bool, lead: Option<(f32, f32)>, trail: Option<(f32, f32)>) -> f32 {
+    let col = dimmed(col);
+    let Ok(c) = CString::new(s.replace('\0', "")) else { return 0.0 };
+    p.text_fade_edges(c.as_ptr(), x, y, size, col, bold as i32, lead, trail)
+}
+
+/// The width of `s` as drawn.
+pub fn text_width(m: &dyn plx_machine::machine::Measure, s: &str, size: i32, bold: bool) -> f32 {
+    CString::new(s.replace('\0', "")).map_or(0.0, |c| m.width(&c, size, bold))
+}
+
+/// `s` on one line of at most `w` px: drawn as it is when it fits; otherwise cut at `w` with its
+/// end dissolving ([`CUT_FADE`]), never ending in "…". Centred or right-aligned text that does
+/// not fit fills its room from the left. Returns the width drawn.
+#[allow(clippy::too_many_arguments)]
+pub fn text_cut(p: Painter, m: &dyn plx_machine::machine::Measure, s: &str, x: f32, y: f32, w: f32, size: i32, col: [f32; 4], align: i32, bold: bool) -> f32 {
+    let tw = text_width(m, s, size, bold);
+    if tw <= w {
+        return text_raw(p, s, x, y, size, col, align, bold);
+    }
+    let left = match align {
+        ALIGN_CENTER => x - w / 2.0,
+        ALIGN_RIGHT => x - w,
+        _ => x,
+    };
+    let fade = CUT_FADE.min(w / 3.0);
+    text_fade_raw(p, s, left, y, size, col, bold, None, Some((w - fade, w)));
+    w
+}
+
+/// [`text_cut`] showing the END of `s` instead (a line being typed): cut at its left edge, the
+/// start dissolving in. `x` is the left of the room.
+#[allow(clippy::too_many_arguments)]
+pub fn text_cut_start(p: Painter, m: &dyn plx_machine::machine::Measure, s: &str, x: f32, y: f32, w: f32, size: i32, col: [f32; 4], bold: bool) -> f32 {
+    let tw = text_width(m, s, size, bold);
+    if tw <= w {
+        return text_raw(p, s, x, y, size, col, ALIGN_LEFT, bold);
+    }
+    let off = tw - w;
+    let fade = CUT_FADE.min(w / 3.0);
+    text_fade_raw(p, s, x - off, y, size, col, bold, Some((off, off + fade)), None);
+    w
+}
+
+/// The longest start of `s` (a byte length at a character boundary) no wider than `w` px.
+pub fn fit_prefix(m: &dyn plx_machine::machine::Measure, s: &str, w: f32, size: i32, bold: bool) -> usize {
+    let ends: Vec<usize> = s.char_indices().map(|(i, c)| i + c.len_utf8()).collect();
+    let (mut lo, mut hi) = (0usize, ends.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if text_width(m, &s[..ends[mid - 1]], size, bold) <= w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo == 0 { 0 } else { ends[lo - 1] }
+}
+
+/// `s` word-wrapped into at most `max` lines of `w` px. The last line is the whole rest (draw it
+/// with [`text_cut`], which fades it out where it is cut); a word wider than a line is broken.
+pub fn wrap_lines(m: &dyn plx_machine::machine::Measure, s: &str, w: f32, size: i32, bold: bool, max: usize) -> Vec<String> {
+    let width = |t: &str| CString::new(t).map_or(0.0, |c| m.width(&c, size, bold));
+    let mut lines: Vec<String> = Vec::new();
+    let mut rest = s.trim();
+    while !rest.is_empty() && lines.len() < max {
+        if lines.len() + 1 == max || width(rest) <= w {
+            lines.push(rest.to_string());
+            break;
+        }
+        let mut line = String::new();
+        let mut used = 0;
+        for word in rest.split_inclusive(' ') {
+            let trial = format!("{line}{word}");
+            if !line.is_empty() && width(trial.trim_end()) > w {
+                break;
+            }
+            line = trial;
+            used += word.len();
+        }
+        if line.trim().is_empty() || width(line.trim_end()) > w {
+            // One word wider than the line: as much of it as fits, then the rest on the next.
+            let n = fit_prefix(m, rest, w, size, bold);
+            if n == 0 {
+                lines.push(rest.to_string());
+                break;
+            }
+            lines.push(rest[..n].to_string());
+            rest = rest[n..].trim_start();
+            continue;
+        }
+        lines.push(line.trim_end().to_string());
+        rest = rest[used..].trim_start();
+    }
+    lines
+}
+
+/// A whole number written out in the interface language's digit grouping ("1,234,567" in
+/// English, "1 234 567" in Hungarian): counts are never shortened to "1.2K".
+pub fn full_count(n: u64) -> String {
+    let sep = match crate::i18n::current() {
+        "de" | "es" => ".",
+        "hu" | "fr" | "ru" => "\u{202F}",
+        _ => ",",
+    };
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push_str(sep);
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// [`text`] in an extra face (1..=8, the subtitle fonts: 1-4 bold, 5-8 regular).
+pub fn text_face(p: Painter, s: &str, x: f32, y: f32, size: i32, col: [f32; 4], align: i32, face: i32) -> f32 {
+    let col = dimmed(col);
+    let Ok(c) = CString::new(s.replace('\0', "")) else { return 0.0 };
+    p.text(c.as_ptr(), x, y, size, col, align, (face.clamp(0, 8) << 4) | (face <= 4) as i32)
+}
+
+pub fn fill(p: Painter, r: Rect, rad: f32, col: [f32; 4]) {
+    let col = dimmed(col);
+    p.rect(r, rad, col, col, 0.0);
+}
+
+pub fn fmt_time(ms: u64) -> String {
+    let s = ms / 1000;
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
+/// One pointer stop: hovering focuses it, a click presses it (OK).
+pub fn stop(f: &mut plx_ui::screen::DrawFrame<'_, '_, RdHost>, key: FocusKey<u32>, rect: Rect, clip: Rect) {
+    use plx_ui::screen::{Activate, Hover, Stop};
+    let p = f.painter;
+    f.stop(p, Stop { key, rect, rest_rect: rect, clip, hover: Hover::Focus, activate: Activate::Press });
+}
+
+/// A page header's ground: the page background over `r`, fading out over its last 28 px, so
+/// content scrolled up under the title is hidden instead of drawn over it.
+pub fn header_band(p: Painter, r: Rect) {
+    let c = bg_rgb();
+    let bg = [c.0, c.1, c.2, 1.0];
+    let fade = 28.0;
+    p.rect(Rect::new(r.x, r.y, r.w, r.h - fade), 0.0, bg, bg, 0.0);
+    p.rect(Rect::new(r.x, r.y + r.h - fade, r.w, fade), 0.0, bg, [c.0, c.1, c.2, 0.0], 0.0);
+}
+
+/// One row of a vertical list.
+#[derive(Clone, Debug, Default)]
+pub struct Row {
+    pub label: String,
+    pub value: Option<String>,
+    /// Marks the active choice (current section, selected option).
+    pub active: bool,
+    /// An icon before the label (the sidebar).
+    pub icon: Option<icon::Kind>,
+    /// Label and value are drawn as given (server / user content, or already translated).
+    pub raw: bool,
+}
+
+impl Row {
+    pub fn new(label: impl Into<String>) -> Row {
+        Row { label: label.into(), ..Default::default() }
+    }
+    pub fn value(mut self, v: impl Into<String>) -> Row {
+        self.value = Some(v.into());
+        self
+    }
+    pub fn active(mut self, on: bool) -> Row {
+        self.active = on;
+        self
+    }
+    pub fn icon(mut self, k: icon::Kind) -> Row {
+        self.icon = Some(k);
+        self
+    }
+    /// Not looked up in the translations (see [`Row::raw`]).
+    pub fn raw(mut self) -> Row {
+        self.raw = true;
+        self
+    }
+}
+
+/// A focusable vertical list. Elements are `base + index`.
+#[derive(Clone, Copy, Debug)]
+pub struct VList {
+    pub entry: EntryId,
+    pub group: GroupId,
+    pub base: u32,
+    pub rect: Rect,
+    pub row_h: f32,
+    pub text_size: i32,
+}
+
+impl VList {
+    pub fn rows_visible(&self) -> usize {
+        (self.rect.h / self.row_h).floor().max(1.0) as usize
+    }
+    pub fn elem(&self, i: usize) -> u32 {
+        self.base + i as u32
+    }
+    pub fn index(&self, e: u32, len: usize) -> Option<usize> {
+        e.checked_sub(self.base).map(|i| i as usize).filter(|&i| i < len)
+    }
+    pub fn key(&self, i: usize) -> FocusKey<u32> {
+        FocusKey { entry: self.entry, elem: self.elem(i) }
+    }
+    /// First visible row so that `focus` stays on screen.
+    pub fn top_for(&self, focus: Option<usize>, len: usize) -> usize {
+        let vis = self.rows_visible();
+        match focus {
+            Some(f) if f >= vis => (f + 1 - vis).min(len.saturating_sub(vis)),
+            _ => 0,
+        }
+    }
+    pub fn row_rect(&self, i: usize, top: usize) -> Rect {
+        Rect::new(self.rect.x, self.rect.y + (i as f32 - top as f32) * self.row_h, self.rect.w, self.row_h - 6.0)
+    }
+    pub fn spec(&self, len: usize) -> GroupSpec {
+        GroupSpec {
+            id: self.group,
+            kind: GroupKind::Column,
+            seat: Seat::Remembered,
+            reachable: AxisMask::BOTH,
+            edge: [EdgeRule::Geometric; 4],
+            extent: self.rect,
+            len,
+            elem: ElemKind::Control,
+        }
+    }
+    pub fn place(&self, e: u32, len: usize, focus: Option<usize>) -> Option<Placed> {
+        let i = self.index(e, len)?;
+        let r = self.row_rect(i, self.top_for(focus, len));
+        Some(Placed { rect: r, rest_rect: r, clip: self.rect, index: Some(i as u32) })
+    }
+    /// [`place`](Self::place) with the list scrolled to `top` (a list scrolled by the wheel).
+    pub fn place_top(&self, e: u32, len: usize, top: usize) -> Option<Placed> {
+        let i = self.index(e, len)?;
+        let r = self.row_rect(i, top);
+        Some(Placed { rect: r, rest_rect: r, clip: self.rect, index: Some(i as u32) })
+    }
+    pub fn neighbour(&self, key: FocusKey<u32>, dir: Dir, len: usize) -> Step<u32> {
+        let Some(i) = self.index(key.elem, len) else { return Step::Edge };
+        match dir {
+            Dir::Up if i > 0 => Step::Move(self.key(i - 1)),
+            Dir::Down if i + 1 < len => Step::Move(self.key(i + 1)),
+            _ => Step::Edge,
+        }
+    }
+    pub fn focused(&self, cx: &Cx<'_, RdHost>, len: usize) -> Option<usize> {
+        cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| self.index(k.elem, len))
+    }
+    /// Registers the visible rows with the pointer hit map (Magic Remote hover / click).
+    pub fn stops(&self, f: &mut plx_ui::screen::DrawFrame<'_, '_, RdHost>, len: usize) {
+        let focus = self.focused(f.cx, len);
+        let top = self.top_for(focus, len);
+        for i in (top..len).take(self.rows_visible()) {
+            stop(f, FocusKey { entry: self.entry, elem: self.elem(i) }, self.row_rect(i, top), self.rect);
+        }
+    }
+
+    /// Draws the visible rows; a label (and value) too long for its row fades out where it is cut.
+    pub fn draw(&self, p: Painter, m: &dyn plx_machine::machine::Measure, rows: &[Row], focus: Option<usize>) {
+        let top = self.top_for(focus, rows.len());
+        let vis = self.rows_visible();
+        for (i, row) in rows.iter().enumerate().skip(top).take(vis) {
+            let r = self.row_rect(i, top);
+            let focused = focus == Some(i);
+            if focused {
+                fill(p, r, 12.0, ROW_FOCUS);
+            }
+            if row.active {
+                fill(p, Rect::new(r.x, r.y + 12.0, 6.0, r.h - 24.0), 3.0, accent());
+            }
+            let ty = r.y + (r.h - self.text_size as f32 * 1.3) / 2.0;
+            let col = if focused || row.active { WHITE } else { DIM };
+            let mut lx = r.x + 28.0;
+            if let Some(k) = row.icon {
+                let s = self.text_size as f32 * 1.15;
+                icon::draw(p, k, Rect::new(lx, r.y + (r.h - s) / 2.0, s, s), col, false);
+                lx += s + 20.0;
+            }
+            let bold = focused || row.active;
+            let tr = |s: &str| if row.raw { s.to_string() } else { crate::i18n::tr(s).to_string() };
+            let right = r.x + r.w - 24.0;
+            // The value keeps its natural width up to half the row; the label takes what is left.
+            let mut vw = 0.0;
+            if let Some(v) = &row.value {
+                let v = tr(v);
+                vw = text_width(m, &v, self.text_size, false).min((r.w - 56.0) / 2.0);
+                text_cut(p, m, &v, right, ty, vw, self.text_size, if focused { WHITE } else { DIM }, ALIGN_RIGHT, false);
+            }
+            let room = (right - lx - if vw > 0.0 { vw + 24.0 } else { 0.0 }).max(40.0);
+            text_cut(p, m, &tr(&row.label), lx, ty, room, self.text_size, col, ALIGN_LEFT, bold);
+        }
+        if top > 0 {
+            text(p, "\u{25B2}", self.rect.x + self.rect.w / 2.0, self.rect.y - 34.0, 22, FAINT, ALIGN_CENTER, false);
+        }
+        if top + vis < rows.len() {
+            text(p, "\u{25BC}", self.rect.x + self.rect.w / 2.0, self.rect.y + self.rect.h, 22, FAINT, ALIGN_CENTER, false);
+        }
+    }
+}
+
+/// A drop-down list of an option's values (a combo box): opens beside the option's row, the
+/// current value ticked; OK picks one, BACK closes. The screen routes focus to it while open.
+pub struct ChoiceBox {
+    /// The option row it belongs to.
+    pub row: usize,
+    /// Values as the option reports them (translated when drawn).
+    pub options: Vec<String>,
+    pub current: usize,
+    pub list: VList,
+    /// The values are content (audio track names): shown as given, not translated.
+    pub raw: bool,
+}
+
+pub const CHOICE_BASE: u32 = 0x7f00_0000;
+pub const CHOICE_GROUP: GroupId = GroupId(77);
+
+impl ChoiceBox {
+    /// `anchor`: the option row's rect; the box opens to its right edge, below it when there is
+    /// room, else above.
+    pub fn new(entry: EntryId, row: usize, options: Vec<String>, current: usize, anchor: Rect) -> ChoiceBox {
+        const ROW_H: f32 = 52.0;
+        let n = options.len().min(12);
+        let h = n as f32 * ROW_H + 16.0;
+        let w = 440.0;
+        let x = (anchor.x + anchor.w - w).clamp(20.0, 1900.0 - w);
+        let y = if anchor.y + anchor.h + h <= 1060.0 { anchor.y + anchor.h } else { (anchor.y - h).max(20.0) };
+        ChoiceBox {
+            row,
+            options,
+            current,
+            list: VList { entry, group: CHOICE_GROUP, base: CHOICE_BASE, rect: Rect::new(x + 8.0, y + 8.0, w - 16.0, h - 16.0), row_h: ROW_H, text_size: 26 },
+            raw: false,
+        }
+    }
+    /// Values shown as given (see [`ChoiceBox::raw`]).
+    pub fn raw(mut self, on: bool) -> ChoiceBox {
+        self.raw = on;
+        self
+    }
+    pub fn owns(&self, e: u32) -> bool {
+        self.list.index(e, self.options.len()).is_some()
+    }
+    pub fn draw(&self, f: &mut plx_ui::screen::DrawFrame<'_, '_, RdHost>) {
+        let p = f.painter;
+        let r = self.list.rect;
+        fill(p, Rect::new(r.x - 8.0, r.y - 8.0, r.w + 16.0, r.h + 16.0), 14.0, [0.13, 0.13, 0.16, 1.0]);
+        let rows: Vec<Row> = self
+            .options
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                let label = if self.raw { o.clone() } else { crate::i18n::tr(o).to_string() };
+                Row::new(label).value(if i == self.current { "\u{2713}" } else { "" }).active(i == self.current).raw()
+            })
+            .collect();
+        self.list.draw(p, f.measure, &rows, self.list.focused(f.cx, rows.len()));
+        self.list.stops(f, rows.len());
+    }
+}
+
+/// Line icons (shapes after Lucide, ISC licence), drawn through plx's SVG mask renderer and tinted.
+pub mod icon {
+    use plx_ui::{Painter, Rect};
+    const HEAD: &str = r##"<svg viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">"##;
+    const THUMB_UP: &str = r##"<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>"##;
+    const THUMB_DOWN: &str = r##"<path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>"##;
+    const CHAT: &str = r##"<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>"##;
+    const GEAR: &str = r##"<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>"##;
+
+    const PLAY: &str = r##"<path d="M6 3l14 9-14 9z"/>"##;
+    const PAUSE: &str = r##"<path d="M6 4h4v16H6z"/><path d="M14 4h4v16h-4z"/>"##;
+    const PREV: &str = r##"<path d="M19 20 9 12l10-8z"/><path d="M5 19V5"/>"##;
+    const NEXT: &str = r##"<path d="M5 4l10 8-10 8z"/><path d="M19 5v14"/>"##;
+    const REPEAT: &str = r##"<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>"##;
+    const REPEAT1: &str = r##"<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><path d="M11 10h1v4"/>"##;
+    const AUTOPLAY: &str = r##"<path d="M5 5l9 7-9 7z"/><path d="M14 5l9 7-9 7"/>"##;
+    const LIST_END: &str = r##"<path d="M16 12H3"/><path d="M16 6H3"/><path d="M10 18H3"/><path d="M21 6v10a2 2 0 0 1-2 2h-5"/><path d="m16 16-2 2 2 2"/>"##;
+    const SHUFFLE: &str = r##"<path d="m18 14 4 4-4 4"/><path d="m18 2 4 4-4 4"/><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/>"##;
+    const LIST_REVERSE: &str = r##"<path d="M3 6h10"/><path d="M3 12h10"/><path d="M3 18h10"/><path d="M19 20V4"/><path d="m15 8 4-4 4 4"/>"##;
+    const LEAVE: &str = r##"<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>"##;
+    const PAUSE_END: &str = r##"<circle cx="12" cy="12" r="10"/><path d="M10 15V9"/><path d="M14 15V9"/>"##;
+    const GAUGE: &str = r##"<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>"##;
+    const LIST_PLUS: &str = r##"<path d="M11 12H3"/><path d="M16 6H3"/><path d="M16 18H3"/><path d="M18 9v6"/><path d="M21 12h-6"/>"##;
+    const BELL: &str = r##"<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>"##;
+    const INFO: &str = r##"<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>"##;
+    const SHIELD: &str = r##"<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M10 9l5 3-5 3z"/>"##;
+    const SCREEN_OFF: &str = r##"<path d="M17 17H4a2 2 0 0 1-2-2V5c0-1.5 1-2 1-2"/><path d="M22 15V5a2 2 0 0 0-2-2H9"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="m2 2 20 20"/>"##;
+    const CLOCK: &str = r##"<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>"##;
+    const LIST: &str = r##"<path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/>"##;
+
+    const HOME: &str = r##"<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>"##;
+    const FLAME: &str = r##"<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>"##;
+    const SUBS: &str = r##"<path d="M4 7h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z"/><path d="M6 3h12"/><path d="M10 11l5 3-5 3z"/>"##;
+    const USERS: &str = r##"<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>"##;
+    const HISTORY: &str = r##"<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>"##;
+    const LIBRARY: &str = r##"<path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/>"##;
+    const MUSIC: &str = r##"<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>"##;
+    const GAMEPAD: &str = r##"<path d="M6 12h4"/><path d="M8 10v4"/><path d="M15 13h.01"/><path d="M18 11h.01"/><path d="M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/>"##;
+    const NEWS: &str = r##"<path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/>"##;
+    const MIC: &str = r##"<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>"##;
+    const LIVE: &str = r##"<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>"##;
+    const FILM: &str = r##"<path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/>"##;
+    const TROPHY: &str = r##"<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>"##;
+    const TRENDING: &str = r##"<path d="M22 7 13.5 15.5 8.5 10.5 2 17"/><path d="M16 7h6v6"/>"##;
+    const SEARCH: &str = r##"<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>"##;
+    const USER: &str = r##"<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>"##;
+    const STAR: &str = r##"<path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>"##;
+    const PHONE: &str = r##"<rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/>"##;
+    const CHECK: &str = r##"<path d="M20 6 9 17l-5-5"/>"##;
+    const KEY: &str = r##"<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>"##;
+    const FOLDER: &str = r##"<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>"##;
+
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    pub enum Kind {
+        ThumbUp,
+        ThumbDown,
+        Chat,
+        Gear,
+        Cc,
+        Play,
+        Pause,
+        Prev,
+        Next,
+        List,
+        Home,
+        Flame,
+        Subs,
+        Users,
+        History,
+        Library,
+        Music,
+        Gamepad,
+        News,
+        Mic,
+        Live,
+        Film,
+        Trophy,
+        Trending,
+        Search,
+        User,
+        Star,
+        Folder,
+        Repeat,
+        Repeat1,
+        Autoplay,
+        PauseEnd,
+        Gauge,
+        ListPlus,
+        Bell,
+        Info,
+        Shield,
+        ScreenOff,
+        Clock,
+        /// Playback mode "the list once": a list ending in a return arrow.
+        ListEnd,
+        /// Playback mode "shuffle": crossing arrows.
+        Shuffle,
+        /// Playback mode "reverse": a list with an upward arrow beside it.
+        ListReverse,
+        /// Playback mode "leave the player": an arrow out of a door.
+        Leave,
+        Phone,
+        Check,
+        Key,
+    }
+
+    fn svg(k: Kind, filled: bool) -> &'static str {
+        use std::sync::OnceLock;
+        static S: OnceLock<Vec<String>> = OnceLock::new();
+        let all = S.get_or_init(|| {
+            let mut v = Vec::new();
+            for body in [
+                THUMB_UP, THUMB_DOWN, CHAT, GEAR, PLAY, PAUSE, PREV, NEXT, LIST, HOME, FLAME, SUBS, USERS, HISTORY, LIBRARY, MUSIC, GAMEPAD,
+                NEWS, MIC, LIVE, FILM, TROPHY, TRENDING, SEARCH, USER, STAR, FOLDER, REPEAT, REPEAT1, AUTOPLAY, PAUSE_END, GAUGE,
+                LIST_PLUS, BELL, INFO, SHIELD, SCREEN_OFF, CLOCK, LIST_END, SHUFFLE, LIST_REVERSE, LEAVE, PHONE, CHECK, KEY,
+            ] {
+                v.push(format!("{HEAD}{body}</svg>"));
+                v.push(format!("{}{body}</svg>", HEAD.replace(r##"fill="none""##, r##"fill="#ffffff""##)));
+            }
+            v
+        });
+        let i = match k {
+            Kind::ThumbUp => 0,
+            Kind::ThumbDown => 2,
+            Kind::Chat => 4,
+            Kind::Gear | Kind::Cc => 6,
+            Kind::Play => 8,
+            Kind::Pause => 10,
+            Kind::Prev => 12,
+            Kind::Next => 14,
+            Kind::List => 16,
+            Kind::Home => 18,
+            Kind::Flame => 20,
+            Kind::Subs => 22,
+            Kind::Users => 24,
+            Kind::History => 26,
+            Kind::Library => 28,
+            Kind::Music => 30,
+            Kind::Gamepad => 32,
+            Kind::News => 34,
+            Kind::Mic => 36,
+            Kind::Live => 38,
+            Kind::Film => 40,
+            Kind::Trophy => 42,
+            Kind::Trending => 44,
+            Kind::Search => 46,
+            Kind::User => 48,
+            Kind::Star => 50,
+            Kind::Folder => 52,
+            Kind::Repeat => 54,
+            Kind::Repeat1 => 56,
+            Kind::Autoplay => 58,
+            Kind::PauseEnd => 60,
+            Kind::Gauge => 62,
+            Kind::ListPlus => 64,
+            Kind::Bell => 66,
+            Kind::Info => 68,
+            Kind::Shield => 70,
+            Kind::ScreenOff => 72,
+            Kind::Clock => 74,
+            Kind::ListEnd => 76,
+            Kind::Shuffle => 78,
+            Kind::ListReverse => 80,
+            Kind::Leave => 82,
+            Kind::Phone => 84,
+            Kind::Check => 86,
+            Kind::Key => 88,
+        };
+        &all[i + filled as usize]
+    }
+
+    /// Draws icon `k` in the square `r`, `filled` for an active state.
+    pub fn draw(p: Painter, k: Kind, r: Rect, tint: [f32; 4], filled: bool) {
+        let tint = super::dimmed(tint);
+        if k == Kind::Cc {
+            plx_ui::icons::draw(p, plx_ui::icons::Icon::Cc, r, tint);
+            return;
+        }
+        plx_ui::icons::draw_svg(p, plx_ui::icons::Svg::new(svg(k, filled)), r, tint);
+    }
+}
