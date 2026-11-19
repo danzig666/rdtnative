@@ -10,9 +10,8 @@ with no browser or Android runtime, built the same way as
 [ytnative](https://github.com/danzig666/ytnative): the UI core is vendored from
 [plx-native](https://github.com/GLinnik21/plx-native) and draws with OpenGL ES.
 
-Every user connects rdtnative to **their own Reddit app** (an "installed app" client ID). The
-client ID, redirect URI and user agent are typed with the remote, or entered on a phone by
-scanning a QR code (a one-time page on the home network).
+The API key (client ID), redirect URI and user agent are typed with the remote, or entered on a
+phone by scanning a QR code (a one-time page on the home network).
 
 > Not affiliated with Reddit or LG. Use at your own risk.
 
@@ -41,7 +40,7 @@ These are screenshots from the Windows simulator, which runs the same UI code as
   "continue this thread", OP / moderator / pinned marks, flairs; Left goes to the parent, Right to
   the next thread.
 - **Full screen:** pictures with zoom and pan, galleries with thumbnails, the video player.
-- **Signed in** (with your own Reddit app): vote, save, hide, join and leave subreddits, reply,
+- **Signed in:** vote, save, hide, join and leave subreddits, reply,
   inbox, your saved and submitted posts. Sign in by scanning a QR code; paste the code back on the
   phone.
 - **Display:** text size (70-175 %, for any TV size and distance) with a separate size for post and
@@ -63,7 +62,7 @@ These are screenshots from the Windows simulator, which runs the same UI code as
 - **By hand:** download the `.ipk` from [Releases](https://github.com/danzig666/rdtnative/releases)
   and run `ares-install --device <tv> io.github.danzig666.rdtnative_<version>_arm.ipk`.
 
-Then enter your Reddit app's client ID in Settings › Reddit API (with the remote, or scan the QR
+Then enter your API key (client ID) in Settings › Reddit API (with the remote, or scan the QR
 code and paste it on your phone). Releasing is described in [docs/release.md](docs/release.md).
 
 ## Building
