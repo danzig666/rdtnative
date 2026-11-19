@@ -20,26 +20,38 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Core tests (rd-core, rd-phone, rd-spike, xtask)
+        run: cargo test
+      - name: Clippy (our crates)
+        run: cargo clippy -p rd-core -p rd-phone -p rd-spike --all-targets -- -D warnings
+
+  # The Linux simulator needs SDL2/SDL2_ttf/GL dev packages; apt on hosted runners can take
+  # minutes, so it runs beside the core tests instead of in front of them.
+  simulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sim
       - name: Simulator libraries (SDL2, SDL2_ttf, GL)
-        timeout-minutes: 10
+        timeout-minutes: 20
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends -o Dpkg::Options::=--force-confold libsdl2-dev libsdl2-ttf-dev libgl-dev
-      - name: Core tests (rd-core, rd-phone, rd-spike, xtask)
-        run: cargo test
       - name: App tests (built for the Linux simulator)
         run: cargo test -p rdtnative-app --features sim
-      - name: Clippy (our crates)
-        run: cargo clippy -p rd-core -p rd-phone -p rd-spike --all-targets -- -D warnings
       - name: Simulator build
         run: cargo build -p rdtnative-app --features sim
 
