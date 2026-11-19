@@ -1404,10 +1404,14 @@ impl FeedScreen {
                 images::draw(p, images::BLUR, &small, r, 14.0, Fit::Cover, ui::WHITE)
             } else {
                 // The list's copy shows at once; the sharper one replaces it when it arrives.
+                // A sharp copy that failed keeps the list's copy rather than an empty box.
                 match images::draw(p, images::FULL, &url, r, 14.0, Fit::Contain, ui::WHITE) {
-                    images::Drawn::Loading => {
+                    full @ (images::Drawn::Loading | images::Drawn::Failed) => {
                         let small = rd_core::media::preview(&it.post, prefs.pic_width(split_thumb().0)).map_or(url.clone(), |p| p.url);
-                        images::draw(p, images::THUMB, &small, r, 14.0, Fit::Contain, ui::WHITE)
+                        match images::draw(p, images::THUMB, &small, r, 14.0, Fit::Contain, ui::WHITE) {
+                            images::Drawn::Loading if matches!(full, images::Drawn::Failed) => images::Drawn::Failed,
+                            d => d,
+                        }
                     }
                     d => d,
                 }

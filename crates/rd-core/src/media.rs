@@ -174,16 +174,24 @@ pub fn preview(post: &Post, want_w: u32) -> Option<Pic> {
 const MAX_PIXELS: u64 = 8_000_000;
 
 /// `full` when the TV can decode it, else the largest of Reddit's resized copies (`sizes`).
+fn too_big(p: &Pic) -> bool {
+    p.w > 4096 || p.h > 4096 || p.w as u64 * p.h as u64 > MAX_PIXELS
+}
+
 fn viewable(full: Pic, sizes: &[Pic]) -> Pic {
-    let too_big = |p: &Pic| p.w > 4096 || p.h > 4096 || p.w as u64 * p.h as u64 > MAX_PIXELS;
     if !too_big(&full) {
         return full;
     }
     sizes.iter().filter(|p| p.w > 0 && !too_big(p)).max_by_key(|p| p.w).cloned().unwrap_or(full)
 }
 
+/// Never one the TV cannot decode while a smaller one is there.
 fn pick(sizes: &[Pic], want_w: u32) -> Option<Pic> {
-    sizes.iter().find(|p| p.w >= want_w).or_else(|| sizes.iter().max_by_key(|p| p.w)).cloned()
+    let ok: Vec<&Pic> = sizes.iter().filter(|p| !too_big(p)).collect();
+    if ok.is_empty() {
+        return sizes.iter().min_by_key(|p| p.w).cloned();
+    }
+    ok.iter().find(|p| p.w >= want_w).or_else(|| ok.iter().max_by_key(|p| p.w)).map(|p| (*p).clone())
 }
 
 fn gallery_ids(d: &Value) -> Vec<String> {
@@ -526,6 +534,7 @@ mod tests {
             "source":{"url":"https://p/src","width":4032,"height":3024},
             "resolutions":[{"url":"https://p/640","width":640,"height":480},{"url":"https://p/1080","width":1080,"height":810}]}]}}));
         assert_eq!(resolve(&p), Media::Image(Pic { url: "https://p/1080".into(), w: 1080, h: 810 }));
+        assert_eq!(preview(&p, 1100).unwrap().url, "https://p/1080", "never the undecodable source");
         let g = post(json!({"is_gallery":true,"gallery_data":{"items":[{"media_id":"a"},{"media_id":"b"}]},
             "media_metadata":{
                 "a":{"status":"valid","s":{"u":"https://p/a","x":4000,"y":3000},"p":[{"u":"https://p/a640","x":640,"y":480},{"u":"https://p/a1080","x":1080,"y":810}]},
