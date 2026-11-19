@@ -28,7 +28,7 @@ pub fn manifest(ipk_url: Option<&str>, out: Option<&str>) -> Result<()> {
         "version": version,
         "type": info["type"].as_str().unwrap_or("native"),
         "title": info["title"],
-        "appDescription": "SmartTube ported to LG webOS: a native (Rust) YouTube client for the TV, without ads",
+        "appDescription": "A native Reddit client for LG webOS TVs, made for the Magic Remote: feeds, posts, comments, pictures, galleries and videos, with your own Reddit app (client ID)",
         "iconUri": icon,
         "sourceUrl": REPO_URL,
         "rootRequired": false,
@@ -56,7 +56,7 @@ pub fn manifest(ipk_url: Option<&str>, out: Option<&str>) -> Result<()> {
             "manifestUrl": format!("{REPO_URL}/releases/download/v{version}/{manifest_name}"),
             "manifest": m,
             "pool": "main",
-            "shortDescription": "SmartTube for LG webOS: a native YouTube client without ads",
+            "shortDescription": "A native Reddit client for LG webOS TVs",
         }],
     });
     let repo_out = out.with_file_name("repo.json");

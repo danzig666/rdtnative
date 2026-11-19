@@ -1,0 +1,72 @@
+# A GitHub release, built here: push a tag `v<version>` (the version in crates/app/pkg/appinfo.json)
+# and this builds the TV package and publishes it with the webOS Homebrew Channel files:
+#   - io.github.danzig666.rdtnative_<version>_arm.ipk   the app
+#   - io.github.danzig666.rdtnative.manifest.json      Homebrew Channel package manifest
+#   - repo.json                                         a one-app Homebrew Channel repository
+#   - rdtnative-<version>.debug                         symbols for `cargo xtask crash`
+# Release notes come from docs/releases/<tag>.md when it exists, else GitHub generates them.
+# See docs/release.md.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: zig (via the ziglang wheel, same version as ytnative)
+        run: python -m pip install ziglang==0.13.0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-gnueabi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: armv7-release
+      - name: The tag matches the app's version
+        id: version
+        run: |
+          v=$(python3 -c "import json; print(json.load(open('crates/app/pkg/appinfo.json'))['version'])")
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match appinfo.json version $v"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Tests (rd-core, rd-phone, rd-spike, xtask)
+        run: cargo test
+      - name: Cross-build (stub-only link) + DT_NEEDED check + IPK
+        run: cargo xtask ipk
+      - name: Crash symbolizer self-test
+        run: cargo xtask crash --selftest
+      - name: Homebrew Channel manifest and repository index
+        run: cargo xtask release-manifest
+      - name: Symbols
+        run: cp target/armv7-unknown-linux-gnueabi/release/dist/rdtnative.debug "target/ipk/rdtnative-${{ steps.version.outputs.version }}.debug"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          notes=(--generate-notes)
+          if [ -f "docs/releases/$GITHUB_REF_NAME.md" ]; then
+            notes=(--notes-file "docs/releases/$GITHUB_REF_NAME.md")
+          fi
+          files=(target/ipk/*.ipk target/ipk/*.manifest.json target/ipk/repo.json "target/ipk/rdtnative-$v.debug")
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --title "rdtnative $v" --verify-tag "${notes[@]}"
+          fi

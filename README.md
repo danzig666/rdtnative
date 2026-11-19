@@ -50,6 +50,17 @@ These are screenshots from the Windows simulator, which runs the same UI code as
 - **Setup:** Reddit API settings (client ID, any redirect URI scheme, user agent) and an Imgur
   client ID, typed with the remote or entered on a phone through a QR code.
 
+## Install
+
+- **Homebrew Channel:** Settings › Add repository:
+  `https://github.com/danzig666/rdtnative/releases/latest/download/repo.json`, then install
+  rdtnative from it. New releases show up there as updates.
+- **By hand:** download the `.ipk` from [Releases](https://github.com/danzig666/rdtnative/releases)
+  and run `ares-install --device <tv> io.github.danzig666.rdtnative_<version>_arm.ipk`.
+
+Then enter your Reddit app's client ID in Settings › Reddit API (with the remote, or scan the QR
+code and paste it on your phone). Releasing is described in [docs/release.md](docs/release.md).
+
 ## Building
 
 Requirements: Rust stable, `rustup target add armv7-unknown-linux-gnueabi`, and
