@@ -608,6 +608,11 @@ fn list_thumb_w() -> f32 {
 impl Machine<RdHost> for FeedScreen {
     type Ev = ScreenEvent<RdHost>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) -> Handled {
+        // A layout picked here or in Settings takes effect at once.
+        if layout_of(cx) != self.layout {
+            self.configure_flow(cx);
+            fx.invalidate(plx_machine::present::Provenance::Input);
+        }
         if let Some(a) = common::press_commit_as_activate(ev, cx, |_| true) {
             return self.step(&a, cx, fx);
         }
@@ -1266,7 +1271,8 @@ impl FeedScreen {
                 ui::text_cut(p, m, &title, tx, y, tw, ts, ink, ui::ALIGN_LEFT, true);
                 let mut meta2 = meta;
                 meta2.push_str(&format!("  \u{b7}  {}", common::comments(it.post.num_comments)));
-                if let Some(b) = common::media_badge(it) {
+                // A link's site is already in the meta line.
+                if let Some(b) = common::media_badge(it).filter(|b| !b.starts_with('\u{2197}')) {
                     meta2.push_str(&format!("  \u{b7}  {b}"));
                 }
                 ui::text_cut(p, m, &meta2, tx, y + ts as f32 * 1.42, tw, ms, dim, ui::ALIGN_LEFT, false);
@@ -1456,6 +1462,9 @@ impl Screen<RdHost> for FeedScreen {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, RdHost>) {
         let cx = f.cx;
         let st = cx.views.store;
+        if layout_of(cx) != self.layout {
+            self.configure_flow(cx);
+        }
         self.relayout(cx);
         self.flow.animate(cx.views.now_ms);
         let p = f.painter;
