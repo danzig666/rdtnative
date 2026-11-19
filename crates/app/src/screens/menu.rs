@@ -55,6 +55,8 @@ pub struct MenuScreen {
     kind: MenuKind,
     title: String,
     rows: Vec<(Row, Act)>,
+    /// The first focus goes to the current value (option lists).
+    seated: std::cell::Cell<bool>,
     state: State,
 }
 
@@ -65,6 +67,7 @@ impl MenuScreen {
             kind,
             title: String::new(),
             rows: Vec::new(),
+            seated: std::cell::Cell::new(false),
             state: State("menu".into()),
         };
         m.build(cx);
@@ -328,6 +331,10 @@ impl Focusable<RdHost> for MenuScreen {
         self.list.place(*key, self.rows.len(), self.list.focused(cx, self.rows.len()))
     }
     fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
+        if !self.seated.replace(true) {
+            let cur = self.rows.iter().position(|(r, _)| r.active).unwrap_or(0);
+            return self.list.key(cur);
+        }
         if self.list.index(want.elem, self.rows.len()).is_some() {
             return want;
         }

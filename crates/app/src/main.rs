@@ -11,6 +11,9 @@ mod host;
 mod i18n;
 mod images;
 mod input;
+#[cfg(not(any(windows, feature = "sim")))]
+mod ls2;
+mod player;
 mod prefs;
 // The desktop simulator (Windows, or Linux with `--features sim`) swaps the TV-only modules (Wayland surface, FIFO remote) for
 // stand-ins under `sim/`; see `sim/mod.rs`.
@@ -353,8 +356,13 @@ fn main() {
                 plx_gfx::gfx::straighten::frame_begin();
                 let (x, y, w, h) = plx_base::surface::viewport();
                 sdl::glViewport(x, y, w, h);
-                let c = ui::bg_rgb();
-                plx_gfx::gfx::frame_clear(c.0, c.1, c.2);
+                // The player keeps the video plane visible under a transparent page.
+                if d.top_screen().map(|s| s.render()) == Some(plx_ui::screen::RenderStrategy::VideoPlane) {
+                    plx_gfx::gfx::frame_clear_through();
+                } else {
+                    let c = ui::bg_rgb();
+                    plx_gfx::gfx::frame_clear(c.0, c.1, c.2);
+                }
                 plx_ui::guard(|| {
                     d.draw(&mut rig, true);
                 });

@@ -225,7 +225,7 @@ fn local_offset() -> i64 {
         let t = libc::time(std::ptr::null_mut());
         let mut tm: libc::tm = std::mem::zeroed();
         if !libc::localtime_r(&t, &mut tm).is_null() {
-            return tm.tm_gmtoff;
+            return tm.tm_gmtoff as i64;
         }
     }
     0

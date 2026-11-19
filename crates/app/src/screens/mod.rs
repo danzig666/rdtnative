@@ -3,6 +3,7 @@ pub mod common;
 pub mod feed;
 pub mod keyboard;
 pub mod menu;
+pub mod player;
 pub mod post;
 pub mod settings;
 pub mod signin;

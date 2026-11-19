@@ -207,7 +207,8 @@ impl Flow {
             edge: [EdgeRule::Geometric; 4],
             extent: self.rect,
             len: self.len(),
-            elem: ElemKind::Control,
+            // Cards: a long OK press is a hold (the item's menu).
+            elem: ElemKind::Card,
         }
     }
 

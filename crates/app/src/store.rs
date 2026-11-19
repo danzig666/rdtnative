@@ -270,6 +270,8 @@ pub struct Store {
     pub imgur_pending: HashSet<String>,
     /// Bumped on any change worth a redraw.
     pub gen: u32,
+    /// The video player's state, copied each frame.
+    pub play: crate::player::Status,
 }
 
 impl Store {
@@ -298,6 +300,7 @@ impl Store {
             signin: None,
             imgur_pending: HashSet::new(),
             gen: 0,
+            play: Default::default(),
         }
     }
 

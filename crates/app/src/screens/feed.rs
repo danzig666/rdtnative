@@ -32,6 +32,10 @@ const CHOICE_BASE: u32 = ui::CHOICE_BASE;
 const LEFT: f32 = 80.0;
 const NAV_W: f32 = 440.0;
 const T_BACK: plx_machine::machine::TimerId = plx_machine::machine::TimerId(41);
+/// The preview pane asks for the focused post's comments once focus rests on it.
+const T_PREVIEW: plx_machine::machine::TimerId = plx_machine::machine::TimerId(42);
+/// Width of the list in the two-pane layout.
+const SPLIT_W: f32 = 800.0;
 
 #[derive(Clone, Debug, PartialEq)]
 enum BarItem {
@@ -58,10 +62,12 @@ enum NavItem {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Layout {
+    Split,
     Cards,
     List,
     Large,
     Compact,
+    Dense,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -90,15 +96,19 @@ pub struct FeedScreen {
     choice: Option<(Choice, ChoiceBox)>,
     bar_rects: std::cell::RefCell<Vec<Rect>>,
     asked_more_at: Cell<usize>,
+    /// Until the user moves focus, focus goes to the first post when posts arrive.
+    auto_focus: Cell<bool>,
     state: State,
 }
 
 fn layout_of(cx: &Cx<'_, RdHost>) -> Layout {
     match cx.views.store.prefs.get("layout") {
+        "cards" => Layout::Cards,
         "list" => Layout::List,
         "large" => Layout::Large,
         "compact" => Layout::Compact,
-        _ => Layout::Cards,
+        "dense" => Layout::Dense,
+        _ => Layout::Split,
     }
 }
 
@@ -146,6 +156,7 @@ impl FeedScreen {
             choice: None,
             bar_rects: Default::default(),
             asked_more_at: Cell::new(usize::MAX),
+            auto_focus: Cell::new(true),
         };
         s.configure_flow(cx);
         s
@@ -166,11 +177,22 @@ impl FeedScreen {
                 f.gap = 28.0;
                 f.row_gap = 32.0;
             }
-            Layout::List | Layout::Compact => {
+            Layout::List | Layout::Compact | Layout::Dense => {
                 f.cols = 1;
                 f.rect = Rect::new(LEFT + 40.0, top, 1920.0 - 2.0 * LEFT - 80.0, 1080.0 - top);
                 f.gap = 0.0;
-                f.row_gap = if self.layout == Layout::Compact { 8.0 } else { 18.0 };
+                f.row_gap = match self.layout {
+                    Layout::Compact => 8.0,
+                    Layout::Dense => 2.0,
+                    _ => 18.0,
+                };
+            }
+            Layout::Split => {
+                f.cols = 1;
+                f.rect = Rect::new(LEFT, top, SPLIT_W, 1080.0 - top);
+                f.gap = 0.0;
+                f.row_gap = 6.0;
+                f.margin = 80.0;
             }
             Layout::Large => {
                 f.cols = 1;
@@ -225,6 +247,8 @@ impl FeedScreen {
             Layout::List => ui::sz(30),
             Layout::Large => ui::sz(36),
             Layout::Compact => ui::sz(28),
+            Layout::Split => ui::sz(25),
+            Layout::Dense => ui::sz(25),
         }
     }
 
@@ -232,6 +256,7 @@ impl FeedScreen {
         match self.layout {
             Layout::Cards if self.flow.cols >= 5 => ui::sz(19),
             Layout::Cards => ui::sz(21),
+            Layout::Split | Layout::Dense => ui::sz(19),
             _ => ui::sz(23),
         }
     }
@@ -281,6 +306,14 @@ impl FeedScreen {
                 pad + richtext::title_h(n, ts) + 12.0 + media + 14.0 + 2.0 * (ms as f32 * 1.42) + pad
             }
             Layout::Compact => (ts as f32 * 1.42) + (ms as f32 * 1.42) + 2.0 * 12.0,
+            Layout::Dense => ts as f32 * 1.42 + 14.0,
+            Layout::Split => {
+                let lines = lines.min(2);
+                let thumb = if Self::thumbs_on(cx) { split_thumb().1 } else { 0.0 };
+                let tw = w - 2.0 * 14.0 - if Self::thumbs_on(cx) { split_thumb().0 + 18.0 } else { 0.0 };
+                let n = richtext::wrap_title(&it.post.title, tw, ts, true, lines).len().max(1);
+                (richtext::title_h(n, ts) + 4.0 + ms as f32 * 1.42).max(thumb) + 2.0 * 12.0
+            }
         }
     }
 
@@ -321,6 +354,8 @@ impl FeedScreen {
                     Layout::List => "List",
                     Layout::Large => "Large",
                     Layout::Compact => "Compact",
+                    Layout::Split => "Two panes",
+                    Layout::Dense => "Dense",
                 }
                 .into(),
                 Some(Icon::List),
@@ -394,6 +429,7 @@ impl FeedScreen {
         self.sig.set((u32::MAX, 0, 0, 0));
         self.content_last.set(POST_BASE);
         self.asked_more_at.set(usize::MAX);
+        self.auto_focus.set(true);
         self.load(cx, fx, false);
         fx.invalidate(plx_machine::present::Provenance::Input);
     }
@@ -561,6 +597,12 @@ impl FeedScreen {
     }
 }
 
+/// The list thumbnail in the two-pane layout.
+fn split_thumb() -> (f32, f32) {
+    let w = ui::ls(128.0).clamp(96.0, 180.0);
+    (w, (w * 0.66).round())
+}
+
 fn list_thumb_w() -> f32 {
     ui::ls(300.0).clamp(220.0, 440.0)
 }
@@ -652,6 +694,17 @@ impl Machine<RdHost> for FeedScreen {
                 }
                 fx.invalidate(plx_machine::present::Provenance::Nav);
             }
+            ScreenEvent::Timer(T_PREVIEW) => {
+                if let Some(it) = self.focused_post(cx) {
+                    let id = it.post.id.clone();
+                    if cx.views.store.thread(&id).is_none() {
+                        fx.push(Fx::App(RdFx::LoadThread { id: id.clone(), sort: None, reload: false }));
+                    }
+                    if matches!(it.media, Media::Imgur(_)) {
+                        fx.push(Fx::App(RdFx::ResolveImgur(id)));
+                    }
+                }
+            }
             ScreenEvent::Timer(T_BACK) => {
                 self.back_at = 0;
                 if self.on_nav(cx) && self.nav_open.get() {
@@ -668,6 +721,9 @@ impl Machine<RdHost> for FeedScreen {
                 fx.invalidate(plx_machine::present::Provenance::Lifecycle);
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
+                if matches!(by, By::Dir | By::Pointer) {
+                    self.auto_focus.set(false);
+                }
                 if let Some(i) = self.flow.index(to.elem) {
                     if self.nav_open.get() && *by == By::Pointer {
                         // Hovering a card behind the open menu: keep the menu.
@@ -676,6 +732,10 @@ impl Machine<RdHost> for FeedScreen {
                     self.nav_open.set(false);
                     self.content_last.set(to.elem);
                     self.flow.on_focus(i, *by == By::Pointer);
+                    if self.layout == Layout::Split {
+                        fx.push(Fx::CancelTimer(T_PREVIEW));
+                        fx.push(Fx::Timer { id: T_PREVIEW, after_ms: 450 });
+                    }
                     // Near the end: the next page.
                     let n = self.flow.len();
                     if i + self.flow.cols * 3 >= n && self.asked_more_at.get() != n {
@@ -842,6 +902,10 @@ impl Focusable<RdHost> for FeedScreen {
             }
             return b.list.key(b.current);
         }
+        if self.auto_focus.get() && self.flow.len() > 0 && (BAR_BASE..NAV_BASE).contains(&want.elem) {
+            self.auto_focus.set(false);
+            return self.flow.key(0);
+        }
         let valid = if want.elem >= CHOICE_BASE {
             false
         } else if want.elem >= NAV_BASE {
@@ -995,7 +1059,8 @@ impl FeedScreen {
         }
         // Badges: media kind (bottom right), NSFW / spoiler / pinned (top left).
         let bs = ui::sz(17);
-        if let Some(b) = common::media_badge(it) {
+        // A link's site name does not fit a small thumbnail.
+        if let Some(b) = common::media_badge(it).filter(|b| r.w >= 240.0 || !b.starts_with('\u{2197}')) {
             let w = ui::text_width(m, &b, bs, true) + bs as f32 * 0.9;
             common::badge(p, m, (r.x + r.w - w - 10.0).max(r.x + 10.0), r.y + r.h - bs as f32 * 1.45 - 10.0, &b, common::BADGE_BG, ui::WHITE, bs);
         }
@@ -1031,7 +1096,7 @@ impl FeedScreen {
         if focused {
             p.shadow(r, rad, 34.0, 10.0, [0.0, 0.0, 0.0, 0.6]);
             ui::fill(p, r, rad, ui::surface(0.17));
-        } else if self.layout != Layout::Compact {
+        } else if !matches!(self.layout, Layout::Compact | Layout::Dense | Layout::Split) {
             ui::fill(p, r, rad, ui::surface(0.07));
         }
         let meta = common::post_meta(it, cx, with_sub);
@@ -1111,6 +1176,72 @@ impl FeedScreen {
                 }
                 common::score_line(p, m, it, r.x + pad, y, ms, dim, show_scores);
             }
+            Layout::Dense => {
+                let size = ts;
+                let y = r.y + 7.0;
+                if !focused {
+                    ui::fill(p, Rect::new(r.x, r.y + r.h + 1.0, r.w, 1.0), 0.0, [1.0, 1.0, 1.0, 0.05]);
+                }
+                let score_w = ui::ls(100.0);
+                let mut tx = r.x + 16.0;
+                if show_scores {
+                    let col = match it.post.likes {
+                        Some(true) => ui::UPVOTE,
+                        Some(false) => ui::DOWNVOTE,
+                        None => dim,
+                    };
+                    ui::text_raw(p, &common::short_count(it.post.score), r.x + score_w - 16.0, y + 2.0, ms, col, ui::ALIGN_RIGHT, true);
+                    tx = r.x + score_w;
+                }
+                // Right side: subreddit, comments, age.
+                let side = format!(
+                    "{}{}  \u{b7}  {} \u{1F4AC}  \u{b7}  {}",
+                    if with_sub { format!("r/{}", it.post.subreddit) } else { format!("u/{}", it.post.author) },
+                    common::media_badge(it).map(|b| format!("  \u{b7}  {b}")).unwrap_or_default(),
+                    common::short_count(it.post.num_comments),
+                    rd_core::listing::age(it.post.created_utc, rd_core::now_secs() as i64)
+                );
+                let side_w = ui::text_width(m, &side, ms, false).min(r.w * 0.42);
+                ui::text_cut(p, m, &side, r.x + r.w - 16.0 - side_w, y + 3.0, side_w, ms, dim, ui::ALIGN_LEFT, false);
+                let mut title = it.post.title.clone();
+                if it.post.over_18 {
+                    title = format!("[NSFW] {title}");
+                }
+                ui::text_cut(p, m, &title, tx, y, r.x + r.w - 40.0 - side_w - tx, size, ink, ui::ALIGN_LEFT, focused);
+            }
+            Layout::Split => {
+                let pad = 14.0;
+                let mut tx = r.x + pad;
+                if Self::thumbs_on(cx) {
+                    let (tw, th) = split_thumb();
+                    let img = Rect::new(r.x + pad, r.y + (r.h - th) / 2.0, tw, th);
+                    self.draw_pic(p, m, cx, it, img, 10.0, alpha);
+                    tx = img.x + tw + 18.0;
+                }
+                let tw = r.x + r.w - pad - tx;
+                let lines = lines.min(2);
+                let wrapped = richtext::wrap_title(&it.post.title, tw, ts, true, lines);
+                let th = richtext::title_h(wrapped.len().max(1), ts) + 4.0 + ms as f32 * 1.42;
+                let mut y = r.y + (r.h - th) / 2.0;
+                richtext::draw_lines(p, m, &wrapped, tx, y, tw, ts, ink, true);
+                y += richtext::title_h(wrapped.len().max(1), ts) + 4.0;
+                let mut meta2 = format!(
+                    "{}  \u{b7}  {} pts  \u{b7}  {} comments  \u{b7}  {}",
+                    if with_sub { format!("r/{}", it.post.subreddit) } else { format!("u/{}", it.post.author) },
+                    common::short_count(it.post.score),
+                    common::short_count(it.post.num_comments),
+                    rd_core::listing::age(it.post.created_utc, rd_core::now_secs() as i64)
+                );
+                if it.post.over_18 {
+                    meta2 = format!("NSFW  \u{b7}  {meta2}");
+                }
+                let col = match it.post.likes {
+                    Some(true) => ui::with_alpha(ui::UPVOTE, alpha),
+                    Some(false) => ui::with_alpha(ui::DOWNVOTE, alpha),
+                    None => dim,
+                };
+                ui::text_cut(p, m, &meta2, tx, y, tw, ms, col, ui::ALIGN_LEFT, false);
+            }
             Layout::Compact => {
                 let y = r.y + 12.0;
                 if focused {
@@ -1143,7 +1274,130 @@ impl FeedScreen {
             }
         }
         if focused {
-            p.rring(r, rad, 4.0, ui::accent());
+            if matches!(self.layout, Layout::Dense | Layout::Split) {
+                ui::fill(p, Rect::new(r.x, r.y + 8.0, 6.0, r.h - 16.0), 3.0, ui::accent());
+            } else {
+                p.rring(r, rad, 4.0, ui::accent());
+            }
+        }
+    }
+
+    /// The two-pane layout's right side: the focused post, its picture or text, and the top
+    /// comments once they are loaded.
+    fn draw_preview(&self, f: &mut DrawFrame<'_, '_, RdHost>, it: &PostItem) {
+        let p = f.painter;
+        let m = f.measure;
+        let cx = f.cx;
+        let prefs = &cx.views.store.prefs;
+        let x0 = LEFT + SPLIT_W + 40.0;
+        let pane = Rect::new(x0, header_h() + 8.0, 1920.0 - LEFT - x0, 1080.0 - header_h() - 40.0);
+        ui::fill(p, pane, 22.0, ui::surface(0.05));
+        let _scope = plx_ui::screen::ClipScope::open_in(p, pane);
+        let pad = 26.0;
+        let (x, w) = (pane.x + pad, pane.w - 2.0 * pad);
+        let mut y = pane.y + pad;
+        let ms = ui::sz(21);
+        let meta = common::post_meta(it, cx, true);
+        ui::text_cut(p, m, &meta, x, y, w, ms, ui::DIM, ui::ALIGN_LEFT, false);
+        y += ms as f32 * 1.42 + 6.0;
+        let ts = ui::sz(32);
+        let lines = richtext::wrap_title(&it.post.title, w, ts, true, 3);
+        y = richtext::draw_lines(p, m, &lines, x, y, w, ts, ui::WHITE, true) + 8.0;
+        let w_score = common::score_line(p, m, it, x, y, ms, ui::DIM, prefs.on("show_scores"));
+        if let (Some(fl), true) = (&it.post.link_flair_text, prefs.on("show_flair")) {
+            common::badge(p, m, x + w_score + 20.0, y + 2.0, fl, ui::with_alpha(ui::accent(), 0.3), ui::WHITE, (ms as f32 * 0.85) as i32);
+        }
+        y += ms as f32 * 1.42 + 16.0;
+        let bottom = pane.y + pane.h - pad;
+        // Media, at most about half the pane.
+        let blur = (it.post.over_18 && prefs.get("nsfw") == "blur") || (it.post.spoiler && prefs.get("spoilers") == "blur");
+        let pic = rd_core::media::preview(&it.post, 1100).map(|p| (p.url, p.w, p.h)).or_else(|| match &it.media {
+            Media::Image(p) => Some((p.url.clone(), p.w, p.h)),
+            Media::Gallery(g) => g.first().map(|i| (i.pic.url.clone(), i.pic.w, i.pic.h)),
+            Media::Video(v) => v.poster.as_ref().map(|p| (p.url.clone(), p.w, p.h)),
+            Media::YouTube { id, .. } => Some((format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"), 480, 360)),
+            Media::Link { preview: Some(p), .. } => Some((p.url.clone(), p.w, p.h)),
+            _ => None,
+        });
+        let has_comments = cx.views.store.thread(&it.post.id).is_some_and(|t| !t.tree.is_empty());
+        let max_media = if has_comments { (bottom - y) * 0.55 } else { bottom - y };
+        if let (Some((url, pw, ph)), true) = (pic, Self::thumbs_on(cx)) {
+            let h = if pw > 0 && ph > 0 { (w * ph as f32 / pw as f32).min(max_media) } else { max_media.min(480.0) };
+            let r = Rect::new(x, y, w, h.max(120.0));
+            ui::fill(p, r, 14.0, [0.0, 0.0, 0.0, 0.4]);
+            let drawn = if blur {
+                let small = rd_core::media::preview(&it.post, 140).map_or(url.clone(), |p| p.url);
+                images::draw(p, images::BLUR, &small, r, 14.0, Fit::Cover, ui::WHITE)
+            } else {
+                // The list's copy shows at once; the sharper one replaces it when it arrives.
+                match images::draw(p, images::FULL, &url, r, 14.0, Fit::Contain, ui::WHITE) {
+                    images::Drawn::Loading => {
+                        let small = rd_core::media::preview(&it.post, prefs.pic_width(split_thumb().0)).map_or(url.clone(), |p| p.url);
+                        images::draw(p, images::THUMB, &small, r, 14.0, Fit::Contain, ui::WHITE)
+                    }
+                    d => d,
+                }
+            };
+            if let images::Drawn::Loading = drawn {
+                ui::spinner(p, cx.views.now_ms, r.x + r.w / 2.0, r.y + r.h / 2.0);
+            }
+            if let Some(b) = common::media_badge(it) {
+                let bs = ui::sz(18);
+                common::badge(p, m, r.x + 12.0, r.y + r.h - bs as f32 * 1.45 - 12.0, &b, common::BADGE_BG, ui::WHITE, bs);
+            }
+            if blur {
+                common::badge(p, m, r.x + 12.0, r.y + 12.0, if it.post.over_18 { "NSFW" } else { "SPOILER" }, common::NSFW_RED, ui::WHITE, ui::sz(18));
+            }
+            y = r.y + r.h + 18.0;
+        } else if !it.post.selftext.trim().is_empty() {
+            let laid = richtext::cached(&format!("prev:{}:{}", it.post.id, w as u32), &it.post.selftext, w, ui::csz(24));
+            let h = laid.h.min(max_media);
+            let clip = Rect::new(x, y, w, h);
+            {
+                let _s = plx_ui::screen::ClipScope::open_in(p, clip);
+                richtext::draw(p, &laid, x, y, clip, [0.9, 0.9, 0.92, 1.0], false);
+            }
+            if laid.h > h {
+                p.rect(Rect::new(x, y + h - 60.0, w, 60.0), 0.0, ui::with_alpha(ui::surface(0.05), 0.0), ui::surface(0.05), 0.0);
+            }
+            y += h + 18.0;
+        } else if let Media::Link { url, .. } = &it.media {
+            ui::text_cut(p, m, url, x, y, w, ui::sz(21), ui::accent(), ui::ALIGN_LEFT, false);
+            y += ui::sz(21) as f32 * 1.6;
+        }
+        // Top comments.
+        let Some(t) = cx.views.store.thread(&it.post.id) else {
+            ui::text(p, "OK opens the post and its comments", x, bottom - ui::sz(22) as f32 * 1.4, ui::sz(22), ui::FAINT, ui::ALIGN_LEFT, false);
+            return;
+        };
+        if t.loading && t.tree.is_empty() {
+            ui::spinner(p, cx.views.now_ms, x + w / 2.0, (y + bottom) / 2.0);
+            return;
+        }
+        ui::fill(p, Rect::new(x, y, w, 1.5), 0.0, [1.0, 1.0, 1.0, 0.1]);
+        y += 14.0;
+        let cs = ui::csz(22);
+        let hs = ui::sz(19);
+        for n in &t.tree {
+            let rd_core::comments::Node::Comment(c) = n else { continue };
+            if c.stickied && c.distinguished.is_some() {
+                continue;
+            }
+            if y + hs as f32 * 1.4 + cs as f32 * 1.4 > bottom {
+                break;
+            }
+            let head = format!("{}  \u{b7}  {} points", c.author, common::short_count(c.score));
+            ui::text_cut(p, m, &head, x, y, w, hs, ui::DIM, ui::ALIGN_LEFT, true);
+            y += hs as f32 * 1.42;
+            let laid = richtext::cached(&format!("pc:{}", c.name), &c.body, w - 10.0, cs);
+            let room = (bottom - y).min(cs as f32 * 1.42 * 4.0);
+            let h = laid.h.min(room);
+            let clip = Rect::new(x, y, w, h);
+            {
+                let _s = plx_ui::screen::ClipScope::open_in(p, clip);
+                richtext::draw(p, &laid, x, y, clip, [0.88, 0.88, 0.9, 1.0], false);
+            }
+            y += h + 16.0;
         }
     }
 
@@ -1266,6 +1520,12 @@ impl Screen<RdHost> for FeedScreen {
             }
             if self.choice.is_none() && !self.nav_open.get() {
                 self.flow.stops(f);
+            }
+            if self.layout == Layout::Split {
+                let shown = focus.and_then(|i| items.get(i)).or(items.first()).copied();
+                if let Some(it) = shown {
+                    self.draw_preview(f, it);
+                }
             }
         }
         if self.nav_open.get() {

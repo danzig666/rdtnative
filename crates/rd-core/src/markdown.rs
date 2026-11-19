@@ -182,6 +182,18 @@ fn run(s: &str, style: u8, link: Option<&str>, out: &mut Vec<Span>) {
                 continue;
             }
         }
+        // Inline media ![gif](giphy|id) / ![img](emote|...): shown as a tag, linked when it is a URL.
+        if rest.starts_with("![") {
+            if let Some((text, url, used)) = md_link(&rest[1..]) {
+                flush(out, text_start, i);
+                let label = if text.eq_ignore_ascii_case("gif") { "[GIF]" } else { "[image]" };
+                let link = (url.starts_with("http")).then_some(url.as_str());
+                push(out, label, style | ITALIC, link.or(link));
+                i += 1 + used;
+                text_start = i;
+                continue;
+            }
+        }
         // Links [text](url "title")
         if rest.starts_with('[') && link.is_none() {
             if let Some((text, url, used)) = md_link(rest) {
@@ -668,6 +680,12 @@ mod tests {
         assert_eq!((head.len(), rows.len()), (2, 2));
         assert_eq!(rows[1][1], vec![sp("d", 0)]);
         assert_eq!(b[9], Block::Para(vec![sp("end", 0)]));
+    }
+
+    #[test]
+    fn inline_media_tags() {
+        assert_eq!(inline("look ![gif](giphy|abc123)"), vec![sp("look ", 0), sp("[GIF]", ITALIC)]);
+        assert_eq!(inline("![img](https://i.redd.it/x.png)")[0].link.as_deref(), Some("https://i.redd.it/x.png"));
     }
 
     #[test]

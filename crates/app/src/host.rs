@@ -88,6 +88,8 @@ pub enum RdArg {
     SignIn,
     Inbox,
     Menu(MenuKind),
+    /// Full-screen video: (stream URL, title, loops).
+    Play { url: String, title: String, looping: bool },
 }
 
 impl ScreenArg for RdArg {
@@ -111,6 +113,7 @@ impl ScreenArg for RdArg {
             RdArg::SignIn => 13,
             RdArg::Inbox => 14,
             RdArg::Menu(_) => 15,
+            RdArg::Play { .. } => 16,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -171,6 +174,12 @@ pub enum RdFx {
     SignOut,
     LoadInbox,
     ClearReadHistory,
+    Play { url: String, looping: bool },
+    StopVideo,
+    PauseVideo,
+    SeekVideo(i64),
+    /// Play a YouTube video in ytnative (or LG's YouTube app).
+    OpenYouTube(String),
 }
 
 pub enum RdMsg {
@@ -240,6 +249,7 @@ impl Mounter<RdHost> for Mount {
             RdArg::SignIn => Box::new(signin::SignInScreen::new(entry)),
             RdArg::Inbox => Box::new(subs::InboxScreen::new(entry)),
             RdArg::Menu(k) => Box::new(menu::MenuScreen::new(entry, k.clone(), cx)),
+            RdArg::Play { url, title, looping } => Box::new(player::PlayerScreen::new(entry, url.clone(), title.clone(), *looping)),
         }
     }
 }
@@ -284,6 +294,7 @@ pub struct AppRig {
     listeners: Vec<MachineId>,
     read_dirty: bool,
     read_saved_ms: u32,
+    player: crate::player::Player,
 }
 
 impl AppRig {
@@ -305,6 +316,7 @@ impl AppRig {
             listeners: Vec::new(),
             read_dirty: false,
             read_saved_ms: 0,
+            player: crate::player::Player::new(),
         };
         rig.apply_prefs();
         if rig.store.signed_in() {
@@ -394,6 +406,14 @@ impl AppRig {
         }
         self.poll_phone();
         self.poll_signin_phone();
+        if self.player.active() {
+            self.player.tick();
+            let st = self.player.status.lock().unwrap().clone();
+            if st.position_ms != self.store.play.position_ms || st.phase != self.store.play.phase {
+                plx_machine::present::wake_from_worker();
+            }
+            self.store.play = st;
+        }
         if self.read_dirty && now_ms.wrapping_sub(self.read_saved_ms) > 10_000 {
             self.read_dirty = false;
             self.read_saved_ms = now_ms;
@@ -1404,6 +1424,30 @@ impl Rig<RdHost> for AppRig {
             RdFx::SignInStop => self.signin_stop(),
             RdFx::SignOut => self.sign_out(),
             RdFx::LoadInbox => self.load_inbox(from),
+            RdFx::Play { url, looping } => {
+                self.player.start(url, looping);
+                self.store.play = self.player.status.lock().unwrap().clone();
+            }
+            RdFx::StopVideo => {
+                self.player.stop();
+                self.store.play = Default::default();
+            }
+            RdFx::PauseVideo => self.player.toggle_pause(),
+            RdFx::SeekVideo(d) => self.player.seek_by(d),
+            RdFx::OpenYouTube(id) => {
+                self.store.toast("Opening the video in ytnative…", now);
+                self.spawn(from, "youtube", move || match crate::player::launch_youtube(&id) {
+                    Ok(_) => Work::Action { undo: None, error: None, ok_toast: None },
+                    Err(e) => {
+                        crate::log(&format!("youtube: {e}"));
+                        Work::Action {
+                            undo: None,
+                            error: Some("Install ytnative (or LG's YouTube app) to play YouTube videos here. Full screen shows a QR code for a phone.".into()),
+                            ok_toast: None,
+                        }
+                    }
+                });
+            }
             RdFx::ClearReadHistory => {
                 self.store.read = Default::default();
                 store::store_read(&self.store.read);

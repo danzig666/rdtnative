@@ -252,7 +252,7 @@ impl PostScreen {
                 if *collapsed {
                     return head + 2.0 * 12.0;
                 }
-                let laid = richtext::cached(name, body, w - x - 16.0, ui::csz(25));
+                let laid = richtext::cached(name, body, w - x - 34.0, ui::csz(25));
                 12.0 + head + 6.0 + laid.h + 14.0
             }
             CItem::More { .. } => ms as f32 * 1.42 + 24.0,
@@ -332,8 +332,19 @@ impl PostScreen {
                 }
             }
             Media::None => {}
+            Media::YouTube { id, .. } => fx.push(Fx::App(RdFx::OpenYouTube(id.clone()))),
+            // Videos and GIFs play straight away (unless blurred: the viewer shows them first).
+            Media::Video(v) if !self.blurred(cx, it) => match crate::player::pick_url(v, cx.views.store.prefs.get("video_stream")) {
+                Some(url) => fx.push(Fx::Nav(NavOp::Push(RdArg::Play { url, title: it.post.title.clone(), looping: v.gif }))),
+                None => fx.push(Fx::Nav(NavOp::Push(RdArg::Viewer { id: self.id.clone(), index: 0 }))),
+            },
             _ => fx.push(Fx::Nav(NavOp::Push(RdArg::Viewer { id: self.id.clone(), index: 0 }))),
         }
+    }
+
+    fn blurred(&self, cx: &Cx<'_, RdHost>, it: &PostItem) -> bool {
+        let prefs = &cx.views.store.prefs;
+        (it.post.over_18 && prefs.get("nsfw") == "blur") || (it.post.spoiler && prefs.get("spoilers") == "blur")
     }
 
     fn comment_at(&self, i: usize) -> Option<CItem> {
@@ -621,6 +632,13 @@ impl Focusable<RdHost> for PostScreen {
         if let Some(b) = &self.choice {
             return if b.owns(want.elem) { want } else { b.list.key(b.current) };
         }
+        // The first time the post is there: its title, not the first bar button.
+        if !self.initial_focus_done.get() && self.left.len() > 0 {
+            self.initial_focus_done.set(true);
+            if want.elem >= BAR_BASE && want.elem < ui::CHOICE_BASE {
+                return self.left.key(0);
+            }
+        }
         let valid = if want.elem >= ui::CHOICE_BASE {
             false
         } else if want.elem >= BAR_BASE {
@@ -823,7 +841,7 @@ impl PostScreen {
                 ui::text_cut(p, m, &meta.join("  \u{b7}  "), hx + 6.0, y, card.x + card.w - hx - 20.0, ms, col, ui::ALIGN_LEFT, false);
                 if !*collapsed {
                     // The same width `comment_h` laid it out at.
-                    let laid = richtext::cached(name, body, r.x + r.w - x - 16.0, ui::csz(25));
+                    let laid = richtext::cached(name, body, r.x + r.w - x - 34.0, ui::csz(25));
                     let reveal = self.revealed.borrow().contains(name);
                     richtext::draw(p, &laid, x, y + ms as f32 * 1.42 + 6.0, self.right.rect, [0.93, 0.93, 0.95, 1.0], reveal);
                 }

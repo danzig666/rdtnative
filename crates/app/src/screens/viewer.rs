@@ -26,30 +26,32 @@ const NEXT: u32 = 3;
 #[derive(Clone, Debug)]
 enum Page {
     Pic(Pic, Option<String>),
-    /// A clip: its poster and where it plays.
-    Clip { poster: Option<Pic>, url: String, caption: Option<String>, gif: bool },
+    /// A clip: its poster, the stream the TV plays (`None`: not playable here) and the link a
+    /// phone opens.
+    Clip { poster: Option<Pic>, play: Option<String>, url: String, caption: Option<String>, gif: bool },
     Link(String, Option<Pic>),
     Nothing,
 }
 
-fn pages(it: &PostItem) -> Vec<Page> {
+fn pages(it: &PostItem, stream: &str) -> Vec<Page> {
     let permalink = format!("https://www.reddit.com{}", it.post.permalink);
     match &it.media {
         Media::Image(p) => vec![Page::Pic(p.clone(), None)],
         Media::Gallery(items) => items
             .iter()
             .map(|Item { pic, mp4, caption, .. }| match mp4 {
-                Some(u) => Page::Clip { poster: Some(pic.clone()), url: u.clone(), caption: caption.clone(), gif: true },
+                Some(u) => Page::Clip { poster: Some(pic.clone()), play: Some(u.clone()), url: u.clone(), caption: caption.clone(), gif: true },
                 None => Page::Pic(pic.clone(), caption.clone()),
             })
             .collect(),
         Media::Video(v) => vec![Page::Clip {
             poster: v.poster.clone(),
+            play: crate::player::pick_url(v, stream),
             url: if it.post.url.contains("v.redd.it") || v.hls.is_some() { permalink } else { v.mp4.clone().unwrap_or(permalink) },
             caption: None,
             gif: v.gif,
         }],
-        Media::YouTube { url, id } => vec![Page::Clip { poster: Some(Pic { url: format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"), w: 480, h: 360 }), url: url.clone(), caption: None, gif: false }],
+        Media::YouTube { url, id } => vec![Page::Clip { poster: Some(Pic { url: format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"), w: 480, h: 360 }), play: None, url: url.clone(), caption: None, gif: false }],
         Media::Link { url, preview } => vec![Page::Link(url.clone(), preview.clone())],
         Media::Imgur(_) => vec![Page::Nothing],
         Media::None => rd_core::media::preview(&it.post, 1920).map(|p| vec![Page::Pic(p, None)]).unwrap_or(vec![Page::Nothing]),
@@ -100,7 +102,7 @@ impl ViewerScreen {
 impl Machine<RdHost> for ViewerScreen {
     type Ev = ScreenEvent<RdHost>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) -> Handled {
-        let n = self.item(cx).map_or(0, |it| pages(it).len());
+        let n = self.item(cx).map_or(0, |it| pages(it, cx.views.store.prefs.get("video_stream")).len());
         match ev {
             ScreenEvent::Mount => {
                 if self.item(cx).is_some_and(|it| matches!(it.media, Media::Imgur(_))) {
@@ -122,7 +124,15 @@ impl Machine<RdHost> for ViewerScreen {
                     Key::Left => self.step_page(-1, n),
                     Key::Right => self.step_page(1, n),
                     Key::Up | Key::Down => self.info = !self.info,
-                    Key::Ok if *edge == Edge::Down => self.ok(cx),
+                    Key::Ok if *edge == Edge::Down => {
+                        if let Some(id) = self.youtube(cx) {
+                            fx.push(plx_machine::machine::Fx::App(RdFx::OpenYouTube(id)));
+                        } else if let Some(arg) = self.play_arg(cx) {
+                            fx.push(plx_machine::machine::Fx::Nav(plx_machine::machine::NavOp::Push(arg)));
+                        } else {
+                            self.ok(cx);
+                        }
+                    }
                     _ => {}
                 }
                 fx.invalidate(plx_machine::present::Provenance::Input);
@@ -132,7 +142,10 @@ impl Machine<RdHost> for ViewerScreen {
                 match *e {
                     PREV => self.step_page(-1, n),
                     NEXT => self.step_page(1, n),
-                    _ => self.ok(cx),
+                    _ => match self.play_arg(cx) {
+                        Some(arg) => fx.push(plx_machine::machine::Fx::Nav(plx_machine::machine::NavOp::Push(arg))),
+                        None => self.ok(cx),
+                    },
                 }
                 fx.invalidate(plx_machine::present::Provenance::Input);
                 Handled::Yes
@@ -148,13 +161,34 @@ impl Machine<RdHost> for ViewerScreen {
 }
 
 impl ViewerScreen {
+    /// The player for the current page, when it is a playable clip.
+    fn play_arg(&self, cx: &Cx<'_, RdHost>) -> Option<crate::host::RdArg> {
+        let it = self.item(cx)?;
+        if self.blurred(cx, it) {
+            return None;
+        }
+        match pages(it, cx.views.store.prefs.get("video_stream")).get(self.index)? {
+            Page::Clip { play: Some(u), gif, .. } => Some(crate::host::RdArg::Play { url: u.clone(), title: it.post.title.clone(), looping: *gif }),
+            Page::Clip { play: None, .. } => None,
+            _ => None,
+        }
+    }
+
+    /// A YouTube page: the video's ID (OK hands it to ytnative).
+    fn youtube(&self, cx: &Cx<'_, RdHost>) -> Option<String> {
+        match &self.item(cx)?.media {
+            Media::YouTube { id, .. } => Some(id.clone()),
+            _ => None,
+        }
+    }
+
     fn ok(&mut self, cx: &Cx<'_, RdHost>) {
         let Some(it) = self.item(cx) else { return };
         if self.blurred(cx, it) {
             self.revealed = true;
             return;
         }
-        let pg = pages(it);
+        let pg = pages(it, cx.views.store.prefs.get("video_stream"));
         if matches!(pg.get(self.index), Some(Page::Pic(..))) {
             self.zoom = if self.zoom < 1.5 {
                 2.0
@@ -224,7 +258,7 @@ impl Screen<RdHost> for ViewerScreen {
         None
     }
     fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, RdHost>) {
-        let want = self.item(cx).and_then(|it| match pages(it).get(self.index) {
+        let want = self.item(cx).and_then(|it| match pages(it, cx.views.store.prefs.get("video_stream")).get(self.index) {
             Some(Page::Clip { url, .. }) | Some(Page::Link(url, _)) => Some(url.clone()),
             _ => None,
         });
@@ -247,7 +281,7 @@ impl Screen<RdHost> for ViewerScreen {
             ui::spinner(p, cx.views.now_ms, 960.0, 540.0);
             return;
         };
-        let pg = pages(it);
+        let pg = pages(it, cx.views.store.prefs.get("video_stream"));
         let n = pg.len();
         self.index = self.index.min(n.saturating_sub(1));
         let blurred = self.blurred(cx, it);
@@ -282,14 +316,25 @@ impl Screen<RdHost> for ViewerScreen {
                     }
                 }
             }
-            Page::Clip { poster, gif, url, .. } => {
+            Page::Clip { poster, gif, url, play, .. } => {
                 if let Some(pp) = &poster {
                     let srv = if blurred { images::BLUR } else { images::FULL };
                     images::draw(p, srv, &pp.url, Rect::new(80.0, 140.0, 1180.0, 800.0), 12.0, Fit::Contain, [0.75, 0.75, 0.75, 1.0]);
                 }
                 let s = ui::sz(36);
                 ui::text(p, if gif { "Animated picture" } else { "Video" }, 1380.0, 150.0, s, ui::WHITE, ui::ALIGN_LEFT, true);
-                ui::text(p, "Scan to watch it on your phone", 1380.0, 150.0 + s as f32 * 1.4, ui::sz(24), ui::DIM, ui::ALIGN_LEFT, false);
+                ui::text(p, if play.is_some() {
+                    "OK plays it  \u{b7}  or scan to watch on a phone"
+                } else if !gif {
+                    "OK opens it in ytnative  \u{b7}  or scan with a phone"
+                } else {
+                    "Scan to watch it on your phone"
+                }, 1380.0, 150.0 + s as f32 * 1.4, ui::sz(24), ui::DIM, ui::ALIGN_LEFT, false);
+                if play.is_some() {
+                    let c = Rect::new(80.0 + 590.0 - 70.0, 140.0 + 400.0 - 70.0, 140.0, 140.0);
+                    ui::fill(p, c, 70.0, [0.0, 0.0, 0.0, 0.6]);
+                    ui::icon::draw(p, ui::icon::Kind::Play, Rect::new(c.x + 42.0, c.y + 38.0, 64.0, 64.0), ui::WHITE, true);
+                }
                 self.draw_qr(p);
                 ui::text_cut(p, f.measure, &url, 1380.0, QR_FRAME.y + QR_FRAME.h + 40.0, 460.0, ui::sz(20), ui::FAINT, ui::ALIGN_LEFT, false);
             }

@@ -77,9 +77,9 @@ pub const OPTS: &[Opt] = &[
     Opt {
         key: "layout",
         label: "Feed layout",
-        help: "Cards: a grid of pictures. List: rows with a thumbnail. Large: one big post at a time. Compact: titles only.",
-        values: &[("cards", "Cards"), ("list", "List"), ("large", "Large"), ("compact", "Compact")],
-        default: "cards",
+        help: "Two panes: a list with a preview of the selected post beside it. Cards: a grid of pictures. List: rows with a thumbnail. Large: one big post at a time. Compact: two lines per post. Dense: one line per post, the most at once.",
+        values: &[("split", "Two panes"), ("cards", "Cards"), ("list", "List"), ("large", "Large"), ("compact", "Compact"), ("dense", "Dense")],
+        default: "split",
     },
     Opt {
         key: "columns",
@@ -119,6 +119,13 @@ pub const OPTS: &[Opt] = &[
     Opt { key: "show_flair", label: "Flairs", help: "Show post and user flairs.", values: ON_OFF, default: "on" },
     Opt { key: "show_scores", label: "Scores", help: "Show vote scores of posts and comments.", values: ON_OFF, default: "on" },
     Opt { key: "show_domain", label: "Link sites", help: "Show which site a link post points to.", values: ON_OFF, default: "on" },
+    Opt {
+        key: "video_stream",
+        label: "Video stream",
+        help: "How Reddit videos are played. DASH and HLS have sound; MP4 is the simplest and has no sound. Try another if a video does not play.",
+        values: &[("dash", "DASH (default)"), ("hls", "HLS"), ("mp4", "MP4 (no sound)")],
+        default: "dash",
+    },
     Opt { key: "hide_stickied", label: "Hide pinned posts", help: "Leave out the moderators' pinned posts at the top of subreddits.", values: OFF_ON, default: "off" },
     // Browsing
     Opt {
@@ -201,7 +208,7 @@ pub fn pages() -> [Page; 4] {
         Page {
             title: "Content",
             icon: K::Shield,
-            keys: &["nsfw", "spoilers", "dim_read", "hide_read", "hide_stickied", "show_flair", "show_scores", "show_domain"],
+            keys: &["nsfw", "spoilers", "dim_read", "hide_read", "hide_stickied", "show_flair", "show_scores", "show_domain", "video_stream"],
         },
         Page {
             title: "Feeds and comments",
@@ -373,7 +380,7 @@ mod tests {
     #[test]
     fn defaults_and_round_trip() {
         let mut p = Prefs::default();
-        assert_eq!(p.get("layout"), "cards");
+        assert_eq!(p.get("layout"), "split");
         assert_eq!(p.label("nsfw"), "Blur");
         p.set("layout", "list");
         p.set("nsfw", "blur");
