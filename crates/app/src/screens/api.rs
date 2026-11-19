@@ -4,7 +4,7 @@
 //! panel explains the focused field, or shows the QR code while the phone link is open.
 
 use super::common::{self, State};
-use crate::host::{RdArg, RdFx, RdHost, RdMsg};
+use crate::host::{RdArg, RdFx, RdHost, RdMsg, Typing};
 use crate::store::Field;
 use crate::ui::{self, Row, VList};
 use plx_machine::machine::{Cx, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Machine, NavOp, ScreenEvent};
@@ -68,7 +68,7 @@ impl Machine<RdHost> for ApiScreen {
         match ev {
             ScreenEvent::Activate(e) => {
                 match self.list.index(*e, ROWS) {
-                    Some(i) if i < Field::ALL.len() => fx.push(Fx::Nav(NavOp::Push(RdArg::Edit(Field::ALL[i])))),
+                    Some(i) if i < Field::ALL.len() => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::Api(Field::ALL[i]))))),
                     Some(ROW_PHONE) => fx.push(Fx::App(if cx.views.store.phone.is_some() { RdFx::PhoneStop } else { RdFx::PhoneStart })),
                     Some(ROW_SAVE) => fx.push(Fx::App(RdFx::SaveApi)),
                     _ => {}

@@ -1,9 +1,16 @@
-//! What the screens read: the saved Reddit API settings, the draft being edited, the one-time
-//! phone form, the front page, and the toast. Owned by the rig (main thread); workers report
-//! through `host::Work`.
+//! What the screens read: the saved Reddit API settings and the draft being edited, the user's
+//! preferences, the posts (shared by every feed that lists them, so a vote shows everywhere),
+//! feeds, comment threads, subreddit info, the signed-in user, and the toast. Owned by the rig
+//! (main thread); workers report through `host::Work`.
 
+use crate::prefs::{Prefs, ReadPosts};
+use rd_core::comments::Node;
 use rd_core::config::{self, ApiConfig, FieldError};
+use rd_core::listing::{CommentSort, Feed, Sort, Time};
+use rd_core::media::Media;
+use rd_core::model::{Post, Subreddit};
 use rd_core::session::Saved;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -27,17 +34,41 @@ pub fn load_saved() -> Option<Saved> {
     serde_json::from_str::<Saved>(&s).ok().filter(|s| !s.client_id.is_empty())
 }
 
-/// Writes atomically and readable only by the app (it holds tokens).
-pub fn store_saved(s: &Saved) -> std::io::Result<()> {
-    let p = account_path();
+fn write_atomic(p: &std::path::Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
     let tmp = p.with_extension("tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(s)?)?;
+    std::fs::write(&tmp, bytes)?;
     #[cfg(unix)]
-    {
+    if private {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
     }
-    std::fs::rename(&tmp, &p)
+    let _ = private;
+    std::fs::rename(&tmp, p)
+}
+
+/// Writes atomically and readable only by the app (it holds tokens).
+pub fn store_saved(s: &Saved) -> std::io::Result<()> {
+    write_atomic(&account_path(), &serde_json::to_vec_pretty(s)?, true)
+}
+
+pub fn load_prefs() -> Prefs {
+    std::fs::read_to_string(data_file("prefs.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+pub fn store_prefs(p: &Prefs) {
+    if let Ok(b) = serde_json::to_vec_pretty(p) {
+        if let Err(e) = write_atomic(&data_file("prefs.json"), &b, false) {
+            crate::log(&format!("prefs: save failed: {e}"));
+        }
+    }
+}
+
+fn load_read() -> ReadPosts {
+    ReadPosts::from_text(&std::fs::read_to_string(data_file("read.txt")).unwrap_or_default())
+}
+
+pub fn store_read(r: &ReadPosts) {
+    let _ = write_atomic(&data_file("read.txt"), r.to_text().as_bytes(), false);
 }
 
 /// One of the three API settings.
@@ -119,23 +150,99 @@ pub struct PhoneView {
     pub opened: bool,
 }
 
-/// One post of the front page, as the home list shows it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PostRow {
-    pub title: String,
-    pub subreddit: String,
-    pub score: i64,
-    pub comments: i64,
-    pub over_18: bool,
+/// A post as the screens use it: the post, its resolved media and a one-line text preview.
+#[derive(Clone, Debug)]
+pub struct PostItem {
+    pub post: Post,
+    pub media: Media,
+    pub preview: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Front {
+impl PostItem {
+    pub fn new(post: Post) -> PostItem {
+        let media = rd_core::media::resolve(&post);
+        let preview = if post.selftext.is_empty() {
+            String::new()
+        } else {
+            let p = rd_core::markdown::plain(&post.selftext);
+            p.chars().take(400).collect()
+        };
+        PostItem { post, media, preview }
+    }
+    pub fn id(&self) -> &str {
+        &self.post.id
+    }
+}
+
+/// A feed's identity: where from and how sorted.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FeedKey {
+    pub feed: Feed,
+    pub sort: Sort,
+    pub time: Time,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FeedState {
+    pub ids: Vec<String>,
+    pub after: Option<String>,
     pub loading: bool,
-    pub posts: Vec<PostRow>,
     pub error: Option<String>,
-    /// Which listing it is ("Hot" without an account).
-    pub title: String,
+    /// Reddit has no more pages.
+    pub done: bool,
+    /// Bumped on every change (screens rebuild their layout when it moves).
+    pub gen: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ThreadState {
+    pub tree: Vec<Node>,
+    /// Comments the user opened or closed (flips Reddit's own collapsed flag).
+    pub toggled: HashSet<String>,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub sort: CommentSort,
+    /// "Load more" rows being fetched.
+    pub loading_more: HashSet<String>,
+    pub gen: u32,
+}
+
+/// What a subreddit's header shows.
+#[derive(Clone, Debug)]
+pub struct SubAbout {
+    pub sub: Subreddit,
+    pub subscribed: bool,
+    pub active: i64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SubList {
+    pub items: Vec<Subreddit>,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub gen: u32,
+}
+
+/// The sign-in flow while it runs.
+#[derive(Clone, Debug, Default)]
+pub struct SignInView {
+    pub authorize_url: String,
+    pub phone_url: Option<String>,
+    pub busy: bool,
+    pub error: Option<String>,
+}
+
+/// One inbox message.
+#[derive(Clone, Debug)]
+pub struct Message {
+    pub name: String,
+    pub author: String,
+    pub subject: String,
+    pub body: String,
+    pub created: i64,
+    pub unread: bool,
+    pub context: Option<String>,
+    pub subreddit: Option<String>,
 }
 
 pub struct Store {
@@ -144,18 +251,66 @@ pub struct Store {
     /// Messages under the fields from the last save attempt.
     pub errors: Vec<FieldError>,
     pub phone: Option<PhoneView>,
-    pub front: Front,
     pub toast: Option<(String, u32)>,
+    pub prefs: Prefs,
+    pub read: ReadPosts,
+    pub posts: HashMap<String, PostItem>,
+    pub feeds: HashMap<FeedKey, FeedState>,
+    pub threads: HashMap<String, ThreadState>,
+    pub about: HashMap<String, SubAbout>,
+    /// The signed-in user's subscriptions.
+    pub subs_mine: SubList,
+    pub subs_popular: SubList,
+    pub subs_search: (String, SubList),
+    pub inbox: SubList,
+    pub messages: Vec<Message>,
+    pub unread: i64,
+    pub signin: Option<SignInView>,
+    /// Imgur lookups in flight (post IDs).
+    pub imgur_pending: HashSet<String>,
+    /// Bumped on any change worth a redraw.
+    pub gen: u32,
 }
 
 impl Store {
     pub fn new() -> Store {
         let saved = load_saved();
-        Store { draft: Draft::from_saved(saved.as_ref()), saved, errors: Vec::new(), phone: None, front: Front::default(), toast: None }
+        let prefs = load_prefs();
+        prefs.apply();
+        Store {
+            draft: Draft::from_saved(saved.as_ref()),
+            saved,
+            errors: Vec::new(),
+            phone: None,
+            toast: None,
+            prefs,
+            read: load_read(),
+            posts: HashMap::new(),
+            feeds: HashMap::new(),
+            threads: HashMap::new(),
+            about: HashMap::new(),
+            subs_mine: SubList::default(),
+            subs_popular: SubList::default(),
+            subs_search: (String::new(), SubList::default()),
+            inbox: SubList::default(),
+            messages: Vec::new(),
+            unread: 0,
+            signin: None,
+            imgur_pending: HashSet::new(),
+            gen: 0,
+        }
     }
 
     pub fn configured(&self) -> bool {
         self.saved.is_some()
+    }
+
+    pub fn signed_in(&self) -> bool {
+        self.saved.as_ref().is_some_and(|s| s.refresh_token.is_some())
+    }
+
+    pub fn username(&self) -> Option<&str> {
+        self.saved.as_ref().and_then(|s| s.username.as_deref()).filter(|_| self.signed_in())
     }
 
     pub fn toast(&mut self, msg: impl Into<String>, now_ms: u32) {
@@ -165,6 +320,72 @@ impl Store {
     /// The error for `f` from the last save attempt, if any.
     pub fn error(&self, f: Field) -> Option<&str> {
         self.errors.iter().find(|e| e.field == f.key()).map(|e| e.message.as_str())
+    }
+
+    pub fn post(&self, id: &str) -> Option<&PostItem> {
+        self.posts.get(id)
+    }
+
+    pub fn feed(&self, k: &FeedKey) -> Option<&FeedState> {
+        self.feeds.get(k)
+    }
+
+    /// The posts of feed `k` that pass the user's filters, in order.
+    pub fn feed_items(&self, k: &FeedKey) -> Vec<&PostItem> {
+        let Some(f) = self.feeds.get(k) else { return Vec::new() };
+        let in_sub = k.feed.sub().is_some();
+        f.ids
+            .iter()
+            .filter_map(|id| self.posts.get(id))
+            .filter(|p| {
+                let read = self.read.contains(&p.post.id);
+                // A subreddit's own page shows its own posts even when it is filtered elsewhere.
+                let sub_ok = in_sub || !self.prefs.filter_subs.iter().any(|f| f.eq_ignore_ascii_case(&p.post.subreddit));
+                sub_ok && self.prefs.keeps("", &p.post.title, p.post.over_18, p.post.stickied, read)
+            })
+            .collect()
+    }
+
+    /// The sort a feed opens with: remembered per subreddit, else the user's default.
+    pub fn key_for(&self, feed: Feed) -> FeedKey {
+        let signed_in = self.signed_in();
+        let sorts = feed.sorts(signed_in);
+        let mut sort = Sort::from_key(self.prefs.get("default_sort")).unwrap_or(Sort::Hot);
+        if !sorts.contains(&sort) {
+            sort = feed.default_sort(signed_in);
+        }
+        if matches!(feed, Feed::Search { .. } | Feed::User(..)) {
+            sort = feed.default_sort(signed_in);
+        }
+        let mut time = Time::from_key(self.prefs.get("default_time")).unwrap_or(Time::Day);
+        if let (Some(sub), true) = (feed.sub(), self.prefs.on("remember_sort")) {
+            if let Some(v) = self.prefs.sub_sorts.get(&sub.to_ascii_lowercase()) {
+                let (s, t) = v.split_once(':').unwrap_or((v, ""));
+                if let Some(s) = Sort::from_key(s).filter(|s| sorts.contains(s)) {
+                    sort = s;
+                }
+                if let Some(t) = Time::from_key(t) {
+                    time = t;
+                }
+            }
+        }
+        if sorts.is_empty() {
+            sort = Sort::New;
+        }
+        FeedKey { feed, sort, time }
+    }
+
+    /// Media of a post with Imgur pages resolved once they are.
+    pub fn media<'a>(&'a self, p: &'a PostItem) -> &'a Media {
+        &p.media
+    }
+
+    pub fn thread(&self, id: &str) -> Option<&ThreadState> {
+        self.threads.get(id)
+    }
+
+    pub fn bump(&mut self) {
+        self.gen = self.gen.wrapping_add(1);
     }
 }
 

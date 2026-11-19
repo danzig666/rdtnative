@@ -40,7 +40,7 @@ pub fn entities(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let end = rest[..rest.len().min(12)].find(';');
+        let end = rest.find(';').filter(|&e| e < 12);
         let decoded = end.and_then(|e| {
             let name = &rest[1..e];
             let c = match name {
@@ -360,7 +360,8 @@ fn strip_indent(line: &str, n: usize) -> &str {
 fn list_marker(line: &str) -> Option<(bool, u32, usize)> {
     let t = line.trim_start();
     let lead = line.len() - t.len();
-    if t.len() >= 2 && matches!(&t[..1], "*" | "-" | "+") && t[1..].starts_with([' ', '\t']) {
+    let b = t.as_bytes();
+    if b.len() >= 2 && matches!(b[0], b'*' | b'-' | b'+') && matches!(b[1], b' ' | b'\t') {
         return Some((false, 0, lead + 2));
     }
     let digits = t.bytes().take_while(u8::is_ascii_digit).count();
@@ -667,6 +668,12 @@ mod tests {
         assert_eq!((head.len(), rows.len()), (2, 2));
         assert_eq!(rows[1][1], vec![sp("d", 0)]);
         assert_eq!(b[9], Block::Para(vec![sp("end", 0)]));
+    }
+
+    #[test]
+    fn multibyte_line_starts_and_entities() {
+        assert_eq!(parse("\u{201c}quoted\u{201d}\n\u{2014} dash"), vec![Block::Para(vec![sp("\u{201c}quoted\u{201d} \u{2014} dash", 0)])]);
+        assert_eq!(entities("&\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9};"), "&\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9};");
     }
 
     #[test]

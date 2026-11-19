@@ -6,14 +6,17 @@
 
 mod crashtrace; // fatal-signal tracer -> /tmp/rdtnative/crash.log (see `cargo xtask crash`)
 mod edge;
+mod flow;
 mod host;
 mod i18n;
 mod images;
 mod input;
+mod prefs;
 // The desktop simulator (Windows, or Linux with `--features sim`) swaps the TV-only modules (Wayland surface, FIFO remote) for
 // stand-ins under `sim/`; see `sim/mod.rs`.
 #[cfg_attr(any(windows, feature = "sim"), path = "sim/remote.rs")]
 mod remote;
+mod richtext;
 mod screens;
 mod sdl;
 #[cfg(any(windows, feature = "sim"))]
@@ -31,6 +34,11 @@ use std::ffi::CString;
 use std::time::Instant;
 
 static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Rows per second at the very edge for the pointer edge glide (0 = off), from the settings.
+pub static EDGE_SPEED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(6);
+/// Items one wheel notch moves.
+pub static WHEEL_ROWS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
 
 pub fn now_us() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_micros() as u64
@@ -188,7 +196,6 @@ fn main() {
         plx_gfx::gfx::init_blur();
         plx_platform::i18n::initialize(plx_platform::i18n::Preference::System, false);
         plx_ui::tex::install(&*images::THUMBS);
-        ui::set_black_background(false);
         log("rdtnative: graphics ready");
 
         let mut rig = AppRig::new();
@@ -234,9 +241,11 @@ fn main() {
                     sdl::SDL_MOUSEWHEEL => {
                         // One notch = one row (lists and the keyboard step by focus).
                         let dy = input::rd_i32(&ev, 20);
-                        if dy != 0 && now.wrapping_sub(last_wheel) > 150 {
+                        if dy != 0 && now.wrapping_sub(last_wheel) > 110 {
                             last_wheel = now;
-                            inputs.extend(input::wheel(dy, tick));
+                            for _ in 0..WHEEL_ROWS.load(std::sync::atomic::Ordering::Relaxed).max(1) {
+                                inputs.extend(input::wheel(dy, tick));
+                            }
                         }
                     }
                     sdl::SDL_KEYDOWN | sdl::SDL_KEYUP => {
@@ -303,7 +312,9 @@ fn main() {
                         None
                     }
                 });
-                if let Some(dir) = edge_v.step(v_side, now, 6.0) {
+                let speed = EDGE_SPEED.load(std::sync::atomic::Ordering::Relaxed) as f32;
+                let v_side = v_side.filter(|_| speed > 0.0);
+                if let Some(dir) = edge_v.step(v_side, now, speed.max(1.0)) {
                     inputs.extend(input::wheel(dir as i32, tick));
                 }
             }

@@ -1,4 +1,10 @@
 pub mod api;
 pub mod common;
-pub mod home;
+pub mod feed;
 pub mod keyboard;
+pub mod menu;
+pub mod post;
+pub mod settings;
+pub mod signin;
+pub mod subs;
+pub mod viewer;

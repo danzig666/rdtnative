@@ -16,18 +16,121 @@ pub const ALIGN_RIGHT: i32 = 2;
 pub const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 pub const DIM: [f32; 4] = [1.0, 1.0, 1.0, 0.62];
 pub const FAINT: [f32; 4] = [1.0, 1.0, 1.0, 0.35];
-/// The accent colour (default: an orange-red), chosen in settings.
+/// The accent colour, chosen in settings.
 static ACCENT_IDX: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-const ACCENTS: [[f32; 4]; 5] = [
+pub const ACCENT_NAMES: [&str; 8] = ["orange", "blue", "green", "purple", "pink", "teal", "red", "yellow"];
+const ACCENTS: [[f32; 4]; 8] = [
     [1.0, 0.271, 0.0, 1.0],
     [0.16, 0.47, 1.0, 1.0],
     [0.12, 0.72, 0.38, 1.0],
     [0.56, 0.32, 0.96, 1.0],
-    [1.0, 0.55, 0.1, 1.0],
+    [0.96, 0.29, 0.6, 1.0],
+    [0.0, 0.66, 0.68, 1.0],
+    [0.9, 0.16, 0.2, 1.0],
+    [0.98, 0.76, 0.1, 1.0],
 ];
 
 pub fn accent() -> [f32; 4] {
     ACCENTS[ACCENT_IDX.load(std::sync::atomic::Ordering::Relaxed) as usize % ACCENTS.len()]
+}
+
+/// `c` with alpha `a`.
+pub fn with_alpha(c: [f32; 4], a: f32) -> [f32; 4] {
+    [c[0], c[1], c[2], a]
+}
+
+pub const UPVOTE: [f32; 4] = [1.0, 0.42, 0.18, 1.0];
+pub const DOWNVOTE: [f32; 4] = [0.45, 0.55, 1.0, 1.0];
+
+// ------------------------------------------------------------------ text scale and font face
+
+/// Text size in percent of the design size (Settings > Display > Text size).
+static SCALE: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(100);
+/// 0 = the app font (Inter), 1 sans, 2 serif, 3 mono, 4 Roboto (plx's extra faces).
+static FONT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// Content text (posts, comments) has its own scale on top of the interface one.
+static CONTENT_SCALE: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(100);
+
+pub const FONT_NAMES: [&str; 5] = ["inter", "sans", "serif", "mono", "roboto"];
+
+pub fn set_text_scale(pct: u16) {
+    SCALE.store(pct.clamp(60, 200), std::sync::atomic::Ordering::Relaxed);
+}
+pub fn set_content_scale(pct: u16) {
+    CONTENT_SCALE.store(pct.clamp(60, 200), std::sync::atomic::Ordering::Relaxed);
+}
+pub fn set_font(name: &str) {
+    let i = FONT_NAMES.iter().position(|f| *f == name).unwrap_or(0);
+    FONT.store(i as u8, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn text_scale() -> f32 {
+    SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+pub fn content_scale() -> f32 {
+    text_scale() * CONTENT_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+
+/// A design text size at the user's text scale (the TV's glyph cache tops out at 79 px).
+pub fn sz(n: i32) -> i32 {
+    ((n as f32 * text_scale()).round() as i32).clamp(12, 79)
+}
+/// [`sz`] for post and comment text.
+pub fn csz(n: i32) -> i32 {
+    ((n as f32 * content_scale()).round() as i32).clamp(12, 79)
+}
+/// A design length scaled with the text (row heights, paddings that hold text).
+pub fn ls(n: f32) -> f32 {
+    n * text_scale()
+}
+
+/// The font code plx's text calls take: the face in bits 4.., bold in bit 0.
+pub fn font_code(bold: bool) -> i32 {
+    face_code(FONT.load(std::sync::atomic::Ordering::Relaxed) as i32, bold)
+}
+/// The monospace face (inline code, code blocks).
+pub fn mono_code(bold: bool) -> i32 {
+    face_code(3, bold)
+}
+fn face_code(f: i32, bold: bool) -> i32 {
+    if f == 0 {
+        return bold as i32;
+    }
+    let face = if bold { f } else { f + 4 };
+    (face << 4) | bold as i32
+}
+
+/// Width of `s` in face `code`.
+pub fn width_code(s: &str, size: i32, code: i32) -> f32 {
+    CString::new(s.replace('\0', "")).map_or(0.0, |c| plx_gfx::text::text_width(c.as_ptr(), size, code))
+}
+
+/// Draws `s` in face `code` (raw: no translation).
+#[allow(clippy::too_many_arguments)]
+pub fn text_code(p: Painter, s: &str, x: f32, y: f32, size: i32, col: [f32; 4], align: i32, code: i32) -> f32 {
+    let col = dimmed(col);
+    let Ok(c) = CString::new(s.replace('\0', "")) else { return 0.0 };
+    p.text(c.as_ptr(), x, y, size, col, align, code)
+}
+
+// ------------------------------------------------------------------ colour themes
+
+pub const THEME_NAMES: [&str; 5] = ["dark", "black", "midnight", "slate", "warm"];
+const THEMES: [(f32, f32, f32); 5] = [(0.063, 0.066, 0.078), (0.0, 0.0, 0.0), (0.035, 0.055, 0.1), (0.11, 0.12, 0.14), (0.09, 0.075, 0.065)];
+static THEME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_theme(name: &str) {
+    let i = THEME_NAMES.iter().position(|t| *t == name).unwrap_or(0);
+    THEME.store(i as u8, std::sync::atomic::Ordering::Relaxed);
+    let c = THEMES[i];
+    plx_gfx::gfx::tokens::set_clear_black(c == (0.0, 0.0, 0.0));
+    plx_gfx::gfx::tokens::set_clear_app(c);
+}
+
+/// A surface lifted `k` above the page background (cards, panels).
+pub fn surface(k: f32) -> [f32; 4] {
+    let c = bg_rgb();
+    let lift = |v: f32| (v + k * (1.0 - v) * 0.6).min(1.0);
+    [lift(c.0), lift(c.1), lift(c.2), 1.0]
 }
 
 static ANIMATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -63,36 +166,21 @@ pub fn menu_open() -> bool {
     MENUS_OPEN.load(std::sync::atomic::Ordering::Relaxed) > 0
 }
 
-static BLACK_BG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// The app's ground: a dark slate (SmartTube draws its lists on black; a hair of lift keeps
-/// cards and panels readable on LCDs too).
+/// The app's default ground: a dark slate.
 pub const GROUND: (f32, f32, f32) = (0.063, 0.066, 0.078);
 
 pub fn set_black_background(on: bool) {
-    BLACK_BG.store(on, std::sync::atomic::Ordering::Relaxed);
-    plx_gfx::gfx::tokens::set_clear_black(on);
-    plx_gfx::gfx::tokens::set_clear_app(GROUND);
+    set_theme(if on { "black" } else { "dark" });
 }
 
-/// The page background: the app's ground, or true black (OLED setting).
+/// The page background of the current theme.
 pub fn bg_rgb() -> (f32, f32, f32) {
-    if BLACK_BG.load(std::sync::atomic::Ordering::Relaxed) {
-        (0.0, 0.0, 0.0)
-    } else {
-        GROUND
-    }
+    THEMES[THEME.load(std::sync::atomic::Ordering::Relaxed) as usize % THEMES.len()]
 }
 
 pub fn set_accent(name: &str) {
-    let i = match name {
-        "blue" => 1,
-        "green" => 2,
-        "purple" => 3,
-        "orange" => 4,
-        _ => 0,
-    };
-    ACCENT_IDX.store(i, std::sync::atomic::Ordering::Relaxed);
+    let i = ACCENT_NAMES.iter().position(|a| *a == name).unwrap_or(0);
+    ACCENT_IDX.store(i as u8, std::sync::atomic::Ordering::Relaxed);
 }
 pub const PANEL: [f32; 4] = [0.06, 0.06, 0.08, 0.92];
 pub const ROW_FOCUS: [f32; 4] = [1.0, 1.0, 1.0, 0.16];
@@ -121,7 +209,7 @@ pub fn text(p: Painter, s: &str, x: f32, y: f32, size: i32, col: [f32; 4], align
     let col = dimmed(col);
     let s = crate::i18n::tr(s);
     let Ok(c) = CString::new(s.replace('\0', "")) else { return 0.0 };
-    p.text(c.as_ptr(), x, y, size, col, align, bold as i32)
+    p.text(c.as_ptr(), x, y, size, col, align, font_code(bold))
 }
 
 /// [`text`] without the translation lookup: for server and user content (titles, channel names,
@@ -130,7 +218,7 @@ pub fn text(p: Painter, s: &str, x: f32, y: f32, size: i32, col: [f32; 4], align
 pub fn text_raw(p: Painter, s: &str, x: f32, y: f32, size: i32, col: [f32; 4], align: i32, bold: bool) -> f32 {
     let col = dimmed(col);
     let Ok(c) = CString::new(s.replace('\0', "")) else { return 0.0 };
-    p.text(c.as_ptr(), x, y, size, col, align, bold as i32)
+    p.text(c.as_ptr(), x, y, size, col, align, font_code(bold))
 }
 
 /// How wide the soft end of a cut line is: text that does not fit dissolves over this width
@@ -143,12 +231,12 @@ pub const CUT_FADE: f32 = 44.0;
 pub fn text_fade_raw(p: Painter, s: &str, x: f32, y: f32, size: i32, col: [f32; 4], bold: bool, lead: Option<(f32, f32)>, trail: Option<(f32, f32)>) -> f32 {
     let col = dimmed(col);
     let Ok(c) = CString::new(s.replace('\0', "")) else { return 0.0 };
-    p.text_fade_edges(c.as_ptr(), x, y, size, col, bold as i32, lead, trail)
+    p.text_fade_edges(c.as_ptr(), x, y, size, col, font_code(bold), lead, trail)
 }
 
 /// The width of `s` as drawn.
-pub fn text_width(m: &dyn plx_machine::machine::Measure, s: &str, size: i32, bold: bool) -> f32 {
-    CString::new(s.replace('\0', "")).map_or(0.0, |c| m.width(&c, size, bold))
+pub fn text_width(_m: &dyn plx_machine::machine::Measure, s: &str, size: i32, bold: bool) -> f32 {
+    width_code(s, size, font_code(bold))
 }
 
 /// `s` on one line of at most `w` px: drawn as it is when it fits; otherwise cut at `w` with its
@@ -202,7 +290,7 @@ pub fn fit_prefix(m: &dyn plx_machine::machine::Measure, s: &str, w: f32, size: 
 /// `s` word-wrapped into at most `max` lines of `w` px. The last line is the whole rest (draw it
 /// with [`text_cut`], which fades it out where it is cut); a word wider than a line is broken.
 pub fn wrap_lines(m: &dyn plx_machine::machine::Measure, s: &str, w: f32, size: i32, bold: bool, max: usize) -> Vec<String> {
-    let width = |t: &str| CString::new(t).map_or(0.0, |c| m.width(&c, size, bold));
+    let width = |t: &str| text_width(m, t, size, bold);
     let mut lines: Vec<String> = Vec::new();
     let mut rest = s.trim();
     while !rest.is_empty() && lines.len() < max {
