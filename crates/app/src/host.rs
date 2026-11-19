@@ -294,6 +294,8 @@ pub struct AppRig {
     /// The sign-in flow's phone page and the nonce it expects.
     signin_phone: Option<rd_phone::PhoneForm>,
     signin_nonce: String,
+    /// The Sign in screen: it hears when the sign-in ends (and closes once signed in).
+    signin_from: Option<MachineId>,
     /// Notifications made on the main thread, delivered with the next frame.
     pending: Vec<(Addr, RdMsg)>,
     /// Every screen that asked for something gets `Changed` when anything arrives.
@@ -318,6 +320,7 @@ impl AppRig {
             phone_from: None,
             signin_phone: None,
             signin_nonce: String::new(),
+            signin_from: None,
             pending: Vec::new(),
             listeners: Vec::new(),
             read_dirty: false,
@@ -684,6 +687,13 @@ impl AppRig {
                 v.opened = opened;
                 self.notify_phone_owner();
             }
+        }
+    }
+
+    fn notify_signin_screen(&mut self) {
+        if let Some(m) = self.signin_from {
+            let a = self.next_addr(m);
+            self.pending.push((a, RdMsg::Changed));
         }
     }
 
@@ -1163,6 +1173,7 @@ impl AppRig {
                 v.phone_url = None;
             }
             self.signin_code(&text);
+            self.notify_signin_screen();
         } else if !p.running() {
             // The page's lifetime ran out while Sign in is still open: a fresh one (new address).
             self.signin_phone = None;
@@ -1203,7 +1214,7 @@ impl AppRig {
             v.busy = true;
             v.error = None;
         }
-        self.spawn(MachineId::Nav, "signin", move || {
+        self.spawn(self.signin_from.unwrap_or(MachineId::Nav), "signin", move || {
             let result = (|| -> Result<Saved, String> {
                 let http = rd_core::session::http_client();
                 let client = rd_core::auth::ClientId::parse(&saved.client_id)?;
@@ -1351,7 +1362,7 @@ fn signin_form(authorize_url: &str) -> rd_phone::Form {
         ),
         (
             "Chrome, Edge, Brave".into(),
-            "With an http:// or https:// redirect URI, the address bar holds the address after you approve: copy it.\n\nWith another kind (like myapp://callback) these browsers stay on Reddit's page without showing it. Before approving: press F12, open Network, tick \"Preserve log\", then approve. Click the request named authorize, find Location under Response Headers, copy its value and paste it here. (Firefox is simpler.)".into(),
+            "With an http:// or https:// redirect URI, the address bar holds the address after you approve: copy it.\n\nWith another kind (like myapp://callback), Approve seems to do nothing: the browser stays on Reddit's page. The address is in the developer tools: press F12, open Console, and look for the red line \"Failed to launch '…' because the scheme does not have a registered handler\". Right-click the address in it, choose \"Copy link address\" and paste it here. If the Console was not open when you approved, open it and approve again.".into(),
         ),
         (
             "Phone".into(),
@@ -1593,7 +1604,11 @@ impl Rig<RdHost> for AppRig {
                 self.store.bump();
             }
             RdFx::Typed(t, text) => self.typed(from, t, text),
-            RdFx::SignInStart => self.signin_start(),
+            RdFx::SignInStart => {
+                self.signin_from = Some(from);
+                self.listen(from);
+                self.signin_start();
+            }
             RdFx::SignInStop => self.signin_stop(),
             RdFx::SignOut => self.sign_out(),
             RdFx::LoadInbox => self.load_inbox(from),

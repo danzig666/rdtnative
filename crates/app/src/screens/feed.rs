@@ -706,6 +706,15 @@ impl Machine<RdHost> for FeedScreen {
                     return Handled::Yes;
                 }
             }
+            // The side menu's handle (top left): a click opens the side menu.
+            if self.root && !self.nav_open.get() && self.choice.is_none() && *x < LEFT + 45.0 && *y < header_h() {
+                self.nav_open.set(true);
+                let items = self.nav_items(cx);
+                let i = items.iter().position(|n| matches!(n, NavItem::Feed(f) if *f == self.key.feed)).unwrap_or(1);
+                self.focus_req.set(Some(self.nav.elem(i)));
+                fx.invalidate(plx_machine::present::Provenance::Input);
+                return Handled::Yes;
+            }
             if self.nav_open.get() && *x > NAV_W {
                 self.nav_open.set(false);
                 self.focus_req.set(Some(self.content_last.get()));
