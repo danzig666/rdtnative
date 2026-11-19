@@ -1,5 +1,10 @@
 # rdtnative
 
+> [!IMPORTANT]
+> **Bring your own API key.** rdtnative comes without a Reddit API key: it only works with a
+> client ID you supply yourself (entered in Settings › Reddit API, with the remote or from your
+> phone). There are ways to get a working API key; search Reddit for them.
+
 A native Reddit client for LG webOS TVs (webOS 4+), built for the Magic Remote. It is a Rust app
 with no browser or Android runtime, built the same way as
 [ytnative](https://github.com/danzig666/ytnative): the UI core is vendored from
