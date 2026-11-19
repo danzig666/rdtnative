@@ -60,6 +60,8 @@ pub enum MenuKind {
     AdultCheck,
     /// Links in a post or comment: (post id, comment name or empty).
     Links(String, String),
+    /// A newer release was found: install it now?
+    Update,
 }
 
 /// What a navigation entry shows.

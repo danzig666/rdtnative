@@ -33,6 +33,7 @@ enum Act {
     Reply(String, String),
     SetPref(&'static str, String),
     Adult,
+    InstallUpdate,
     Close,
 }
 
@@ -192,6 +193,12 @@ impl MenuScreen {
                     rows.push((Row::new(label).icon(Icon::Leave).raw(), act));
                 }
             }
+            MenuKind::Update => {
+                let v = crate::update::found_version().unwrap_or_default();
+                title = format!("{} {v} (you have {})", crate::i18n::tr("rdtnative update available:"), crate::update::current_version());
+                rows.push((Row::new("Install now (closes the app)").icon(Icon::Check), Act::InstallUpdate));
+                rows.push((Row::new("Later (Settings \u{203a} Updates)"), Act::Close));
+            }
             MenuKind::Sort(_) | MenuKind::Time(_) | MenuKind::CommentSort(_) => {
                 rows.push((Row::new("Close"), Act::Close));
             }
@@ -280,6 +287,11 @@ impl MenuScreen {
             Act::Adult => {
                 close(fx);
                 fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::AdultCheck))));
+            }
+            Act::InstallUpdate => {
+                close(fx);
+                crate::update::install();
+                fx.push(Fx::App(RdFx::Toast("Homebrew Channel is installing the update; the app closes when it is done".into())));
             }
             Act::Close => close(fx),
         }

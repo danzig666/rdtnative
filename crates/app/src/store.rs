@@ -20,7 +20,7 @@ pub fn set_data_dir(p: PathBuf) {
     let _ = DATA_DIR.set(p);
 }
 
-fn data_file(name: &str) -> PathBuf {
+pub fn data_file(name: &str) -> PathBuf {
     DATA_DIR.get().cloned().unwrap_or_else(std::env::temp_dir).join(name)
 }
 

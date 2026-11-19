@@ -26,6 +26,7 @@ mod sdl;
 mod sim;
 mod store;
 mod ui;
+mod update;
 #[cfg_attr(any(windows, feature = "sim"), path = "sim/wl.rs")]
 mod wl;
 
@@ -202,6 +203,8 @@ fn main() {
         log("rdtnative: graphics ready");
 
         let mut rig = AppRig::new();
+        // Once in a while at start: is there a newer release? (asked about on the feed)
+        update::start_auto_check();
         let mut d = Dispatcher::<RdHost>::with_transition(Box::new(PageDip::new()));
         d.request(MachineId::Nav, NavOp::Root(RdArg::Home));
         let (mut mouse_down, mut last_wheel) = (false, 0u32);
@@ -331,6 +334,11 @@ fn main() {
                     source: plx_machine::machine::Source::Sdl,
                     kind: plx_machine::machine::InputKind::PointerHidden,
                 });
+            }
+            // The automatic update check found a newer version: ask once, on the feed (never over
+            // a video or a page being read).
+            if d.top_screen().map(|s| s.name()) == Some("feed") && update::take_prompt() {
+                d.request(MachineId::Nav, NavOp::Present(RdArg::Menu(host::MenuKind::Update)));
             }
             let had_input = !inputs.is_empty();
             if had_input {

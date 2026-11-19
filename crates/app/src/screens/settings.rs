@@ -44,6 +44,8 @@ enum Act {
     AddFilterSub,
     AddFilterWord,
     ClearHistory,
+    CheckUpdate,
+    InstallUpdate,
     Nothing,
 }
 
@@ -114,6 +116,18 @@ impl SettingsScreen {
                     "Imgur albums and galleries are loaded through Imgur's API with this client ID. Register your own at api.imgur.com/oauth2/addclient and enter it here.",
                 ));
                 v.push((Row::new("Clear read history").icon(Icon::History), Act::ClearRead, "Forget which posts you opened (they stop being dimmed or hidden)."));
+                v.push((
+                    Row::new("Check for updates").icon(Icon::Repeat).value(update_text()).raw(),
+                    Act::CheckUpdate,
+                    "Looks for a newer rdtnative on GitHub. The app also checks by itself about once a day and asks before installing. Updates are installed through Homebrew Channel.",
+                ));
+                if crate::update::found() {
+                    v.push((
+                        Row::new(format!("Install version {} (closes the app)", crate::update::found_version().unwrap_or_default())).icon(Icon::Check).raw(),
+                        Act::InstallUpdate,
+                        "Homebrew Channel downloads the new version, checks it and installs it. rdtnative closes while it installs; open it again afterwards.",
+                    ));
+                }
                 v.push((Row::new("About and remote buttons").icon(Icon::Info), Act::About, "Version, credits and what each remote button does."));
             }
             Mode::Page(i) => {
@@ -189,6 +203,8 @@ impl SettingsScreen {
             Act::AddFilterSub => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::FilterSub)))),
             Act::AddFilterWord => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::FilterWord)))),
             Act::ClearHistory => fx.push(Fx::App(RdFx::EditPrefs(|p, _| p.history.clear(), String::new()))),
+            Act::CheckUpdate => crate::update::check_now(),
+            Act::InstallUpdate => crate::update::install(),
             Act::Nothing => {}
         }
     }
@@ -311,6 +327,24 @@ impl Screen<RdHost> for SettingsScreen {
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
+    }
+}
+
+/// The update state, for the "Check for updates" row.
+fn update_text() -> String {
+    use crate::update::State;
+    let tr = |s: &str| crate::i18n::tr(s).to_string();
+    match crate::update::state() {
+        State::Unknown => format!("{} {}", tr("Version"), crate::update::current_version()),
+        State::Checking => tr("Checking\u{2026}"),
+        State::UpToDate => format!("{} ({})", tr("Up to date"), crate::update::current_version()),
+        State::Available(r) => format!("{} {}", tr("Version available:"), r.version),
+        State::CheckFailed(_) => tr("Couldn't check"),
+        State::Downloading(Some(p)) => format!("{} {p}%", tr("Downloading")),
+        State::Downloading(None) => tr("Downloading\u{2026}"),
+        State::Installing => tr("Installing\u{2026}"),
+        State::Installed => tr("Installed: open rdtnative again"),
+        State::InstallFailed(e) => format!("{} {}", tr("Update failed:"), tr(&e)),
     }
 }
 
