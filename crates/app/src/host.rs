@@ -681,7 +681,6 @@ impl AppRig {
     fn open_phone(&mut self) {
         let mut form = rd_phone::Form::new("rdtnative: Reddit API settings");
         form.intro = config::SETUP_STEPS.iter().map(|s| s.to_string()).collect();
-        form.links.push(("Open reddit.com/prefs/apps".into(), config::REDDIT_APPS_URL.into()));
         for f in Field::ALL {
             let s = f.spec(&self.store.draft);
             form.fields.push(

@@ -94,14 +94,11 @@ pub struct FieldSpec {
     pub max_len: usize,
 }
 
-/// Where users create their Reddit app.
-pub const REDDIT_APPS_URL: &str = "https://www.reddit.com/prefs/apps";
-
-/// Short instructions shown above the fields (TV and phone).
+/// Short notes shown with the fields (TV and phone).
 pub const SETUP_STEPS: &[&str] = &[
-    "1. Open reddit.com/prefs/apps and create an app of type \"installed app\".",
-    "2. Set its redirect URI to the one below (or your own, and enter that here).",
-    "3. Copy the client ID shown under the app's name.",
+    "rdtnative comes without a Reddit API key: bring your own client ID.",
+    "Enter the client ID, and the redirect URI and user agent that go with it.",
+    "There are ways to get a working API key; search Reddit for them.",
 ];
 
 /// The three API settings, pre-filled from `current`.
@@ -113,7 +110,7 @@ pub fn api_fields(current: Option<&ApiConfig>) -> Vec<FieldSpec> {
             label: "OAuth client ID",
             value: current.map(|c| c.client_id.clone()).unwrap_or_default(),
             placeholder: "e.g. p-jcoLKBynTLew".into(),
-            help: "The short code under your app's name on reddit.com/prefs/apps. Installed apps have no secret.",
+            help: "Your Reddit API key. rdtnative comes without one.",
             url: false,
             max_len: 30,
         },
@@ -125,7 +122,7 @@ pub fn api_fields(current: Option<&ApiConfig>) -> Vec<FieldSpec> {
                 .map(|c| c.redirect_uri.clone())
                 .unwrap_or_default(),
             placeholder: crate::DEFAULT_REDIRECT_URI.into(),
-            help: "Must match your Reddit app exactly. Leave empty for rdtnative's page, which hands the sign-in to the TV by itself.",
+            help: "The redirect URI that goes with your client ID, exactly. Leave empty for rdtnative's page, which hands the sign-in to the TV by itself.",
             url: true,
             max_len: MAX_REDIRECT_URI,
         },

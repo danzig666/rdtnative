@@ -1,6 +1,6 @@
 //! "Enter on your phone": while a TV form is open, a one-time web page on the home network lets a
-//! phone fill in its fields (typing or pasting, e.g. a Reddit client ID copied from
-//! reddit.com/prefs/apps). The TV shows the page's address as a QR code.
+//! phone fill in its fields (typing or pasting, e.g. a Reddit client ID). The TV
+//! shows the page's address as a QR code.
 //!
 //! The same approach as RustCouch's "Type on phone" (danzig666/webos-rustdesk-client), and as narrow:
 //! it starts only when the person asks for it, binds the TV's LAN address on a random port, serves
@@ -93,7 +93,7 @@ pub struct Form {
     pub title: String,
     /// Paragraphs above the fields.
     pub intro: Vec<String>,
-    /// Links shown under the intro (label, https URL), e.g. reddit.com/prefs/apps.
+    /// Links shown under the intro (label, https URL).
     pub links: Vec<(String, String)>,
     pub fields: Vec<Field>,
     pub submit: String,
@@ -360,7 +360,7 @@ mod tests {
     fn form() -> Form {
         let mut f = Form::new("Reddit <API>");
         f.intro.push("Create an app.".into());
-        f.links.push(("Reddit apps".into(), "https://www.reddit.com/prefs/apps".into()));
+        f.links.push(("Help".into(), "https://example.com/help".into()));
         f.fields.push(Field::new("client_id", "Client ID").value("prefilled12345").help("Under the app's name"));
         f.fields.push(Field::new("redirect_uri", "Redirect URI").kind(Kind::Url).placeholder("https://x/cb").max_len(20));
         f
@@ -395,7 +395,7 @@ mod tests {
         assert!(html.contains(r#"value="prefilled12345""#));
         assert!(html.contains(r#"placeholder="https://x/cb""#));
         assert!(html.contains(r#"inputmode="url""#));
-        assert!(html.contains(r#"href="https://www.reddit.com/prefs/apps""#));
+        assert!(html.contains(r#"href="https://example.com/help""#));
     }
 
     #[test]

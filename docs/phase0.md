@@ -3,14 +3,13 @@
 `rd-spike` is a small command-line tool that proves rdtnative's Reddit access works with **your own
 client ID**. It saves real responses as test data for `rd-core`. It runs on a PC and on the TV.
 
-## 1. Create your Reddit app (once)
+## 1. Bring your own API key
 
-1. Go to <https://www.reddit.com/prefs/apps> and choose **create another app…**
-2. Set the type to **installed app**. A "web app" or "script" app needs a secret, which rdtnative never has.
-3. Set the redirect URI to `https://danzig666.github.io/rdtnative/callback`.
-4. Copy the client ID: the short string under the app name.
+rdtnative comes without a Reddit API key: you need your own client ID (with no secret), plus the
+redirect URI and user agent that go with it. There are ways to get a working API key; search Reddit
+for them.
 
-A client ID for an installed app is not a secret, but keep your **refresh token** private. `rd-spike login` stores
+A client ID is not a secret, but keep your **refresh token** private. `rd-spike login` stores
 it in `.rdt-spike.json`, which is git-ignored and readable only by you.
 
 ## 2. Run it on a PC

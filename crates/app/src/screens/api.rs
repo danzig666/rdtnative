@@ -149,7 +149,7 @@ impl Screen<RdHost> for ApiScreen {
         self.list.draw(p, f.measure, &rows, focus);
         self.list.stops(f, ROWS);
 
-        // Under the list: the steps on reddit.com.
+        // Under the list: the setup notes.
         let mut y = self.list.rect.y + self.list.rect.h + 30.0;
         for step in rd_core::config::SETUP_STEPS {
             for line in ui::wrap_lines(f.measure, crate::i18n::tr(step), 1000.0, 26, false, 2) {
@@ -198,7 +198,7 @@ impl Screen<RdHost> for ApiScreen {
             ui::text(p, "OK edits it with the on-screen keyboard.", px, PANEL.y + PANEL.h - 70.0, 24, ui::FAINT, ui::ALIGN_LEFT, false);
         } else {
             let (title, body) = if focus == Some(ROW_PHONE) {
-                ("Enter on phone", "Shows a QR code. Scan it with a phone on the same Wi-Fi: a page opens with all three settings, so you can paste the client ID straight from reddit.com/prefs/apps.")
+                ("Enter on phone", "Shows a QR code. Scan it with a phone on the same Wi-Fi: a page opens with all three settings, so you can paste the client ID there.")
             } else {
                 ("Save and connect", "Checks the settings, saves them on this TV and loads the front page with your client ID.")
             };

@@ -64,11 +64,10 @@ requests per minute limit is their own, and Reddit's terms apply to each user's 
 The scraping route that ReSync uses (a WebView-minted `/svc/shreddit/token`, TLS fingerprint
 dodging and CDP login past reCAPTCHA) stays out of scope.
 
-### What the user does once (on a phone or PC)
-1. At reddit.com/prefs/apps, create an app of type **"installed app"**, with the redirect URI
-   `https://danzig666.github.io/rdtnative/callback`. If Reddit requires approval for a new app,
-   the user must have that approval too.
-2. Copy the client ID (about 14–22 characters). An installed app has no secret.
+### What the user brings
+Their own API key: a client ID (about 14–22 characters, no secret), with the redirect URI and user
+agent that go with it. rdtnative ships without one and does not say where to get one; there are
+ways to get a working API key, which users find by searching Reddit.
 
 ### Getting the ID onto the TV and signing in (no typing on the remote)
 ```
@@ -114,8 +113,7 @@ on OK:
 - **On a phone:** an **Enter on phone** button shows a QR code. It works the same way as RustCouch's
   "Type on phone" (danzig666/webos-rustdesk-client): a one-time page on the TV's LAN address, with a
   random port, a random 128-bit path and one valid submission, open for 10 minutes. It has all three
-  fields pre-filled, plus a link to reddit.com/prefs/apps so the client ID can be copied and pasted
-  on the phone. Wrong values come back with a message under each field. The TV shows "Opened on your
+  fields pre-filled, so the client ID can be pasted on the phone. Wrong values come back with a message under each field. The TV shows "Opened on your
   phone…" and fills in the fields when the form is sent.
 
 Labels, help text, limits and validation are defined once (`rd_core::config::api_fields`,

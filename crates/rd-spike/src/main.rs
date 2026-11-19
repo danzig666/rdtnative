@@ -412,7 +412,6 @@ fn setup_on_phone() -> Result<ApiConfig> {
     });
     let mut form = Form::new("rdtnative: Reddit API settings");
     form.intro = config::SETUP_STEPS.iter().map(|s| s.to_string()).collect();
-    form.links.push(("Open reddit.com/prefs/apps".into(), config::REDDIT_APPS_URL.into()));
     for f in config::api_fields(current.as_ref()) {
         form.fields.push(
             Field::new(f.key, f.label)

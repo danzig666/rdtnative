@@ -34,8 +34,7 @@ impl fmt::Display for RdError {
         match self {
             RdError::InvalidClient => write!(
                 f,
-                "Reddit rejected the client ID. Check that it was copied correctly and that the app \
-                 type is \"installed app\" (not \"web app\" or \"script\")."
+                "Reddit rejected the client ID. Check that it was entered correctly."
             ),
             RdError::InvalidGrant => write!(f, "The sign-in expired or was revoked. Please sign in again."),
             RdError::RedirectMismatch => write!(
