@@ -1321,7 +1321,8 @@ impl AppRig {
     }
 }
 
-/// RedGIFs' temporary token, fetched once and kept for 20 hours.
+/// RedGIFs' temporary token, fetched once and kept for 20 hours. RedGIFs ties it to the
+/// User-Agent that asked for it (another one gets 401), so it goes with the gif requests' one.
 fn redgifs_token(http: &reqwest::blocking::Client) -> Option<String> {
     static TOKEN: Mutex<Option<(String, std::time::Instant)>> = Mutex::new(None);
     if let Some((t, at)) = TOKEN.lock().unwrap().clone() {
@@ -1329,7 +1330,13 @@ fn redgifs_token(http: &reqwest::blocking::Client) -> Option<String> {
             return Some(t);
         }
     }
-    let v: serde_json::Value = http.get(media::REDGIFS_TOKEN_URL).send().ok()?.json().ok()?;
+    let v: serde_json::Value = http
+        .get(media::REDGIFS_TOKEN_URL)
+        .header("User-Agent", rd_core::ua::user_agent(rd_core::ua::host_platform(), None))
+        .send()
+        .ok()?
+        .json()
+        .ok()?;
     let t = v["token"].as_str()?.to_string();
     *TOKEN.lock().unwrap() = Some((t.clone(), std::time::Instant::now()));
     Some(t)
