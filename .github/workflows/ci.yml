@@ -20,6 +20,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -27,7 +28,12 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Simulator libraries (SDL2, SDL2_ttf, GL)
-        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libgl-dev
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends -o Dpkg::Options::=--force-confold libsdl2-dev libsdl2-ttf-dev libgl-dev
       - name: Core tests (rd-core, rd-phone, rd-spike, xtask)
         run: cargo test
       - name: App tests (built for the Linux simulator)
@@ -39,6 +45,7 @@ jobs:
 
   tv-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
