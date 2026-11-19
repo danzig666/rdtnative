@@ -43,7 +43,9 @@ pub fn form(form: &Form, values: &Values, errors: &[(String, String)]) -> String
         }
         h += "</div>";
     }
-    h += r#"<form method="post" autocomplete="off">"#;
+    // The TV checks every field itself; `novalidate` stops the phone's browser from rejecting
+    // custom-scheme redirect URIs in a `type="url"` input before they reach it.
+    h += r#"<form method="post" autocomplete="off" novalidate>"#;
     for (i, f) in form.fields.iter().enumerate() {
         let id = format!("f{i}");
         let value = values.get(&f.key).map(String::as_str).unwrap_or("");

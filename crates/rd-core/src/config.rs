@@ -146,18 +146,25 @@ pub fn from_values(get: impl Fn(&str) -> String) -> Result<ApiConfig, Vec<FieldE
     ApiConfig::from_fields(&get(F_CLIENT_ID), &get(F_REDIRECT_URI), &get(F_USER_AGENT))
 }
 
-/// Reddit compares the redirect URI exactly; we only make sure it is a plausible absolute URL.
+/// Reddit compares the redirect URI exactly; we only make sure it is a plausible absolute URI.
+/// Any scheme is accepted (`https://`, `http://`, a custom `myapp://cb` or `com.example:/cb`).
 pub fn check_redirect_uri(r: &str) -> Result<(), String> {
     if r.len() > MAX_REDIRECT_URI {
         return Err(format!("Too long (at most {MAX_REDIRECT_URI} characters)"));
     }
-    let rest = r
-        .strip_prefix("https://")
-        .or_else(|| r.strip_prefix("http://"))
-        .ok_or("Must start with https:// or http://")?;
-    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if host.is_empty() {
-        return Err("Has no host name".into());
+    let (scheme, rest) = r.split_once(':').ok_or("Must start with a scheme, like https:// or myapp://")?;
+    let mut sc = scheme.chars();
+    if !sc.next().is_some_and(|c| c.is_ascii_alphabetic())
+        || !sc.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    {
+        return Err("Must start with a scheme, like https:// or myapp://".into());
+    }
+    if let Some(auth) = rest.strip_prefix("//") {
+        if auth.split(['/', '?', '#']).next().unwrap_or("").is_empty() {
+            return Err("Has no host name".into());
+        }
+    } else if rest.is_empty() {
+        return Err("Has nothing after the scheme".into());
     }
     if r.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err("Cannot contain spaces".into());
@@ -228,13 +235,23 @@ mod tests {
 
     #[test]
     fn every_bad_field_is_reported() {
-        let e = ApiConfig::from_fields("x", "ftp://a", "ua\u{e9}tooshort").unwrap_err();
+        let e = ApiConfig::from_fields("x", "1ftp://a", "ua\u{e9}tooshort").unwrap_err();
         let fields: Vec<_> = e.iter().map(|e| e.field).collect();
         assert_eq!(fields, [F_CLIENT_ID, F_REDIRECT_URI, F_USER_AGENT]);
         assert!(e[0].message.starts_with("A client ID"));
         assert!(check_redirect_uri("https://").is_err());
         assert!(check_redirect_uri("https://a b/").is_err());
         assert!(check_redirect_uri("https://a/cb#x").is_err());
+        assert!(check_redirect_uri("no-scheme/cb").is_err());
+        assert!(check_redirect_uri("myapp:").is_err());
+        assert!(check_redirect_uri("//host/cb").is_err());
+    }
+
+    #[test]
+    fn any_scheme_is_accepted() {
+        for ok in ["https://a/cb", "http://localhost:8080/cb", "ftp://a", "myapp://callback", "com.example.app:/oauth2redirect", "rdt+tv://x"] {
+            assert_eq!(check_redirect_uri(ok), Ok(()), "{ok}");
+        }
         assert!(check_user_agent("short").is_err());
         assert!(check_user_agent(&"a".repeat(300)).is_err());
     }
