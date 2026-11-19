@@ -446,3 +446,17 @@ pub fn launch_browser(url: &str) -> Result<(), String> {
 pub fn launch_browser(_url: &str) -> Result<(), String> {
     Err("the simulator cannot open other apps".into())
 }
+
+/// Closes the TV's browser (a sign-in opened in it is done) and brings this app back.
+#[cfg(not(any(windows, feature = "sim")))]
+pub fn close_browser_and_return() {
+    let Ok(luna) = crate::ls2::Luna::wide(plx_base::paths::app_id()) else { return };
+    let r = luna.call("luna://com.webos.applicationManager/closeByAppId", r#"{"id":"com.webos.app.browser"}"#);
+    crate::log(&format!("browser: close -> {r}"));
+    let payload = serde_json::json!({"id": plx_base::paths::app_id()}).to_string();
+    let r = luna.call("luna://com.webos.applicationManager/launch", &payload);
+    crate::log(&format!("browser: back to the app -> {r}"));
+}
+
+#[cfg(any(windows, feature = "sim"))]
+pub fn close_browser_and_return() {}

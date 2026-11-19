@@ -173,6 +173,8 @@ pub enum RdFx {
     Typed(Typing, String),
     SignInStart,
     SignInStop,
+    /// Sign in with the TV's own browser, opened on Reddit's approve page.
+    SignInOnTv,
     SignOut,
     LoadInbox,
     ClearReadHistory,
@@ -296,6 +298,10 @@ pub struct AppRig {
     /// The sign-in flow's phone page and the nonce it expects.
     signin_phone: Option<rd_phone::PhoneForm>,
     signin_nonce: String,
+    /// Reddit's approve page for the running sign-in.
+    signin_authorize: String,
+    /// The sign-in was opened in the TV's browser: close it and come back when it is done.
+    signin_browser: bool,
     /// The Sign in screen: it hears when the sign-in ends (and closes once signed in).
     signin_from: Option<MachineId>,
     /// Notifications made on the main thread, delivered with the next frame.
@@ -322,6 +328,8 @@ impl AppRig {
             phone_from: None,
             signin_phone: None,
             signin_nonce: String::new(),
+            signin_authorize: String::new(),
+            signin_browser: false,
             signin_from: None,
             pending: Vec::new(),
             listeners: Vec::new(),
@@ -1148,9 +1156,22 @@ impl AppRig {
         };
         let Ok(client) = rd_core::auth::ClientId::parse(&saved.client_id) else { return };
         self.signin_nonce = rd_core::random_token(16);
-        let state = rd_core::auth::State { nonce: self.signin_nonce.clone(), tv: None };
-        let url = rd_core::auth::authorize_url(&client, saved.redirect(), &state.encode());
-        let phone = rd_phone::PhoneForm::start(signin_form(&url), Box::new(signin_validator(self.signin_nonce.clone()))).ok();
+        // The state carries the sign-in page's host:port, so rdtnative's callback page hands the
+        // code straight back to this TV (from a phone, a computer or the TV's own browser).
+        let nonce = self.signin_nonce.clone();
+        let mut url = String::new();
+        let phone = rd_phone::PhoneForm::start_with(
+            true,
+            |host| {
+                let state = rd_core::auth::State { nonce, tv: Some(host.to_string()) };
+                url = rd_core::auth::authorize_url(&client, saved.redirect(), &state.encode());
+                signin_form(&url)
+            },
+            Box::new(signin_validator(self.signin_nonce.clone())),
+        )
+        .ok();
+        self.signin_authorize = url;
+        self.signin_browser = false;
         let auto = phone.as_ref().and_then(|p| p.url.rsplit_once('/')).map(|(base, _)| format!("{base}/"));
         self.store.signin = Some(SignInView {
             phone_url: phone.as_ref().map(|p| p.url.clone()),
@@ -1159,6 +1180,50 @@ impl AppRig {
             error: None,
         });
         self.signin_phone = phone;
+    }
+
+    /// Opens Reddit's approve page in the TV's browser. Reddit sends the browser to the redirect
+    /// URI, which must hand the code back to the sign-in page's server: rdtnative's callback page
+    /// does (the state names the server), and so does the server's own address.
+    fn signin_on_tv(&mut self, from: MachineId) {
+        let Some(v) = self.store.signin.as_ref().filter(|v| v.phone_url.is_some()) else {
+            self.store.toast("Choose \u{201c}New address\u{201d} first", self.now_ms);
+            return;
+        };
+        let redirect = self.store.saved.as_ref().map(|s| s.redirect().to_string()).unwrap_or_default();
+        if redirect != rd_core::DEFAULT_REDIRECT_URI && v.auto_redirect.as_deref() != Some(redirect.as_str()) {
+            self.store.toast("Your app's redirect URI cannot come back to the TV: use a phone or computer", self.now_ms);
+            return;
+        }
+        // The sign-in page's server catches Reddit's redirect on its own thread; this app may be
+        // in the background meanwhile, so a watcher closes the browser and comes back.
+        if !std::mem::replace(&mut self.signin_browser, true) {
+            if let Some(done) = self.signin_phone.as_ref().map(|p| p.submitted()) {
+                let _ = plx_base::task::spawn("browser-watch", move || {
+                    let end = std::time::Instant::now() + std::time::Duration::from_secs(900);
+                    while std::time::Instant::now() < end {
+                        if done.load(std::sync::atomic::Ordering::SeqCst) {
+                            crate::player::close_browser_and_return();
+                            return;
+                        }
+                        // The form is gone (sign-in closed) and never got a submission.
+                        if std::sync::Arc::strong_count(&done) == 1 {
+                            return;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                    }
+                });
+            }
+        }
+        let url = self.signin_authorize.clone();
+        self.store.toast("Opening Reddit in the TV's browser\u{2026}", self.now_ms);
+        self.spawn(from, "browser", move || match crate::player::launch_browser(&url) {
+            Ok(()) => Work::Action { undo: None, error: None, ok_toast: None },
+            Err(e) => {
+                crate::log(&format!("browser: {e}"));
+                Work::Action { undo: None, error: Some("The TV's browser did not open. Use a phone or computer.".into()), ok_toast: None }
+            }
+        });
     }
 
     fn signin_stop(&mut self) {
@@ -1619,6 +1684,7 @@ impl Rig<RdHost> for AppRig {
                 self.signin_start();
             }
             RdFx::SignInStop => self.signin_stop(),
+            RdFx::SignInOnTv => self.signin_on_tv(from),
             RdFx::SignOut => self.sign_out(),
             RdFx::LoadInbox => self.load_inbox(from),
             RdFx::Play { url, looping } => {

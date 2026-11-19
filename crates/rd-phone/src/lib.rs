@@ -143,6 +143,7 @@ pub struct PhoneForm {
     stop: Arc<AtomicBool>,
     opened: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
+    submitted: Arc<AtomicBool>,
 }
 
 /// The TV's address on the home network: the interface its default route uses (no packet is sent).
@@ -195,7 +196,21 @@ impl PhoneForm {
 
     /// Starts on a given address (tests use 127.0.0.1).
     pub fn start_on(ip: IpAddr, form: Form, validate: Box<Validate>) -> Result<PhoneForm, String> {
-        let listener = bind(ip, form.short).map_err(|e| format!("cannot open a port on the TV ({e})"))?;
+        PhoneForm::start_built(ip, form.short, move |_| form, validate)
+    }
+
+    /// Starts on the TV's LAN address with a form that needs the server's `host:port` (e.g. an
+    /// OAuth state that tells a callback page where to hand the code back).
+    pub fn start_with(short: bool, build: impl FnOnce(&str) -> Form, validate: Box<Validate>) -> Result<PhoneForm, String> {
+        let ip = lan_ip().ok_or("the TV has no home network address")?;
+        PhoneForm::start_built(ip, short, build, validate)
+    }
+
+    fn start_built(ip: IpAddr, short: bool, build: impl FnOnce(&str) -> Form, validate: Box<Validate>) -> Result<PhoneForm, String> {
+        let listener = bind(ip, short).map_err(|e| format!("cannot open a port on the TV ({e})"))?;
+        let host = listener.local_addr().map_err(|e| e.to_string())?.to_string();
+        let mut form = build(&host);
+        form.short = short;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let token = if form.short { short_path()? } else { random_path()? };
@@ -206,12 +221,17 @@ impl PhoneForm {
             stop: Arc::new(AtomicBool::new(false)),
             opened: Arc::new(AtomicBool::new(false)),
             running: Arc::new(AtomicBool::new(true)),
+            submitted: Arc::new(AtomicBool::new(false)),
         };
         let (slot, stop, opened, running) = (me.slot.clone(), me.stop.clone(), me.opened.clone(), me.running.clone());
+        let submitted = me.submitted.clone();
         std::thread::Builder::new()
             .name("phone-form".into())
             .spawn(move || {
                 serve(listener, &token, &form, &*validate, &slot, &stop, &opened);
+                if slot.lock().is_ok_and(|g| g.is_some()) {
+                    submitted.store(true, Ordering::SeqCst);
+                }
                 running.store(false, Ordering::SeqCst);
             })
             .map_err(|e| e.to_string())?;
@@ -231,6 +251,12 @@ impl PhoneForm {
     /// False once the listener stopped (submitted, expired or dropped).
     pub fn running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    /// Set once a valid submission arrived (also while the TV app is in the background); the
+    /// count of other holders drops when the form is gone.
+    pub fn submitted(&self) -> Arc<AtomicBool> {
+        self.submitted.clone()
     }
 
     /// The QR code of `url`.

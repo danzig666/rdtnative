@@ -17,6 +17,7 @@ use std::borrow::Cow;
 
 const G: GroupId = GroupId(1);
 const BASE: u32 = 0x1000_0000;
+const ROWS: usize = 4;
 /// The phone QR code of the sign-in page.
 const QR: Rect = Rect::new(940.0, 330.0, 300.0, 300.0);
 
@@ -29,14 +30,19 @@ pub struct SignInScreen {
 impl SignInScreen {
     pub fn new(entry: EntryId) -> Self {
         SignInScreen {
-            list: VList { entry, group: G, base: BASE, rect: Rect::new(1340.0, 330.0, 480.0, 3.0 * 80.0), row_h: 80.0, text_size: 28 },
+            list: VList { entry, group: G, base: BASE, rect: Rect::new(1340.0, 330.0, 480.0, ROWS as f32 * 80.0), row_h: 80.0, text_size: 28 },
             qr: None,
             state: State("signin".into()),
         }
     }
 
     fn rows() -> Vec<Row> {
-        vec![Row::new("Type the code").icon(Icon::Key), Row::new("New address").icon(Icon::Repeat), Row::new("Cancel")]
+        vec![
+            Row::new("Sign in on this TV").icon(Icon::User),
+            Row::new("Type the code").icon(Icon::Key),
+            Row::new("New address").icon(Icon::Repeat),
+            Row::new("Cancel"),
+        ]
     }
 }
 
@@ -77,10 +83,11 @@ impl Machine<RdHost> for SignInScreen {
                 fx.invalidate(plx_machine::present::Provenance::Lifecycle);
             }
             ScreenEvent::Activate(e) => {
-                match self.list.index(*e, 3) {
-                    Some(0) => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::SignInCode)))),
-                    Some(1) => fx.push(Fx::App(RdFx::SignInStart)),
-                    Some(2) => fx.push(Fx::Nav(NavOp::Pop)),
+                match self.list.index(*e, ROWS) {
+                    Some(0) => fx.push(Fx::App(RdFx::SignInOnTv)),
+                    Some(1) => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::SignInCode)))),
+                    Some(2) => fx.push(Fx::App(RdFx::SignInStart)),
+                    Some(3) => fx.push(Fx::Nav(NavOp::Pop)),
                     _ => {}
                 }
                 return Handled::Yes;
@@ -100,13 +107,13 @@ impl Focusable<RdHost> for SignInScreen {
         Some(G)
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, RdHost>) -> Step<u32> {
-        self.list.neighbour(key, dir, 3)
+        self.list.neighbour(key, dir, ROWS)
     }
     fn place(&self, key: &u32, cx: &Cx<'_, RdHost>, _at: At) -> Option<Placed> {
-        self.list.place(*key, 3, self.list.focused(cx, 3))
+        self.list.place(*key, ROWS, self.list.focused(cx, ROWS))
     }
     fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
-        if self.list.index(want.elem, 3).is_some() {
+        if self.list.index(want.elem, ROWS).is_some() {
             want
         } else {
             self.list.key(0)
@@ -137,7 +144,7 @@ impl Screen<RdHost> for SignInScreen {
         let st = cx.views.store;
         ui::text(p, "Sign in to Reddit", 160.0, 60.0, ui::sz(48), ui::WHITE, ui::ALIGN_LEFT, true);
         let hs = ui::sz(25);
-        let intro = "On a computer or phone on the same Wi-Fi as the TV, open the sign-in page below. It walks you through approving rdtnative on Reddit.";
+        let intro = "\u{201c}Sign in on this TV\u{201d} opens Reddit in the TV's browser and comes back here when you approve. Or, on a computer or phone on the same Wi-Fi, open the sign-in page below.";
         for (i, l) in ui::wrap_lines(f.measure, crate::i18n::tr(intro), 1600.0, hs, false, 2).iter().enumerate() {
             ui::text_raw(p, l, 160.0, 150.0 + i as f32 * hs as f32 * 1.42, hs, ui::DIM, ui::ALIGN_LEFT, false);
         }
@@ -206,8 +213,8 @@ impl Screen<RdHost> for SignInScreen {
         let mut l = self.list;
         l.text_size = ui::sz(26);
         self.list = l;
-        self.list.draw(p, f.measure, &rows, self.list.focused(cx, 3));
-        self.list.stops(f, 3);
+        self.list.draw(p, f.measure, &rows, self.list.focused(cx, ROWS));
+        self.list.stops(f, ROWS);
         common::toast(p, f.measure, cx);
     }
     fn render(&self) -> RenderStrategy {
