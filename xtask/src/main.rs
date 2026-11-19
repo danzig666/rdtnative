@@ -472,7 +472,9 @@ fn launch(params: &str) -> Result<()> {
 }
 
 fn logs(n: usize) -> Result<()> {
-    tv_ssh_print(&format!("tail -n {n} {TV_TMP}/rdtnative.log 2>/dev/null || echo '(no log yet)'"))
+    // plx's event log lives in the app's runtime dir: /tmp/<app id>/plxnative-events.log.
+    let id = app_field("id")?;
+    tv_ssh_print(&format!("tail -n {n} /tmp/{id}/plxnative-events.log 2>/dev/null || echo '(no log yet)'"))
 }
 
 fn uninstall() -> Result<()> {

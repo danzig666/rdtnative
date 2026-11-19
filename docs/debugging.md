@@ -1,12 +1,12 @@
 # Debugging rdtnative on the TV
 
-Everything the app writes on the TV lives under `/tmp/rdtnative/` (cleared on reboot).
+Everything the app writes on the TV lives under `/tmp/rdtnative/` and `/tmp/<app id>/` (cleared on reboot).
 
 ## Logs
 
 | File | Written by | Read with |
 |---|---|---|
-| `/tmp/rdtnative/rdtnative.log` | the event log (`log()` in `crates/app/src/main.rs`) | `cargo xtask logs [n]` |
+| `/tmp/io.github.danzig666.rdtnative/plxnative-events.log` | the event log (`log()` in `crates/app/src/main.rs`) | `cargo xtask logs [n]` |
 | `/tmp/rdtnative/crash.log` | the crash tracer, append-only, survives relaunches | `cargo xtask crash` |
 | `/var/log/messages` (SAM lines with `exit_status`) | the system | `cargo xtask ssh "grep exit_status /var/log/messages \| tail"` |
 

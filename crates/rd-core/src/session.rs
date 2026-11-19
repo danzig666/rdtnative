@@ -233,7 +233,9 @@ impl Session {
                     continue;
                 }
                 401 => return Err(RdError::Unauthorized),
-                403 => return Err(RdError::Forbidden(what.to_string())),
+                403 => {
+                    return Err(RdError::Forbidden { what: what.to_string(), reason: crate::error::forbidden_reason(&body) })
+                }
                 404 => return Err(RdError::NotFound(what.to_string())),
                 429 => {
                     return Err(RdError::RateLimited { reset_secs: rate.map(|r| r.reset_secs).unwrap_or(60) })
