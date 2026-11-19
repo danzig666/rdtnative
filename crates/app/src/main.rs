@@ -53,6 +53,9 @@ pub fn log(s: &str) {
     eprintln!("{s}");
 }
 
+/// The app's data (sign-in, settings) lives in /tmp, which a restart clears (Settings says so).
+pub static DATA_TEMPORARY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Persistent, writable, survives reinstall in the Developer Mode jail (ytnative's finding);
 /// falls back to the app's tmp dir.
 #[cfg(not(any(windows, feature = "sim")))]
@@ -69,6 +72,7 @@ fn data_dir() -> std::path::PathBuf {
             return p;
         }
     }
+    DATA_TEMPORARY.store(true, std::sync::atomic::Ordering::Relaxed);
     let p = std::path::PathBuf::from("/tmp/rdtnative/data");
     let p = if std::fs::create_dir_all(&p).is_ok() { p } else { std::path::PathBuf::from("/tmp") };
     log(&format!("data: {} (temporary: settings are lost at restart)", p.display()));

@@ -190,6 +190,8 @@ pub struct FeedState {
     pub error: Option<String>,
     /// Reddit has no more pages.
     pub done: bool,
+    /// Reddit withheld this NSFW subreddit's posts (it sent only its "view mature content" stand-in).
+    pub gated: bool,
     /// Bumped on every change (screens rebuild their layout when it moves).
     pub gen: u32,
 }
@@ -226,8 +228,10 @@ pub struct SubList {
 /// The sign-in flow while it runs.
 #[derive(Clone, Debug, Default)]
 pub struct SignInView {
-    pub authorize_url: String,
     pub phone_url: Option<String>,
+    /// The sign-in page's server as a redirect URI (`http://<tv>:<port>/`): registered on the
+    /// Reddit app, sign-in needs no copying.
+    pub auto_redirect: Option<String>,
     pub busy: bool,
     pub error: Option<String>,
 }

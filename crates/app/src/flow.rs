@@ -34,6 +34,9 @@ pub struct Flow {
     last_focus: Cell<Option<usize>>,
     /// When focus last landed on an item (its ease-in).
     focus_at: Cell<u32>,
+    /// The item a glide moved focus to: landing there does not scroll (the glide keeps the page
+    /// where it is, half an item showing or not).
+    glide_focus: Cell<Option<usize>>,
 }
 
 pub fn smooth() -> bool {
@@ -61,6 +64,7 @@ impl Flow {
             last_ms: Cell::new(0),
             last_focus: Cell::new(None),
             focus_at: Cell::new(0),
+            glide_focus: Cell::new(None),
         }
     }
 
@@ -214,11 +218,9 @@ impl Flow {
             return None;
         }
         let up = boxes.get(i).is_some_and(|b| b.y < top);
-        if up {
-            boxes.iter().position(visible)
-        } else {
-            boxes.iter().rposition(visible)
-        }
+        let j = if up { boxes.iter().position(visible) } else { boxes.iter().rposition(visible) };
+        self.glide_focus.set(j);
+        j
     }
 
     pub fn contains_x(&self, x: f32) -> bool {
@@ -247,7 +249,8 @@ impl Flow {
             self.focus_at.set(self.last_ms.get());
         }
         self.last_focus.set(Some(i));
-        if !by_pointer {
+        let from_glide = self.glide_focus.take() == Some(i);
+        if !by_pointer && !from_glide {
             self.reveal(i);
         }
     }
@@ -340,4 +343,26 @@ pub fn intersect(a: Rect, b: Rect) -> Rect {
     let x1 = (a.x + a.w).min(b.x + b.w);
     let y1 = (a.y + a.h).min(b.y + b.h);
     Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn focus_moved_by_a_glide_does_not_scroll() {
+        let f = Flow::new(EntryId(1), GroupId(1), 0, Rect::new(0.0, 0.0, 800.0, 1000.0));
+        f.set_heights(&[700.0, 700.0, 700.0, 700.0, 700.0]);
+        f.on_focus(0, false);
+        // Glide down until post 0 is mostly gone; focus moves on, the page stays where it is.
+        assert!(f.glide(-3.0));
+        let at = f.scroll();
+        let j = f.keep_in_view(0).expect("post 0 left the view");
+        f.on_focus(j, false);
+        assert_eq!(f.target.get(), at);
+        assert_eq!(f.scroll(), at);
+        // A key moving focus still reveals the item.
+        f.on_focus(j + 1, false);
+        assert_ne!(f.target.get(), at);
+    }
 }

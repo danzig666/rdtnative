@@ -120,6 +120,13 @@ pub(crate) fn flair(d: &Value, rich: &str, plain: &str) -> Option<String> {
     opt_s(d, plain).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// Reddit's stand-in for an NSFW (18+) subreddit's posts when the app may not show them (signed
+/// out, or an account that does not allow mature content): one post by u/redditmaturecontent,
+/// "Go to Reddit to view mature content".
+pub fn is_mature_gate(p: &Post) -> bool {
+    p.author.eq_ignore_ascii_case("redditmaturecontent") || p.subreddit.eq_ignore_ascii_case("u_redditmaturecontent")
+}
+
 pub fn parse_posts(v: &Value) -> Result<Listing<Post>, RdError> {
     parse_listing(v, "t3", Post::from_json)
 }
@@ -175,6 +182,9 @@ mod tests {
         assert_eq!(l.items[1].likes, Some(true));
         assert!(l.items[1].is_video);
         assert!(l.items[2].is_self && l.items[2].over_18);
+        assert!(!l.items.iter().any(is_mature_gate));
+        let gate = serde_json::json!({"kind":"Listing","data":{"children":[{"kind":"t3","data":{"id":"14m5j89","subreddit":"u_redditmaturecontent","author":"redditmaturecontent","title":"Go to Reddit to view mature content","is_self":true,"over_18":false}}]}});
+        assert!(parse_posts(&gate).unwrap().items.iter().all(is_mature_gate));
         assert_eq!(l.items[2].selftext, "Some **markdown** & text");
     }
 

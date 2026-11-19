@@ -1,5 +1,5 @@
-//! The phone page: small, self-contained HTML (no scripts except the "Show" toggle), readable on a
-//! phone in light and dark mode.
+//! The phone page: small, self-contained HTML (scripts only for the "Show" toggle and sending on
+//! paste), readable on a phone or a computer in light and dark mode.
 
 use crate::{Form, Kind, Values};
 
@@ -18,7 +18,9 @@ label{display:block;font-weight:600;margin:14px 0 6px}label:first-child{margin-t
 input[type=text],input[type=url],input[type=password]{width:100%;font:16px ui-monospace,SFMono-Regular,Menlo,monospace;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--field);color:var(--fg)}\
 input.bad{border-color:var(--err)}.help{font-size:14px;color:var(--muted);margin-top:4px}.err{font-size:14px;color:var(--err);margin-top:4px;font-weight:600}\
 .show{font-weight:400;font-size:14px;color:var(--muted)}\
-button{margin-top:18px;width:100%;font:600 18px system-ui,sans-serif;padding:14px;border:0;border-radius:999px;background:var(--accent);color:#fff}";
+button{margin-top:18px;width:100%;font:600 18px system-ui,sans-serif;padding:14px;border:0;border-radius:999px;background:var(--accent);color:#fff}ol{margin:10px 0;padding-left:1.4em;color:var(--fg)}ol li{margin:6px 0}a.action{display:block;text-align:center;margin:16px 0 4px;padding:14px;border-radius:999px;background:var(--accent);color:#fff;text-decoration:none;font-size:18px}details{margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 14px}summary{cursor:pointer;font-weight:600}details p{white-space:pre-line}\
+.copy{display:flex;gap:8px;align-items:center;margin:6px 0 4px}.copy input{flex:1;min-width:0;font:13px ui-monospace,monospace;padding:9px;border-radius:10px;border:1px solid var(--border);background:var(--field);color:var(--muted)}\
+.copy button{width:auto;margin:0;padding:9px 16px;font-size:15px;background:var(--card);color:var(--accent);border:1px solid var(--accent)}";
 
 fn head(title: &str) -> String {
     format!(
@@ -27,11 +29,30 @@ fn head(title: &str) -> String {
     )
 }
 
-pub fn form(form: &Form, values: &Values, errors: &[(String, String)]) -> String {
+pub fn form(form: &Form, token: &str, values: &Values, errors: &[(String, String)]) -> String {
     let mut h = head(&form.title);
     h += &format!("<h1>{}</h1>", escape(&form.title));
     for p in &form.intro {
         h += &format!("<p>{}</p>", escape(p));
+    }
+    if !form.steps.is_empty() {
+        h += "<ol>";
+        for st in &form.steps {
+            h += &format!("<li>{}</li>", escape(st));
+        }
+        h += "</ol>";
+    }
+    if let Some((label, url)) = form.action.as_ref().filter(|(_, u)| u.starts_with("https://")) {
+        h += &format!(r#"<a class="action" id="act" href="{}" target="_blank" rel="noopener noreferrer">{}</a>"#, escape(url), escape(label));
+        // The link as text with a copy button: an address pasted into the address bar stays in the
+        // browser, where a tapped link may be taken by an installed app (the Reddit app on Android).
+        h += &format!(
+            r#"<div class="copy"><input id="acturl" type="text" readonly value="{}"><button type="button" id="copybtn">Copy link</button></div>"#,
+            escape(url)
+        );
+        // On Android, open the link in Chrome explicitly: an installed app that claims the site
+        // cannot take an intent addressed to Chrome. Elsewhere the plain link is used.
+        h += r#"<script>(function(){var a=document.getElementById('act'),u=a.href;if(/Android/i.test(navigator.userAgent)){a.href='intent://'+u.replace(/^https:\/\//,'')+'#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url='+encodeURIComponent(u)+';end';a.removeAttribute('target')}var b=document.getElementById('copybtn'),t=document.getElementById('acturl');b.onclick=function(){t.focus();t.select();t.setSelectionRange(0,t.value.length);var ok=false;try{ok=document.execCommand('copy')}catch(e){}if(!ok&&navigator.clipboard){navigator.clipboard.writeText(t.value).then(function(){b.textContent='Copied'});return}b.textContent=ok?'Copied: paste it into the address bar':'Select the text above and copy it'}})()</script>"#;
     }
     if !form.links.is_empty() {
         h += r#"<div class="links">"#;
@@ -45,7 +66,7 @@ pub fn form(form: &Form, values: &Values, errors: &[(String, String)]) -> String
     }
     // The TV checks every field itself; `novalidate` stops the phone's browser from rejecting
     // custom-scheme redirect URIs in a `type="url"` input before they reach it.
-    h += r#"<form method="post" autocomplete="off" novalidate>"#;
+    h += &format!(r#"<form id="f" method="post" action="/{}" autocomplete="off" novalidate>"#, escape(token));
     for (i, f) in form.fields.iter().enumerate() {
         let id = format!("f{i}");
         let value = values.get(&f.key).map(String::as_str).unwrap_or("");
@@ -77,12 +98,20 @@ pub fn form(form: &Form, values: &Values, errors: &[(String, String)]) -> String
             h += &format!(r#"<div class="help">{}</div>"#, escape(&f.help));
         }
     }
-    h += &format!(r#"<button type="submit">{}</button></form></main></body></html>"#, escape(&form.submit));
+    h += &format!(r#"<button type="submit">{}</button></form>"#, escape(&form.submit));
+    for (summary, text) in &form.notes {
+        h += &format!("<details><summary>{}</summary><p>{}</p></details>", escape(summary), escape(text));
+    }
+    if form.paste_submits {
+        // Pasting sends the form at once (the pasted text lands in the field first).
+        h += r#"<script>document.querySelectorAll('#f input[type=text],#f input[type=url]').forEach(function(i){i.addEventListener('paste',function(){setTimeout(function(){if(i.value.trim())document.getElementById('f').submit()},50)})})</script>"#;
+    }
+    h += "</main></body></html>";
     h
 }
 
 pub fn done(form: &Form) -> String {
     let mut h = head(&form.title);
-    h += "<h1>Sent to the TV.</h1><p>You can close this page. The link no longer works.</p></main></body></html>";
+    h += &format!("<h1>{}</h1><p>{}</p></main></body></html>", escape(&form.done.0), escape(&form.done.1));
     h
 }

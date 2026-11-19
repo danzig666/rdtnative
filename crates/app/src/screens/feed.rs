@@ -40,6 +40,7 @@ const SPLIT_W: f32 = 800.0;
 #[derive(Clone, Debug, PartialEq)]
 enum BarItem {
     Setup,
+    SignIn,
     Sort,
     Time,
     Layout,
@@ -100,6 +101,8 @@ pub struct FeedScreen {
     auto_focus: Cell<bool>,
     /// The post the two-pane preview shows, and since when (its fade-in).
     preview_shown: std::cell::RefCell<(String, u32)>,
+    /// Where the preview drew the post's picture, and whose: clicking it opens the media.
+    preview_media: std::cell::RefCell<Option<(Rect, String)>>,
     state: State,
 }
 
@@ -160,6 +163,7 @@ impl FeedScreen {
             asked_more_at: Cell::new(usize::MAX),
             auto_focus: Cell::new(true),
             preview_shown: Default::default(),
+            preview_media: Default::default(),
         };
         s.configure_flow(cx);
         s
@@ -327,6 +331,9 @@ impl FeedScreen {
             return vec![BarItem::Setup];
         }
         let mut v = Vec::new();
+        if !st.signed_in() && st.feeds.get(&self.key).is_some_and(|f| f.gated) {
+            v.push(BarItem::SignIn);
+        }
         if !self.key.feed.sorts(st.signed_in()).is_empty() {
             v.push(BarItem::Sort);
             if self.key.sort.timed() || (matches!(self.key.feed, Feed::Search { .. }) && self.key.sort == Sort::Top) {
@@ -350,6 +357,7 @@ impl FeedScreen {
         let st = cx.views.store;
         match b {
             BarItem::Setup => ("Set up Reddit API".into(), Some(Icon::Key), false),
+            BarItem::SignIn => ("Sign in".into(), Some(Icon::User), false),
             BarItem::Sort => (self.key.sort.label_in(&self.key.feed).into(), Some(Icon::Trending), false),
             BarItem::Time => (self.key.time.label().into(), Some(Icon::Clock), false),
             BarItem::Layout => (
@@ -533,6 +541,7 @@ impl FeedScreen {
         let st = cx.views.store;
         match b {
             BarItem::Setup => fx.push(Fx::Nav(NavOp::Push(RdArg::ApiSettings))),
+            BarItem::SignIn => fx.push(Fx::Nav(NavOp::Push(RdArg::SignIn))),
             BarItem::Sort => self.open_choice(Choice::Sort, anchor, i, cx),
             BarItem::Time => self.open_choice(Choice::Time, anchor, i, cx),
             BarItem::Layout => self.open_choice(Choice::Layout, anchor, i, cx),
@@ -688,7 +697,15 @@ impl Machine<RdHost> for FeedScreen {
             }
             return Handled::Yes;
         }
-        if let ScreenEvent::Input(InputEvent { kind: InputKind::Click { x, .. }, .. }) = ev {
+        if let ScreenEvent::Input(InputEvent { kind: InputKind::Click { x, y, .. }, .. }) = ev {
+            // Two panes: a click on the preview's picture or video opens it (zoomed or playing).
+            if !self.nav_open.get() && self.choice.is_none() && self.layout == Layout::Split {
+                let hit = self.preview_media.borrow().as_ref().filter(|(r, _)| *x >= r.x && *x <= r.x + r.w && *y >= r.y && *y <= r.y + r.h).map(|(_, id)| id.clone());
+                if let Some(it) = hit.and_then(|id| self.items(cx).into_iter().find(|it| it.post.id == id)) {
+                    super::post::open_media(it, cx, fx);
+                    return Handled::Yes;
+                }
+            }
             if self.nav_open.get() && *x > NAV_W {
                 self.nav_open.set(false);
                 self.focus_req.set(Some(self.content_last.get()));
@@ -1360,11 +1377,13 @@ impl FeedScreen {
             Media::Link { preview: Some(p), .. } => Some((p.url.clone(), p.w, p.h)),
             _ => None,
         });
+        *self.preview_media.borrow_mut() = None;
         let has_comments = cx.views.store.thread(&it.post.id).is_some_and(|t| !t.tree.is_empty());
         let max_media = if has_comments { (bottom - y) * 0.55 } else { bottom - y };
         if let (Some((url, pw, ph)), true) = (pic, Self::thumbs_on(cx)) {
             let h = if pw > 0 && ph > 0 { (w * ph as f32 / pw as f32).min(max_media) } else { max_media.min(480.0) };
             let r = Rect::new(x, y, w, h.max(120.0));
+            *self.preview_media.borrow_mut() = Some((r, it.post.id.clone()));
             ui::fill(p, r, 14.0, [0.0, 0.0, 0.0, 0.4]);
             let drawn = if blur {
                 let small = rd_core::media::preview(&it.post, 140).map_or(url.clone(), |p| p.url);
@@ -1522,6 +1541,20 @@ impl Screen<RdHost> for FeedScreen {
                 Some(fd) if fd.error.is_some() => {
                     common::message(p, f.measure, area, "Couldn't load this feed", fd.error.as_deref().unwrap_or_default());
                 }
+                Some(fd) if fd.gated && !st.signed_in() => common::message(
+                    p,
+                    f.measure,
+                    area,
+                    "Sign in to see this subreddit",
+                    "This is an NSFW (18+) subreddit. Reddit shows its posts to apps only for a signed-in account that allows mature content. Choose \u{201c}Sign in\u{201d} above.",
+                ),
+                Some(fd) if fd.gated => common::message(
+                    p,
+                    f.measure,
+                    area,
+                    "Reddit withholds this subreddit",
+                    "This is an NSFW (18+) subreddit. Turn on \u{201c}Show mature content\u{201d} in your Reddit account's preferences (on reddit.com), then refresh.",
+                ),
                 Some(fd) if !fd.ids.is_empty() => common::message(p, f.measure, area, "Everything here is filtered out", "Your filters, NSFW or read-post settings hide every post of this feed."),
                 Some(_) => common::message(p, f.measure, area, "Nothing here", "This feed has no posts."),
                 None => ui::spinner(p, cx.views.now_ms, 960.0, 500.0),

@@ -98,6 +98,21 @@ pub struct Form {
     pub fields: Vec<Field>,
     pub submit: String,
     pub lifetime: Duration,
+    /// Numbered steps under the intro.
+    pub steps: Vec<String>,
+    /// A big button-styled link above the form (label, https URL), e.g. "Approve on Reddit".
+    pub action: Option<(String, String)>,
+    /// Fold-out notes under the form (summary, text), e.g. per-browser instructions.
+    pub notes: Vec<(String, String)>,
+    /// Pasting into a field sends the form at once.
+    pub paste_submits: bool,
+    /// A short address to type by hand: a fixed port when free ([`SHORT_PORT`]) and a short path.
+    pub short: bool,
+    /// Also take an OAuth redirect that lands on this server (any path with `state=` and `code=`
+    /// or `error=`): its address becomes this field's value (`validate` must check `state`).
+    pub catch_redirect: Option<String>,
+    /// The page after a valid submission (heading, text).
+    pub done: (String, String),
 }
 
 impl Form {
@@ -109,6 +124,13 @@ impl Form {
             fields: Vec::new(),
             submit: "Send to TV".into(),
             lifetime: Duration::from_secs(600),
+            steps: Vec::new(),
+            action: None,
+            notes: Vec::new(),
+            paste_submits: false,
+            short: false,
+            catch_redirect: None,
+            done: ("Sent to the TV.".into(), "You can close this page. The link no longer works.".into()),
         }
     }
 }
@@ -138,6 +160,32 @@ fn random_path() -> Result<String, String> {
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
+/// The port a short address uses when it is free (else the next ones, else any).
+pub const SHORT_PORT: u16 = 8091;
+
+/// Letters easy to read off a TV and type: no 0/o, 1/l/i, and no x (the TV font draws an x
+/// between digits as a multiplication sign).
+const SHORT_ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwyz23456789";
+
+/// A short path to type by hand: 5 characters (~28 million). Wrong paths are answered slowly
+/// (see `serve`), so guessing one in the page's lifetime is out of reach.
+fn short_path() -> Result<String, String> {
+    let mut b = [0u8; 5];
+    getrandom::getrandom(&mut b).map_err(|e| format!("no random source ({e})"))?;
+    Ok(b.iter().map(|x| SHORT_ALPHABET[*x as usize % SHORT_ALPHABET.len()] as char).collect())
+}
+
+fn bind(ip: IpAddr, short: bool) -> std::io::Result<TcpListener> {
+    if short {
+        for port in SHORT_PORT..SHORT_PORT + 5 {
+            if let Ok(l) = TcpListener::bind(SocketAddr::from((ip, port))) {
+                return Ok(l);
+            }
+        }
+    }
+    TcpListener::bind(SocketAddr::from((ip, 0)))
+}
+
 impl PhoneForm {
     /// Starts on the TV's LAN address.
     pub fn start(form: Form, validate: Box<Validate>) -> Result<PhoneForm, String> {
@@ -147,11 +195,10 @@ impl PhoneForm {
 
     /// Starts on a given address (tests use 127.0.0.1).
     pub fn start_on(ip: IpAddr, form: Form, validate: Box<Validate>) -> Result<PhoneForm, String> {
-        let listener =
-            TcpListener::bind(SocketAddr::from((ip, 0))).map_err(|e| format!("cannot open a port on the TV ({e})"))?;
+        let listener = bind(ip, form.short).map_err(|e| format!("cannot open a port on the TV ({e})"))?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-        let token = random_path()?;
+        let token = if form.short { short_path()? } else { random_path()? };
         let url = format!("http://{ip}:{port}/{token}");
         let me = PhoneForm {
             url,
@@ -233,7 +280,11 @@ fn serve(
                 stop.store(true, Ordering::SeqCst);
                 ("200 OK", page::done(form))
             }
-            Reply::NotFound => ("404 Not Found", "Not found".to_string()),
+            Reply::NotFound => {
+                // Wrong paths are answered slowly: a short path cannot be found by trying.
+                std::thread::sleep(Duration::from_millis(250));
+                ("404 Not Found", "Not found".to_string())
+            }
         };
         let resp = format!(
             "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -290,12 +341,24 @@ fn handle(req: &[u8], token: &str, form: &Form, validate: &Validate) -> Reply {
     let head = String::from_utf8_lossy(&req[..h]);
     let mut parts = head.lines().next().unwrap_or("").split(' ');
     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    let prefill: Values = form.fields.iter().map(|f| (f.key.clone(), f.value.clone())).collect();
     if path != format!("/{token}") {
+        // An OAuth redirect landing here (the redirect URI points at this server).
+        if let (Some(key), "GET", Some((_, q))) = (&form.catch_redirect, method, path.split_once('?')) {
+            let has = |k: &str| q.split('&').any(|kv| kv.starts_with(&format!("{k}=")));
+            if has("state") && (has("code") || has("error")) {
+                let mut values = prefill.clone();
+                values.insert(key.clone(), format!("http://tv{path}"));
+                return match validate(&values) {
+                    Ok(()) => Reply::Done(values),
+                    Err(errors) => Reply::Page(page::form(form, token, &prefill, &errors)),
+                };
+            }
+        }
         return Reply::NotFound;
     }
-    let prefill: Values = form.fields.iter().map(|f| (f.key.clone(), f.value.clone())).collect();
     match method {
-        "GET" => Reply::Page(page::form(form, &prefill, &[])),
+        "GET" => Reply::Page(page::form(form, token, &prefill, &[])),
         "POST" => {
             let body = String::from_utf8_lossy(&req[h + 4..]);
             let mut values = Values::new();
@@ -320,7 +383,7 @@ fn handle(req: &[u8], token: &str, form: &Form, validate: &Validate) -> Reply {
             if errors.is_empty() {
                 Reply::Done(values)
             } else {
-                Reply::Page(page::form(form, &values, &errors))
+                Reply::Page(page::form(form, token, &values, &errors))
             }
         }
         _ => Reply::NotFound,
@@ -456,6 +519,32 @@ mod tests {
         std::thread::sleep(Duration::from_millis(400));
         assert!(!p.running());
         assert!(TcpStream::connect(addr).is_err(), "one submission only: the listener stopped");
+    }
+
+    #[test]
+    fn short_address_and_caught_redirect() {
+        let mut f = Form::new("Sign in");
+        f.short = true;
+        f.paste_submits = true;
+        f.catch_redirect = Some("callback".into());
+        f.action = Some(("Approve".into(), "https://www.reddit.com/x".into()));
+        f.fields.push(Field::new("callback", "Address"));
+        let check = |v: &Values| if v["callback"].contains("state=good") { Ok(()) } else { Err(vec![("callback".to_string(), "Wrong sign-in".to_string())]) };
+        let p = PhoneForm::start_on(IpAddr::V4(Ipv4Addr::LOCALHOST), f.clone(), Box::new(check)).unwrap();
+        let rest = p.url.strip_prefix("http://").unwrap();
+        let (addr, path) = rest.split_once('/').unwrap();
+        assert_eq!(path.len(), 5);
+        assert!(path.bytes().all(|b| SHORT_ALPHABET.contains(&b)));
+        let page = http(addr, &format!("GET /{path} HTTP/1.1\r\nHost: tv\r\n\r\n"));
+        assert!(page.contains("Approve") && page.contains("paste") && page.contains(&format!(r#"action="/{path}""#)));
+        // A redirect with someone else's state is refused (and shows the form), a matching one is taken.
+        assert!(http(addr, "GET /cb?state=bad&code=x HTTP/1.1\r\nHost: tv\r\n\r\n").contains("Wrong sign-in"));
+        assert!(http(addr, "GET /?code=x HTTP/1.1\r\nHost: tv\r\n\r\n").starts_with("HTTP/1.1 404"));
+        assert!(http(addr, "GET /cb?state=good&code=abc HTTP/1.1\r\nHost: tv\r\n\r\n").contains("Sent to the TV"));
+        assert_eq!(p.take().unwrap()["callback"], "http://tv/cb?state=good&code=abc");
+        // Without catch_redirect such a request is a plain 404.
+        f.catch_redirect = None;
+        assert_eq!(handle(&req("GET", "/cb?state=good&code=abc", ""), "t", &f, &check), Reply::NotFound);
     }
 
     #[test]

@@ -101,9 +101,14 @@ impl SettingsScreen {
                     Act::Lists,
                     "Favourite subreddits for the side menu; subreddits and words whose posts are hidden; search history.",
                 ));
+                // No writable folder that survives a restart (Developer Mode on old webOS, or a
+                // package without its data folder): say so instead of signing out silently.
+                let temporary = crate::DATA_TEMPORARY.load(std::sync::atomic::Ordering::Relaxed);
                 match st.username() {
-                    Some(u) => v.push((Row::new("Sign out").icon(Icon::User).value(format!("u/{u}")).raw(), Act::SignOut, "Signs this TV out of your Reddit account. Browsing keeps working without one.")),
-                    None => v.push((Row::new("Sign in to Reddit").icon(Icon::User), Act::SignIn, "Sign in to vote, save, join subreddits, reply and see your home feed and inbox.")),
+                    Some(u) if temporary => v.push((Row::new("Sign out").icon(Icon::User).value(format!("u/{u} (until restart)")).raw(), Act::SignOut, "The TV gives rdtnative no folder that survives a restart: the sign-in and settings are lost when the TV restarts.")),
+                    Some(u) => v.push((Row::new("Sign out").icon(Icon::User).value(format!("u/{u}")).raw(), Act::SignOut, "Signs this TV out of your Reddit account. Browsing keeps working without one. The sign-in is kept across restarts and updates.")),
+                    None if temporary => v.push((Row::new("Sign in to Reddit").icon(Icon::User), Act::SignIn, "Sign in to vote, save, join subreddits, reply and see your home feed and inbox. Note: the TV gives rdtnative no folder that survives a restart, so the sign-in is lost when the TV restarts.")),
+                    None => v.push((Row::new("Sign in to Reddit").icon(Icon::User), Act::SignIn, "Sign in to vote, save, join subreddits, reply and see your home feed and inbox. The sign-in is kept across restarts and updates.")),
                 }
                 v.push((
                     Row::new("Reddit API").icon(Icon::Key).value(st.saved.as_ref().map_or("Not set".into(), |s| s.client_id.clone())).raw(),

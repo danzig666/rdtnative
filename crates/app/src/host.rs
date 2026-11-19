@@ -461,6 +461,12 @@ impl AppRig {
                         if !more {
                             st.ids.clear();
                         }
+                        // Reddit's stand-in for a withheld NSFW subreddit is not a post to show.
+                        let sent = posts.len();
+                        let posts: Vec<_> = posts.into_iter().filter(|p| !rd_core::model::is_mature_gate(p)).collect();
+                        if !more {
+                            st.gated = sent > 0 && posts.is_empty();
+                        }
                         st.done = after.is_none() || posts.is_empty();
                         st.after = after;
                         let mut seen: HashSet<String> = st.ids.iter().cloned().collect();
@@ -630,6 +636,11 @@ impl AppRig {
                         self.refresh_me();
                     }
                     Err(e) => {
+                        // A code works once: start a fresh sign-in (new page and address) and
+                        // keep the reason on screen.
+                        if self.store.signin.is_some() {
+                            self.signin_start();
+                        }
                         if let Some(v) = self.store.signin.as_mut() {
                             v.error = Some(e);
                         }
@@ -1127,17 +1138,14 @@ impl AppRig {
         self.signin_nonce = rd_core::random_token(16);
         let state = rd_core::auth::State { nonce: self.signin_nonce.clone(), tv: None };
         let url = rd_core::auth::authorize_url(&client, saved.redirect(), &state.encode());
-        let mut form = rd_phone::Form::new("rdtnative: sign in");
-        form.intro.push("1. Approve rdtnative on Reddit (the other QR code on the TV).".into());
-        form.intro.push("2. Paste the address of the page Reddit sent you to, or just its code, here.".into());
-        form.links.push(("Open the Reddit sign-in page".into(), url.clone()));
-        form.fields.push(rd_phone::Field::new("callback", "Address or code").kind(rd_phone::Kind::Url).max_len(2048));
-        let validate = |v: &rd_phone::Values| match rd_core::auth::parse_callback(v.get("callback").map(String::as_str).unwrap_or("")) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(vec![("callback".to_string(), e)]),
-        };
-        let phone = rd_phone::PhoneForm::start(form, Box::new(validate)).ok();
-        self.store.signin = Some(SignInView { authorize_url: url, phone_url: phone.as_ref().map(|p| p.url.clone()), busy: false, error: None });
+        let phone = rd_phone::PhoneForm::start(signin_form(&url), Box::new(signin_validator(self.signin_nonce.clone()))).ok();
+        let auto = phone.as_ref().and_then(|p| p.url.rsplit_once('/')).map(|(base, _)| format!("{base}/"));
+        self.store.signin = Some(SignInView {
+            phone_url: phone.as_ref().map(|p| p.url.clone()),
+            auto_redirect: auto,
+            busy: false,
+            error: None,
+        });
         self.signin_phone = phone;
     }
 
@@ -1156,8 +1164,12 @@ impl AppRig {
             }
             self.signin_code(&text);
         } else if !p.running() {
+            // The page's lifetime ran out while Sign in is still open: a fresh one (new address).
             self.signin_phone = None;
-            if let Some(v) = self.store.signin.as_mut() {
+            let busy = self.store.signin.as_ref().is_some_and(|v| v.busy);
+            if self.store.signin.is_some() && !busy {
+                self.signin_start();
+            } else if let Some(v) = self.store.signin.as_mut() {
                 v.phone_url = None;
             }
         }
@@ -1165,6 +1177,12 @@ impl AppRig {
 
     /// The user brought back a callback address or a code: trade it for tokens.
     fn signin_code(&mut self, text: &str) {
+        if let Err(e) = check_signin_state(text, &self.signin_nonce) {
+            if let Some(v) = self.store.signin.as_mut() {
+                v.error = Some(e);
+            }
+            return;
+        }
         let code = match rd_core::auth::parse_callback(text) {
             Ok(rd_core::auth::Callback::Code { code, .. }) => code,
             Ok(rd_core::auth::Callback::Denied { error, .. }) => {
@@ -1302,6 +1320,73 @@ fn redgifs_token(http: &reqwest::blocking::Client) -> Option<String> {
     let t = v["token"].as_str()?.to_string();
     *TOKEN.lock().unwrap() = Some((t.clone(), std::time::Instant::now()));
     Some(t)
+}
+
+/// The sign-in page the TV serves while Sign in is open: typed into a computer's browser (a
+/// short address) or opened from the QR code on a phone. It links to Reddit's approve page and
+/// takes the address Reddit sent the browser to; when the app's redirect URI points at this
+/// server, Reddit's redirect lands here and signs in by itself.
+fn signin_form(authorize_url: &str) -> rd_phone::Form {
+    let mut form = rd_phone::Form::new("rdtnative: sign in");
+    form.short = true;
+    form.paste_submits = true;
+    form.catch_redirect = Some("callback".into());
+    form.submit = "Sign in on the TV".into();
+    form.steps = vec![
+        "Approve rdtnative on Reddit (the button opens a new tab).".into(),
+        "Reddit then sends the browser to your app's redirect URI. Copy that whole address (it has code= in it).".into(),
+        "Paste it below. Pasting sends it to the TV at once.".into(),
+    ];
+    form.action = Some(("Approve on Reddit".into(), authorize_url.to_string()));
+    form.fields.push(
+        rd_phone::Field::new("callback", "Address Reddit sent you to (or the code)")
+            .kind(rd_phone::Kind::Url)
+            .placeholder("myapp://callback?state=…&code=…")
+            .max_len(2048),
+    );
+    form.notes = vec![
+        (
+            "Firefox".into(),
+            "After you approve, Firefox shows an error page (\"The address wasn't understood\" or \"Unable to connect\"). The address bar holds the address: click it, copy all of it, paste it here.".into(),
+        ),
+        (
+            "Chrome, Edge, Brave".into(),
+            "With an http:// or https:// redirect URI, the address bar holds the address after you approve: copy it.\n\nWith another kind (like myapp://callback) these browsers stay on Reddit's page without showing it. Before approving: press F12, open Network, tick \"Preserve log\", then approve. Click the request named authorize, find Location under Response Headers, copy its value and paste it here. (Firefox is simpler.)".into(),
+        ),
+        (
+            "Phone".into(),
+            "If the Reddit app opens instead of the browser: come back, press \"Copy link\" and paste it into the browser's address bar (an address typed or pasted there stays in the browser). On Android the button opens Chrome.\n\nAfter you approve, the browser may show an error page or ask to open another app (cancel that). Copy the address from the address bar and paste it here. Some phone browsers show nothing for a redirect URI like myapp://; then a computer (Firefox) is easier.".into(),
+        ),
+        (
+            "Sign in without copying".into(),
+            "If your Reddit app's redirect URI is this page's address without the last part (shown on the TV, like http://192.168.1.20:8091/), Reddit sends the browser straight here and the TV signs in by itself.".into(),
+        ),
+    ];
+    form.done = ("Sent to the TV.".into(), "The TV is signing in now; it says when it is done. You can close this page.".into());
+    form
+}
+
+/// Checks a sign-in page submission: a callback address or code, from this sign-in.
+fn signin_validator(nonce: String) -> impl Fn(&rd_phone::Values) -> Result<(), Vec<(String, String)>> + Send + Sync {
+    move |v: &rd_phone::Values| {
+        let text = v.get("callback").map(String::as_str).unwrap_or("");
+        let checked = rd_core::auth::parse_callback(text).map(|_| ()).and_then(|_| check_signin_state(text, &nonce));
+        checked.map_err(|e| vec![("callback".to_string(), e)])
+    }
+}
+
+/// A callback address carries the `state` of the sign-in it belongs to: it must be this one (a
+/// bare code has none and is taken as is).
+fn check_signin_state(text: &str, nonce: &str) -> Result<(), String> {
+    let state = match rd_core::auth::parse_callback(text) {
+        Ok(rd_core::auth::Callback::Code { state, .. } | rd_core::auth::Callback::Denied { state, .. }) => state,
+        Err(_) => return Ok(()),
+    };
+    if state.is_empty() || rd_core::auth::State::decode(&state).nonce == nonce {
+        Ok(())
+    } else {
+        Err("This address is from an earlier sign-in. Approve again with the current page.".into())
+    }
 }
 
 /// Follows a share link's redirects (on www.reddit.com, without the API) to the post it shares.
@@ -1586,6 +1671,19 @@ pub fn feed_loaded(f: Option<&FeedState>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signin_state_must_match() {
+        assert!(super::check_signin_state("myapp://cb?state=abc&code=x", "abc").is_ok());
+        assert!(super::check_signin_state("myapp://cb?state=abc.192.168.1.2%3A8091&code=x", "abc").is_ok());
+        assert!(super::check_signin_state("myapp://cb?state=old&code=x", "abc").is_err());
+        assert!(super::check_signin_state("justacode", "abc").is_ok());
+        let v = super::signin_validator("abc".into());
+        let one = |t: &str| rd_phone::Values::from([("callback".to_string(), t.to_string())]);
+        assert!(v(&one("http://tv/?state=abc&code=x")).is_ok());
+        assert!(v(&one("http://tv/?state=zzz&code=x")).is_err());
+        assert!(v(&one("")).is_err());
+    }
 
     #[test]
     fn saving_keeps_tokens_unless_the_client_id_changes() {

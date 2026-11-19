@@ -324,23 +324,7 @@ impl PostScreen {
 
     fn open_media(&self, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
         let Some(it) = self.item(cx) else { return };
-        match &it.media {
-            Media::Link { url, .. } => {
-                if let Some(link) = rd_core::listing::parse_reddit_link(url) {
-                    open_reddit_link(link, fx);
-                } else {
-                    fx.push(Fx::Nav(NavOp::Push(RdArg::Link(url.clone()))));
-                }
-            }
-            Media::None => {}
-            Media::YouTube { id, .. } => fx.push(Fx::App(RdFx::OpenYouTube(id.clone()))),
-            // Videos and GIFs play straight away (unless blurred: the viewer shows them first).
-            Media::Video(v) if !self.blurred(cx, it) => match crate::player::pick_url(v, cx.views.store.prefs.get("video_stream")) {
-                Some(url) => fx.push(Fx::Nav(NavOp::Push(RdArg::Play { url, title: it.post.title.clone(), looping: v.gif }))),
-                None => fx.push(Fx::Nav(NavOp::Push(RdArg::Viewer { id: self.id.clone(), index: 0 }))),
-            },
-            _ => fx.push(Fx::Nav(NavOp::Push(RdArg::Viewer { id: self.id.clone(), index: 0 }))),
-        }
+        open_media(it, cx, fx);
     }
 
     fn blurred(&self, cx: &Cx<'_, RdHost>, it: &PostItem) -> bool {
@@ -409,6 +393,30 @@ fn comment_pictures(body: &str) -> Vec<String> {
 }
 
 /// Opens a reddit.com link inside the app.
+/// Opens a post's media: a picture or gallery in the viewer, a video playing, a link its page.
+pub fn open_media(it: &PostItem, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
+    let prefs = &cx.views.store.prefs;
+    let blurred = (it.post.over_18 && prefs.get("nsfw") == "blur") || (it.post.spoiler && prefs.get("spoilers") == "blur");
+    let id = it.post.id.clone();
+    match &it.media {
+        Media::Link { url, .. } => {
+            if let Some(link) = rd_core::listing::parse_reddit_link(url) {
+                open_reddit_link(link, fx);
+            } else {
+                fx.push(Fx::Nav(NavOp::Push(RdArg::Link(url.clone()))));
+            }
+        }
+        Media::None => {}
+        Media::YouTube { id, .. } => fx.push(Fx::App(RdFx::OpenYouTube(id.clone()))),
+        // Videos and GIFs play straight away (unless blurred: the viewer shows them first).
+        Media::Video(v) if !blurred => match crate::player::pick_url(v, prefs.get("video_stream")) {
+            Some(url) => fx.push(Fx::Nav(NavOp::Push(RdArg::Play { url, title: it.post.title.clone(), looping: v.gif }))),
+            None => fx.push(Fx::Nav(NavOp::Push(RdArg::Viewer { id, index: 0 }))),
+        },
+        _ => fx.push(Fx::Nav(NavOp::Push(RdArg::Viewer { id, index: 0 }))),
+    }
+}
+
 pub fn open_reddit_link(link: rd_core::listing::RedditLink, fx: &mut Effects<'_, RdHost>) {
     use rd_core::listing::RedditLink;
     let arg = match link {
