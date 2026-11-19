@@ -409,7 +409,8 @@ mod tests {
 /// LG's YouTube app (`contentTarget`). Blocking (a worker calls it); `Err` when neither launched.
 #[cfg(not(any(windows, feature = "sim")))]
 pub fn launch_youtube(id: &str) -> Result<&'static str, String> {
-    let luna = crate::ls2::Luna::shared(plx_base::paths::app_id())?;
+    // The media connection may not call the application manager: the wide one may.
+    let luna = crate::ls2::Luna::wide(plx_base::paths::app_id())?;
     let tries: [(&'static str, String); 2] = [
         ("ytnative", format!(r#"{{"id":"io.github.danzig666.ytnative","params":{{"v":"{id}"}}}}"#)),
         ("YouTube", format!(r#"{{"id":"youtube.leanback.v4","params":{{"contentTarget":"https://www.youtube.com/tv?v={id}"}}}}"#)),
@@ -428,5 +429,20 @@ pub fn launch_youtube(id: &str) -> Result<&'static str, String> {
 
 #[cfg(any(windows, feature = "sim"))]
 pub fn launch_youtube(_id: &str) -> Result<&'static str, String> {
+    Err("the simulator cannot open other apps".into())
+}
+
+/// Opens `url` in the TV's web browser. Blocking (a worker calls it).
+#[cfg(not(any(windows, feature = "sim")))]
+pub fn launch_browser(url: &str) -> Result<(), String> {
+    let luna = crate::ls2::Luna::wide(plx_base::paths::app_id())?;
+    let payload = serde_json::json!({"id": "com.webos.app.browser", "params": {"target": url}}).to_string();
+    let r = luna.call("luna://com.webos.applicationManager/launch", &payload);
+    crate::log(&format!("browser: launch -> {r}"));
+    if r.contains("\"returnValue\":true") { Ok(()) } else { Err(r) }
+}
+
+#[cfg(any(windows, feature = "sim"))]
+pub fn launch_browser(_url: &str) -> Result<(), String> {
     Err("the simulator cannot open other apps".into())
 }

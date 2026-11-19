@@ -194,6 +194,60 @@ fn pick(sizes: &[Pic], want_w: u32) -> Option<Pic> {
     ok.iter().find(|p| p.w >= want_w).or_else(|| ok.iter().max_by_key(|p| p.w)).map(|p| (*p).clone())
 }
 
+/// A still of one `media_metadata` entry (a picture or a GIF uploaded into a comment, a GIPHY
+/// GIF) about `want_w` px wide: one of Reddit's resized copies, else the original picture.
+pub fn metadata_still(m: &Value, want_w: u32) -> Option<String> {
+    let mut sizes: Vec<Pic> = m["p"].as_array().map(|a| a.iter().filter_map(pic).collect()).unwrap_or_default();
+    if let Some(src) = m["s"]["u"].as_str().filter(|s| !s.is_empty()) {
+        sizes.push(Pic { url: unescape(src), w: u(&m["s"]["x"]), h: u(&m["s"]["y"]) });
+    }
+    pick(&sizes, want_w).map(|p| p.url)
+}
+
+/// `body` with each picture it embeds from its `media_metadata` (`![img](<id>)`,
+/// `![gif](giphy|<id>|downsized)`) pointing at a still of it, so it shows as a linked picture.
+/// Emotes stay as they are.
+pub fn resolve_embeds(body: &str, meta: &Value) -> String {
+    if !meta.is_object() || !body.contains("![") {
+        return body.to_string();
+    }
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(at) = rest.find("![") {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let Some((label_end, close)) = tail.find("](").and_then(|l| tail[l..].find(')').map(|c| (l, l + c))) else {
+            out.push_str(tail);
+            return out;
+        };
+        let key = &tail[label_end + 2..close];
+        let found = (!key.starts_with("emote|") && !key.contains("://"))
+            .then(|| {
+                // GIPHY keys are "giphy|<id>"; the body may add "|downsized".
+                let mut k = key;
+                loop {
+                    if meta[k].is_object() {
+                        return Some(k);
+                    }
+                    k = &k[..k.rfind('|')?];
+                }
+            })
+            .flatten()
+            .and_then(|k| metadata_still(&meta[k], 640));
+        match found {
+            Some(url) => {
+                out.push_str(&tail[..label_end + 2]);
+                out.push_str(&url);
+                out.push(')');
+            }
+            None => out.push_str(&tail[..=close]),
+        }
+        rest = &tail[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn gallery_ids(d: &Value) -> Vec<String> {
     d["gallery_data"]["items"]
         .as_array()
@@ -542,6 +596,20 @@ mod tests {
         let Media::Gallery(items) = resolve(&g) else { panic!() };
         assert_eq!(items[0].pic.url, "https://p/a1080");
         assert_eq!(items[1].pic.url, "https://p/b");
+    }
+
+    #[test]
+    fn comment_embeds_point_at_stills() {
+        let meta = json!({
+            "abc123": {"e":"Image","p":[{"u":"https://preview.redd.it/abc123.png?width=640&amp;s=1","x":640,"y":480}],"s":{"u":"https://preview.redd.it/abc123.png?width=4000&amp;s=2","x":4000,"y":3000}},
+            "giphy|g1": {"e":"AnimatedImage","p":[{"u":"https://external-preview.redd.it/g.gif?width=200&amp;format=png8&amp;s=3","x":200,"y":150}],"s":{"gif":"https://giphy.com/g1.gif","x":480,"y":360}}});
+        let body = "pic ![img](abc123) gif ![gif](giphy|g1|downsized) emote ![img](emote|t5_x|9) url ![img](https://i.redd.it/z.png) gone ![img](nope)";
+        assert_eq!(
+            resolve_embeds(body, &meta),
+            "pic ![img](https://preview.redd.it/abc123.png?width=640&s=1) gif ![gif](https://external-preview.redd.it/g.gif?width=200&format=png8&s=3) emote ![img](emote|t5_x|9) url ![img](https://i.redd.it/z.png) gone ![img](nope)"
+        );
+        assert_eq!(resolve_embeds("no ![ end", &meta), "no ![ end");
+        assert_eq!(resolve_embeds(body, &Value::Null), body);
     }
 
     #[test]

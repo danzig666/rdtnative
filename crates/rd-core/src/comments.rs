@@ -76,7 +76,7 @@ fn parse_thing(t: &Value) -> Option<Node> {
             name: s(d, "name"),
             parent_id: s(d, "parent_id"),
             author: s(d, "author"),
-            body: s(d, "body"),
+            body: crate::media::resolve_embeds(&s(d, "body"), &d["media_metadata"]),
             score: i(d, "score"),
             score_hidden: b(d, "score_hidden"),
             created_utc: i(d, "created_utc"),

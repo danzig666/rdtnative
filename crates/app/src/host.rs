@@ -182,6 +182,8 @@ pub enum RdFx {
     SeekVideo(i64),
     /// Play a YouTube video in ytnative (or LG's YouTube app).
     OpenYouTube(String),
+    /// Open a web address in the TV's browser.
+    OpenBrowser(String),
     /// Open a reddit.com share link (resolved in the background, then opened).
     OpenShare(String),
 }
@@ -1645,6 +1647,16 @@ impl Rig<RdHost> for AppRig {
                             error: Some("Install ytnative (or LG's YouTube app) to play YouTube videos here. Full screen shows a QR code for a phone.".into()),
                             ok_toast: None,
                         }
+                    }
+                });
+            }
+            RdFx::OpenBrowser(url) => {
+                self.store.toast("Opening the link in the browser…", now);
+                self.spawn(from, "browser", move || match crate::player::launch_browser(&url) {
+                    Ok(()) => Work::Action { undo: None, error: None, ok_toast: None },
+                    Err(e) => {
+                        crate::log(&format!("browser: {e}"));
+                        Work::Action { undo: None, error: Some("The TV's browser did not open. Scan the code to open the link on a phone.".into()), ok_toast: None }
                     }
                 });
             }

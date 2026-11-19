@@ -2,7 +2,7 @@
 //! then pan; Left/Right step through a gallery with its counter, caption and a strip of
 //! thumbnails; Up/Down show or hide the caption. Videos, GIFs and YouTube links show their poster
 //! with a QR code to watch them on a phone (the TV's player comes later). `LinkScreen` shows any
-//! other web link as a QR code.
+//! other web link as a QR code; OK opens it in the TV's browser.
 
 use super::common::{self, State};
 use crate::host::{RdFx, RdHost, RdMsg};
@@ -455,8 +455,19 @@ impl LinkScreen {
 
 impl Machine<RdHost> for LinkScreen {
     type Ev = ScreenEvent<RdHost>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, RdHost>, _fx: &mut Effects<'_, RdHost>) -> Handled {
+    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) -> Handled {
         match ev {
+            // OK (or a click) opens the link in the TV's browser.
+            ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Ok, edge, .. }, .. }) => {
+                if *edge == Edge::Down {
+                    fx.push(plx_machine::machine::Fx::App(RdFx::OpenBrowser(self.url.clone())));
+                }
+                Handled::Yes
+            }
+            ScreenEvent::Activate(_) => {
+                fx.push(plx_machine::machine::Fx::App(RdFx::OpenBrowser(self.url.clone())));
+                Handled::Yes
+            }
             ScreenEvent::Input(_) => Handled::No,
             _ => Handled::Yes,
         }
@@ -515,7 +526,7 @@ impl Screen<RdHost> for LinkScreen {
         let p = f.painter;
         let s = ui::sz(44);
         ui::text_raw(p, &rd_core::media::host(&self.url), 960.0, 90.0, s, ui::WHITE, ui::ALIGN_CENTER, true);
-        ui::text(p, "Scan with your phone to open this link", 960.0, 90.0 + s as f32 * 1.5, ui::sz(28), ui::DIM, ui::ALIGN_CENTER, false);
+        ui::text(p, "OK opens it in the TV's browser, or scan the code with a phone", 960.0, 90.0 + s as f32 * 1.5, ui::sz(28), ui::DIM, ui::ALIGN_CENTER, false);
         if let Some(qr) = &self.qr {
             ui::fill(p, Rect::new(LINK_QR.x - 24.0, LINK_QR.y - 24.0, LINK_QR.w + 48.0, LINK_QR.h + 48.0), 24.0, ui::WHITE);
             qr.draw(p, LINK_QR);

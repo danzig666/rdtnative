@@ -385,8 +385,10 @@ fn comment_pictures(body: &str) -> Vec<String> {
         .filter(|u| {
             let host = rd_core::media::host(u);
             let path = u.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
-            let pic = [".jpg", ".jpeg", ".png", ".webp"].iter().any(|e| path.ends_with(e));
-            pic && matches!(host.as_str(), "i.redd.it" | "preview.redd.it" | "i.imgur.com")
+            // A GIF's still from Reddit is its .gif address asked for as a PNG or JPEG.
+            let still = path.ends_with(".gif") && (u.contains("format=png") || u.contains("format=pjpg") || u.contains("format=jpg"));
+            let pic = still || [".jpg", ".jpeg", ".png", ".webp"].iter().any(|e| path.ends_with(e));
+            pic && matches!(host.as_str(), "i.redd.it" | "preview.redd.it" | "external-preview.redd.it" | "i.imgur.com")
         })
         .take(2)
         .collect()
