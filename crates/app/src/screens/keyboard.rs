@@ -246,6 +246,21 @@ impl Machine<RdHost> for KeyboardScreen {
         if let Some(a) = common::press_commit_as_activate(ev, cx, |_| true) {
             return self.step(&a, cx, fx);
         }
+        // A USB keyboard (or the PC's in the simulator): typed characters go straight in.
+        if let ScreenEvent::Input(plx_machine::machine::InputEvent {
+            kind: plx_machine::machine::InputKind::Key { key: plx_machine::machine::Key::Other, sym, edge, .. }, ..
+        }) = ev {
+            if matches!(edge, plx_machine::machine::Edge::Down | plx_machine::machine::Edge::Repeat) {
+                if let Some(c) = char::from_u32(*sym).filter(|c| !c.is_control() && *sym < 0x4000_0000) {
+                    if self.text.chars().count() < spec(&self.target).3 {
+                        self.text.push(c);
+                        self.state = State(self.text.clone());
+                        fx.invalidate(plx_machine::present::Provenance::Input);
+                    }
+                    return Handled::Yes;
+                }
+            }
+        }
         match ev {
             ScreenEvent::Activate(e) if *e >= SUG_BASE => {
                 let sug = self.suggestions(cx);

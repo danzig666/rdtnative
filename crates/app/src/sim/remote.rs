@@ -75,6 +75,8 @@ fn parse(tok: &str) -> Option<Step> {
         "back" => Step::Key(0, 482),
         // Any remote key by its webOS code, e.g. wcode:261 (play/pause).
         t if t.starts_with("wcode:") => Step::Key(0, t[6..].parse().ok()?),
+        // A key by its SDL sym (a typed character), e.g. key:97 for "a".
+        t if t.starts_with("key:") => Step::Key(t[4..].parse().ok()?, 0),
         "exit" => Step::Exit,
         t if t.starts_with("wait:") => Step::Wait(t[5..].parse().ok()?),
         t if t.starts_with("wheel:") => Step::Wheel(t[6..].parse().ok()?),

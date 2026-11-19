@@ -309,8 +309,9 @@ impl FeedScreen {
             Layout::Dense => ts as f32 * 1.42 + 14.0,
             Layout::Split => {
                 let lines = lines.min(2);
-                let thumb = if Self::thumbs_on(cx) { split_thumb().1 } else { 0.0 };
-                let tw = w - 2.0 * 14.0 - if Self::thumbs_on(cx) { split_thumb().0 + 18.0 } else { 0.0 };
+                let pic = Self::thumbs_on(cx) && self.pic_for(cx, it, split_thumb().0).is_some();
+                let thumb = if pic { split_thumb().1 } else { 0.0 };
+                let tw = w - 2.0 * 14.0 - if pic { split_thumb().0 + 18.0 } else { 0.0 };
                 let n = richtext::wrap_title(&it.post.title, tw, ts, true, lines).len().max(1);
                 (richtext::title_h(n, ts) + 4.0 + ms as f32 * 1.42).max(thumb) + 2.0 * 12.0
             }
@@ -346,7 +347,7 @@ impl FeedScreen {
         let st = cx.views.store;
         match b {
             BarItem::Setup => ("Set up Reddit API".into(), Some(Icon::Key), false),
-            BarItem::Sort => (self.key.sort.label().into(), Some(Icon::Trending), false),
+            BarItem::Sort => (self.key.sort.label_in(&self.key.feed).into(), Some(Icon::Trending), false),
             BarItem::Time => (self.key.time.label().into(), Some(Icon::Clock), false),
             BarItem::Layout => (
                 match self.layout {
@@ -364,7 +365,7 @@ impl FeedScreen {
             BarItem::Search => ("Search".into(), Some(Icon::Search), false),
             BarItem::Favorite => {
                 let on = self.key.feed.sub().is_some_and(|s| st.prefs.is_favorite(s));
-                (if on { "Favourite" } else { "Add to favourites" }.into(), Some(Icon::Star), on)
+                ("Favourite".into(), Some(Icon::Star), on)
             }
             BarItem::Join => {
                 let on = self.key.feed.sub().and_then(|s| st.about.get(&s.to_ascii_lowercase())).is_some_and(|a| a.subscribed);
@@ -464,11 +465,11 @@ impl FeedScreen {
         self.load(cx, fx, false);
     }
 
-    fn open_choice(&mut self, c: Choice, anchor: Rect, cx: &Cx<'_, RdHost>) {
+    fn open_choice(&mut self, c: Choice, anchor: Rect, row: usize, cx: &Cx<'_, RdHost>) {
         let (options, current): (Vec<String>, usize) = match c {
             Choice::Sort => {
                 let sorts = self.key.feed.sorts(cx.views.store.signed_in());
-                (sorts.iter().map(|s| s.label().to_string()).collect(), sorts.iter().position(|s| *s == self.key.sort).unwrap_or(0))
+                (sorts.iter().map(|s| s.label_in(&self.key.feed).to_string()).collect(), sorts.iter().position(|s| *s == self.key.sort).unwrap_or(0))
             }
             Choice::Time => (Time::ALL.iter().map(|t| t.label().to_string()).collect(), Time::ALL.iter().position(|t| *t == self.key.time).unwrap_or(0)),
             Choice::Layout => {
@@ -477,31 +478,28 @@ impl FeedScreen {
                 (o.values.iter().map(|(_, l)| l.to_string()).collect(), o.values.iter().position(|(v, _)| *v == cur).unwrap_or(0))
             }
         };
-        let b = ChoiceBox::new(self.entry, 0, options, current, anchor);
+        let b = ChoiceBox::new(self.entry, row, options, current, anchor);
         self.focus_req.set(Some(b.list.elem(current)));
         ui::MENUS_OPEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.choice = Some((c, b));
     }
 
     fn close_choice(&mut self) {
-        if self.choice.take().is_some() {
+        if let Some((_, b)) = self.choice.take() {
             ui::MENUS_OPEN.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            self.focus_req.set(Some(BAR_BASE + b.row as u32));
         }
-        let i = self.bar_items_cache_index();
-        self.focus_req.set(Some(BAR_BASE + i));
-    }
-
-    fn bar_items_cache_index(&self) -> u32 {
-        0
     }
 
     fn pick_choice(&mut self, idx: usize, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
         let Some((c, _)) = self.choice.as_ref() else { return };
         let c = *c;
-        if let Some((_, b)) = self.choice.take() {
-            let _ = b;
+        let row = self.choice.as_ref().map_or(0, |(_, b)| b.row);
+        if self.choice.take().is_some() {
             ui::MENUS_OPEN.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         }
+        // Back to the button that opened it (a new sort moves to the first post instead).
+        self.focus_req.set(Some(BAR_BASE + row as u32));
         match c {
             Choice::Sort => {
                 let sorts = self.key.feed.sorts(cx.views.store.signed_in());
@@ -532,9 +530,9 @@ impl FeedScreen {
         let st = cx.views.store;
         match b {
             BarItem::Setup => fx.push(Fx::Nav(NavOp::Push(RdArg::ApiSettings))),
-            BarItem::Sort => self.open_choice(Choice::Sort, anchor, cx),
-            BarItem::Time => self.open_choice(Choice::Time, anchor, cx),
-            BarItem::Layout => self.open_choice(Choice::Layout, anchor, cx),
+            BarItem::Sort => self.open_choice(Choice::Sort, anchor, i, cx),
+            BarItem::Time => self.open_choice(Choice::Time, anchor, i, cx),
+            BarItem::Layout => self.open_choice(Choice::Layout, anchor, i, cx),
             BarItem::Search => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::Search { sub: self.key.feed.sub().map(str::to_string) })))),
             BarItem::Favorite => {
                 if let Some(sub) = self.key.feed.sub() {
@@ -977,7 +975,7 @@ impl FeedScreen {
                 s
             }
             None if st.configured() => {
-                let mut s = self.key.sort.label().to_string();
+                let mut s = self.key.sort.label_in(&self.key.feed).to_string();
                 if self.key.sort.timed() {
                     s.push_str(&format!(" \u{b7} {}", self.key.time.label()));
                 }
@@ -1212,7 +1210,8 @@ impl FeedScreen {
             Layout::Split => {
                 let pad = 14.0;
                 let mut tx = r.x + pad;
-                if Self::thumbs_on(cx) {
+                // Text posts have no picture: their title takes the row.
+                if Self::thumbs_on(cx) && self.pic_for(cx, it, split_thumb().0).is_some() {
                     let (tw, th) = split_thumb();
                     let img = Rect::new(r.x + pad, r.y + (r.h - th) / 2.0, tw, th);
                     self.draw_pic(p, m, cx, it, img, 10.0, alpha);
@@ -1226,10 +1225,10 @@ impl FeedScreen {
                 richtext::draw_lines(p, m, &wrapped, tx, y, tw, ts, ink, true);
                 y += richtext::title_h(wrapped.len().max(1), ts) + 4.0;
                 let mut meta2 = format!(
-                    "{}  \u{b7}  {} pts  \u{b7}  {} comments  \u{b7}  {}",
+                    "{}  \u{b7}  {} pts  \u{b7}  {}  \u{b7}  {}",
                     if with_sub { format!("r/{}", it.post.subreddit) } else { format!("u/{}", it.post.author) },
                     common::short_count(it.post.score),
-                    common::short_count(it.post.num_comments),
+                    common::comments(it.post.num_comments),
                     rd_core::listing::age(it.post.created_utc, rd_core::now_secs() as i64)
                 );
                 if it.post.over_18 {
@@ -1266,7 +1265,7 @@ impl FeedScreen {
                 }
                 ui::text_cut(p, m, &title, tx, y, tw, ts, ink, ui::ALIGN_LEFT, true);
                 let mut meta2 = meta;
-                meta2.push_str(&format!("  \u{b7}  {} comments", common::short_count(it.post.num_comments)));
+                meta2.push_str(&format!("  \u{b7}  {}", common::comments(it.post.num_comments)));
                 if let Some(b) = common::media_badge(it) {
                     meta2.push_str(&format!("  \u{b7}  {b}"));
                 }

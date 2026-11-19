@@ -32,6 +32,13 @@ so we copy **no code and no assets** from it, only knowledge: endpoints, link ru
   - A **Linux simulator** (`--features sim`, Xvfb-friendly) joins ytnative's Windows one, so the UI
     can be checked and screenshotted without a TV.
   - Not yet run on a real TV.
+- **Phases 2-7:** done in code and tried in the simulator against live Reddit: media resolver,
+  markdown, feeds in six layouts (two panes by default), post and comments, viewer, video player
+  (engine A: the TV's media service), YouTube hand-off to ytnative, sign-in, actions, inbox,
+  subreddits, search, settings (display, content, feeds, remote), filters and favourites. Still to
+  check on the TV: video playback (DASH/HLS from v.redd.it), sign-in with a real redirect, and
+  the frame rate with many pictures. Not done: animated GIF/WebP pictures (GIF posts play as
+  video), webOS 4 video (needs ytnative's ACB engine B), multiple accounts.
 ---
 
 ## 1. Feasibility in short

@@ -29,6 +29,14 @@ impl Sort {
     pub fn from_key(k: &str) -> Option<Sort> {
         Sort::ALL.into_iter().find(|s| s.key() == k)
     }
+    /// The sort's name in `feed` (search calls Hot "Relevance").
+    pub fn label_in(self, feed: &Feed) -> &'static str {
+        match (self, feed) {
+            (Sort::Hot, Feed::Search { .. }) => "Relevance",
+            _ => self.label(),
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Sort::Best => "Best",
@@ -148,7 +156,7 @@ impl Feed {
     pub fn default_sort(&self, signed_in: bool) -> Sort {
         match self {
             Feed::Front if signed_in => Sort::Best,
-            Feed::Search { .. } | Feed::User(..) => Sort::New,
+            Feed::User(..) => Sort::New,
             _ => Sort::Hot,
         }
     }

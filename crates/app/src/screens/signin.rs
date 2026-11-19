@@ -36,7 +36,7 @@ impl SignInScreen {
     }
 
     fn rows() -> Vec<Row> {
-        vec![Row::new("Type the address or code").icon(Icon::Key), Row::new("New QR codes").icon(Icon::Repeat), Row::new("Cancel")]
+        vec![Row::new("Type the code").icon(Icon::Key), Row::new("New QR codes").icon(Icon::Repeat), Row::new("Cancel")]
     }
 }
 
@@ -148,7 +148,7 @@ impl Screen<RdHost> for SignInScreen {
         draw_qr(p, &self.qr_a, QR_A);
         draw_qr(p, &self.qr_b, QR_B);
         if self.qr_b.is_none() {
-            ui::text(p, "Use \u{201c}Type the address or code\u{201d}", QR_B.x + QR_B.w / 2.0, QR_B.y + QR_B.h / 2.0, ui::sz(22), ui::DIM, ui::ALIGN_CENTER, false);
+            ui::text(p, "Use \u{201c}Type the code\u{201d}", QR_B.x + QR_B.w / 2.0, QR_B.y + QR_B.h / 2.0, ui::sz(22), ui::DIM, ui::ALIGN_CENTER, false);
         }
         let y = QR_A.y + QR_A.h + 60.0;
         match st.signin.as_ref() {

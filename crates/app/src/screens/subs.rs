@@ -61,6 +61,8 @@ pub struct SubsScreen {
     rows: RefCell<Vec<SubRow>>,
     tab_rects: RefCell<Vec<Rect>>,
     focus_req: Cell<Option<u32>>,
+    /// Until the user moves, focus goes to the list when it fills.
+    auto_focus: Cell<bool>,
     state: State,
 }
 
@@ -79,6 +81,7 @@ impl SubsScreen {
             rows: Default::default(),
             tab_rects: Default::default(),
             focus_req: Cell::new(None),
+            auto_focus: Cell::new(true),
             state: State("subs".into()),
         }
     }
@@ -199,6 +202,9 @@ impl Machine<RdHost> for SubsScreen {
             }
             ScreenEvent::Async(_, RdMsg::Changed) | ScreenEvent::Uncover => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
             ScreenEvent::FocusMoved { to, by, .. } => {
+                if matches!(by, By::Dir | By::Pointer) {
+                    self.auto_focus.set(false);
+                }
                 if let Some(i) = self.flow.index(to.elem) {
                     self.flow.on_focus(i, *by == By::Pointer);
                 }
@@ -271,6 +277,10 @@ impl Focusable<RdHost> for SubsScreen {
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
         let want = self.focus_req.take().map_or(want, |e| FocusKey { entry: self.entry, elem: e });
+        if self.auto_focus.get() && self.flow.len() > 0 && want.elem >= TAB_BASE {
+            self.auto_focus.set(false);
+            return self.flow.key(0);
+        }
         let ok = if want.elem >= TAB_BASE { ((want.elem - TAB_BASE) as usize) < self.tabs(cx).len() } else { self.flow.index(want.elem).is_some() };
         if ok {
             return want;

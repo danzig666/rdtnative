@@ -11,15 +11,44 @@ scanning a QR code (a one-time page on the home network).
 
 > Not affiliated with Reddit or LG. Use at your own risk.
 
-**Status:** Phase 1 (app shell). Settings › Reddit API works, and the front page loads as a list
-once a client ID is saved. Cards, media, comments and sign-in come next; see [PLAN.md](PLAN.md).
+**Status:** a full client, tested in the simulator against live Reddit; TV testing next.
 
 | | |
 |---|---|
-| ![Welcome](docs/screenshots/home-welcome.jpg) | ![Reddit API settings](docs/screenshots/api-settings.jpg) |
-| ![On-screen keyboard with live checks](docs/screenshots/keyboard.jpg) | ![Enter on phone: QR code](docs/screenshots/api-phone-qr.jpg) |
+| ![Two panes: list and preview](docs/screenshots/feed-two-panes.jpg) | ![A post and its comments](docs/screenshots/post-comments.jpg) |
+| ![Dense list](docs/screenshots/feed-dense.jpg) | ![Post menu (hold OK)](docs/screenshots/post-menu.jpg) |
+| ![Subreddits](docs/screenshots/subreddits.jpg) | ![Display settings](docs/screenshots/settings-display.jpg) |
 
-These are screenshots from the Linux simulator, which runs the same UI code as the TV build.
+These are screenshots from the Windows simulator, which runs the same UI code as the TV build.
+
+### Features
+
+- **Feeds:** Home, Popular, All, any subreddit, favourites (one or all together), users, saved
+  posts, search. Sorts (Best, Hot, New, Top, Rising, Controversial) with time ranges, remembered per
+  subreddit. Endless paging.
+- **Six layouts:** Two panes (a list with a live preview of the selected post and its top
+  comments; the default), Cards (2-6 per row), List, Large, Compact and Dense (one line per post).
+- **Posts:** pictures, galleries with captions, v.redd.it videos and GIFs (played by the TV),
+  Imgur images, albums and GIFs, YouTube (opens in ytnative or LG's YouTube app), links (QR code),
+  crossposts, and Reddit markdown: headings, quotes, lists, code, tables, spoilers, superscript,
+  links.
+- **Comments:** threaded with coloured depth rails, collapse with OK, "load more" in place,
+  "continue this thread", OP / moderator / pinned marks, flairs; Left goes to the parent, Right to
+  the next thread.
+- **Full screen:** pictures with zoom and pan, galleries with thumbnails, the video player.
+- **Signed in** (with your own Reddit app): vote, save, hide, join and leave subreddits, reply,
+  inbox, your saved and submitted posts. Sign in by scanning a QR code; paste the code back on the
+  phone.
+- **Display:** text size (70-175 %, for any TV size and distance) with a separate size for post and
+  comment text, five fonts, five themes (including OLED black), eight accent colours, picture
+  quality, title lines, clock.
+- **Content:** NSFW and spoilers blurred, hidden or shown; read posts dimmed or hidden; hidden
+  subreddits and words; pinned posts hidden; scores, flairs and sites on or off.
+- **Remote:** pointer hover and click, pointer edge scrolling (speed setting), wheel step,
+  smooth scrolling, hold OK for menus, colour buttons (green/red vote, yellow saves, blue
+  comments), BACK opens the side menu, a USB keyboard types.
+- **Setup:** Reddit API settings (client ID, any redirect URI scheme, user agent) and an Imgur
+  client ID, typed with the remote or entered on a phone through a QR code.
 
 ## Building
 

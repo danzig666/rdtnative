@@ -103,6 +103,15 @@ pub fn short_count(n: i64) -> String {
     rd_core::listing::short_count(n)
 }
 
+/// "1 comment", "12 comments", "1.2k comments".
+pub fn comments(n: i64) -> String {
+    if n == 1 {
+        "1 comment".into()
+    } else {
+        format!("{} comments", short_count(n))
+    }
+}
+
 /// A pill button: icon and label; accent-filled when focused, outlined when `active`.
 #[allow(clippy::too_many_arguments)]
 pub fn button(p: Painter, m: &dyn plx_machine::machine::Measure, r: Rect, label: &str, icon: Option<Icon>, focused: bool, active: bool, raw: bool) {
