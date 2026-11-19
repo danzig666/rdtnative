@@ -169,6 +169,19 @@ pub fn preview(post: &Post, want_w: u32) -> Option<Pic> {
     None
 }
 
+/// The most pixels a full-size picture may have for the TV to decode it (its decoder stops at
+/// 32 MiB, 4096 px a side; a 12 MP phone photo is over).
+const MAX_PIXELS: u64 = 8_000_000;
+
+/// `full` when the TV can decode it, else the largest of Reddit's resized copies (`sizes`).
+fn viewable(full: Pic, sizes: &[Pic]) -> Pic {
+    let too_big = |p: &Pic| p.w > 4096 || p.h > 4096 || p.w as u64 * p.h as u64 > MAX_PIXELS;
+    if !too_big(&full) {
+        return full;
+    }
+    sizes.iter().filter(|p| p.w > 0 && !too_big(p)).max_by_key(|p| p.w).cloned().unwrap_or(full)
+}
+
 fn pick(sizes: &[Pic], want_w: u32) -> Option<Pic> {
     sizes.iter().find(|p| p.w >= want_w).or_else(|| sizes.iter().max_by_key(|p| p.w)).cloned()
 }
@@ -208,7 +221,9 @@ fn gallery(d: &Value) -> Vec<Item> {
                 let ext = if ext == "jpeg" { "jpg" } else { ext };
                 Some(Pic { url: format!("https://i.redd.it/{id}.{ext}"), w: 0, h: 0 })
             };
-            let still = pic(s).or_else(|| m["p"].as_array().and_then(|a| a.last()).and_then(pic)).or_else(fallback)?;
+            let sizes: Vec<Pic> = m["p"].as_array().map(|a| a.iter().filter_map(pic).collect()).unwrap_or_default();
+            let still = pic(s).or_else(|| sizes.last().cloned()).or_else(fallback)?;
+            let still = if mp4.is_some() { still } else { viewable(still, &sizes) };
             let (caption, link) = captions.get(k).cloned().unwrap_or_default();
             Some(Item { pic: still, mp4, caption, link })
         })
@@ -346,9 +361,9 @@ pub fn resolve(post: &Post) -> Media {
     let host = url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or("");
     if host == "i.redd.it" || is_image_url(&url) || d["post_hint"] == "image" {
         // The full picture; its size from the preview's source.
-        let src = preview_sizes(d).pop();
-        let (w, h) = src.map_or((0, 0), |p| (p.w, p.h));
-        return Media::Image(Pic { url, w, h });
+        let mut sizes = preview_sizes(d);
+        let (w, h) = sizes.pop().map_or((0, 0), |p| (p.w, p.h));
+        return Media::Image(viewable(Pic { url, w, h }, &sizes));
     }
     if url.is_empty() || url.contains("reddit.com/r/") && url.contains("/comments/") {
         return Media::None;
@@ -503,6 +518,21 @@ mod tests {
         assert_eq!(preview(&p, 2000).unwrap().url, "https://p/src.jpg?a=1&s=2");
         assert_eq!(preview(&p, 4000).unwrap().w, 3000);
         assert_eq!(resolve(&p), Media::Image(Pic { url: "https://i.redd.it/a.jpg".into(), w: 3000, h: 2000 }));
+    }
+
+    #[test]
+    fn pictures_too_big_for_the_tv_use_the_largest_resized_copy() {
+        let p = post(json!({"url":"https://i.redd.it/big.jpg","post_hint":"image","preview":{"images":[{
+            "source":{"url":"https://p/src","width":4032,"height":3024},
+            "resolutions":[{"url":"https://p/640","width":640,"height":480},{"url":"https://p/1080","width":1080,"height":810}]}]}}));
+        assert_eq!(resolve(&p), Media::Image(Pic { url: "https://p/1080".into(), w: 1080, h: 810 }));
+        let g = post(json!({"is_gallery":true,"gallery_data":{"items":[{"media_id":"a"},{"media_id":"b"}]},
+            "media_metadata":{
+                "a":{"status":"valid","s":{"u":"https://p/a","x":4000,"y":3000},"p":[{"u":"https://p/a640","x":640,"y":480},{"u":"https://p/a1080","x":1080,"y":810}]},
+                "b":{"status":"valid","s":{"u":"https://p/b","x":2000,"y":1500},"p":[{"u":"https://p/b640","x":640,"y":480}]}}}));
+        let Media::Gallery(items) = resolve(&g) else { panic!() };
+        assert_eq!(items[0].pic.url, "https://p/a1080");
+        assert_eq!(items[1].pic.url, "https://p/b");
     }
 
     #[test]
