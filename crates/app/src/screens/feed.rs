@@ -4,15 +4,22 @@
 //! pages, favourite subreddits, Settings, Account), which slides in with Left or BACK.
 //!
 //! OK opens a post; holding OK opens its menu; the colour buttons vote, save and open comments.
+//! In two panes Right moves to the preview, where OK shows the post's media full screen.
+//!
+//! The feed keeps the user going: a page that leaves nothing to show after filters fetches the
+//! next ones, a failed next page is tried again with Down on the last post (or after the rate
+//! limit's wait), a feed older than half an hour is refreshed when the user is near its top (or
+//! says how old it is), and each feed of the start page keeps its place while others are shown.
 
 use super::common::{self, Color, State};
 use crate::flow::Flow;
 use crate::host::{MenuKind, RdArg, RdFx, RdHost, RdMsg, Typing};
+use crate::i18n::tr;
 use crate::images::{self, Fit};
 use crate::richtext;
 use crate::store::{FeedKey, PostItem};
 use crate::ui::{self, icon::Kind as Icon, ChoiceBox, Row, VList};
-use plx_machine::machine::{By, Cx, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent, InputKind, Machine, NavOp, ScreenEvent};
+use plx_machine::machine::{By, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent, InputKind, Key, Machine, NavOp, ScreenEvent};
 use plx_ui::frame::Budget;
 use plx_ui::screen::{AxisMask, At, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Placed, RenderStrategy, Screen, Seat, Step};
 use plx_ui::{Painter, Rect};
@@ -20,11 +27,15 @@ use rd_core::listing::{Feed, Sort, Time, UserTab};
 use rd_core::media::Media;
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::collections::HashMap;
 
 const G_POSTS: GroupId = GroupId(1);
 const G_BAR: GroupId = GroupId(2);
 const G_NAV: GroupId = GroupId(3);
+const G_PREVIEW: GroupId = GroupId(4);
 const POST_BASE: u32 = 0x1000_0000;
+/// The two-pane layout's preview, as one focusable element (OK: the media full screen).
+const PREVIEW_ELEM: u32 = 0x2000_0000;
 const BAR_BASE: u32 = 0x3000_0000;
 const NAV_BASE: u32 = 0x4000_0000;
 const CHOICE_BASE: u32 = ui::CHOICE_BASE;
@@ -34,8 +45,16 @@ const NAV_W: f32 = 440.0;
 const T_BACK: plx_machine::machine::TimerId = plx_machine::machine::TimerId(41);
 /// The preview pane asks for the focused post's comments once focus rests on it.
 const T_PREVIEW: plx_machine::machine::TimerId = plx_machine::machine::TimerId(42);
+/// A load refused for the rate limit is tried again once Reddit's wait is over.
+const T_RETRY: plx_machine::machine::TimerId = plx_machine::machine::TimerId(50);
+/// The second BACK on the side menu leaves the app within this window (the toast lasts as long).
+const EXIT_WINDOW_MS: u32 = 2000;
 /// Width of the list in the two-pane layout.
 const SPLIT_W: f32 = 800.0;
+/// Fewer posts than this left after the filters: the next page is fetched by itself...
+const AUTO_MIN_ITEMS: usize = 8;
+/// ...at most this many pages in a row that add nothing to show.
+const AUTO_PAGES: u8 = 5;
 
 #[derive(Clone, Debug, PartialEq)]
 enum BarItem {
@@ -49,6 +68,8 @@ enum BarItem {
     Join,
     Refresh,
     Menu,
+    /// Back to the start page (feeds opened on their own).
+    Home,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,6 +124,18 @@ pub struct FeedScreen {
     preview_shown: std::cell::RefCell<(String, u32)>,
     /// Where the preview drew the post's picture, and whose: clicking it opens the media.
     preview_media: std::cell::RefCell<Option<(Rect, String)>>,
+    /// The feed's `gen` and the store's `resume_gen` last looked at (results only show in the store).
+    watched: (Option<u32>, u32),
+    /// Posts shown when the feed last changed, and how many pages in a row were fetched by
+    /// themselves without adding any.
+    shown_n: usize,
+    auto_pages: u8,
+    /// Per feed of the start page: the focused post and the scroll, for coming back to it.
+    memory: HashMap<FeedKey, (u32, f32)>,
+    /// A remembered place to put back once the feed is laid out.
+    restore: Cell<Option<(u32, f32)>>,
+    /// The "Updated … ago" pill, where it was drawn (a click refreshes).
+    pill: Cell<Option<Rect>>,
     state: State,
 }
 
@@ -127,8 +160,48 @@ fn start_feed(cx: &Cx<'_, RdHost>) -> Feed {
         "popular" => Feed::Popular,
         "all" => Feed::All,
         "favorites" if !s.prefs.favorites.is_empty() => Feed::Multi(s.prefs.favorites.clone()),
+        "last" => s.prefs.last_feed.as_deref().and_then(|c| feed_of_code(c, &s.prefs.favorites, s.username())).unwrap_or(Feed::Front),
         _ => Feed::Front,
     }
+}
+
+/// A side-menu feed as kept for the start page "Last feed" (`None`: not one to start with).
+fn feed_code(f: &Feed) -> Option<String> {
+    Some(match f {
+        Feed::Front => "front".into(),
+        Feed::Popular => "popular".into(),
+        Feed::All => "all".into(),
+        Feed::Multi(_) => "favorites".into(),
+        Feed::User(_, UserTab::Saved) => "saved".into(),
+        Feed::User(_, UserTab::Submitted) => "mine".into(),
+        Feed::Sub(s) => format!("r/{s}"),
+        _ => return None,
+    })
+}
+
+/// The feed [`feed_code`] wrote, as it is now: the favourites as they are, the user's own pages
+/// only while signed in.
+fn feed_of_code(code: &str, favorites: &[String], me: Option<&str>) -> Option<Feed> {
+    match code {
+        "front" => Some(Feed::Front),
+        "popular" => Some(Feed::Popular),
+        "all" => Some(Feed::All),
+        "favorites" => (!favorites.is_empty()).then(|| Feed::Multi(favorites.to_vec())),
+        "saved" => me.map(|u| Feed::User(u.to_string(), UserTab::Saved)),
+        "mine" => me.map(|u| Feed::User(u.to_string(), UserTab::Submitted)),
+        c => c.strip_prefix("r/").filter(|s| !s.is_empty()).map(|s| Feed::Sub(s.to_string())),
+    }
+}
+
+/// Focus at `elem` is at the top of a feed: on one of its first three posts, or not on a post.
+fn near_top(elem: u32) -> bool {
+    !(POST_BASE..PREVIEW_ELEM).contains(&elem) || elem - POST_BASE < 3
+}
+
+/// The two-pane layout's preview pane.
+fn preview_pane() -> Rect {
+    let x0 = LEFT + SPLIT_W + 40.0;
+    Rect::new(x0, header_h() + 8.0, 1920.0 - LEFT - x0, 1080.0 - header_h() - 40.0 - common::hint_band())
 }
 
 impl FeedScreen {
@@ -164,6 +237,12 @@ impl FeedScreen {
             auto_focus: Cell::new(true),
             preview_shown: Default::default(),
             preview_media: Default::default(),
+            watched: (None, cx.views.store.resume_gen),
+            shown_n: 0,
+            auto_pages: 0,
+            memory: HashMap::new(),
+            restore: Cell::new(None),
+            pill: Cell::new(None),
         };
         s.configure_flow(cx);
         s
@@ -173,6 +252,8 @@ impl FeedScreen {
     fn configure_flow(&mut self, cx: &Cx<'_, RdHost>) {
         self.layout = layout_of(cx);
         let top = header_h();
+        // The key hints' band is under the list, not over its last post.
+        let bottom = 1080.0 - common::hint_band();
         let prefs = &cx.views.store.prefs;
         let f = &mut self.flow;
         f.pad_top = 8.0;
@@ -180,13 +261,13 @@ impl FeedScreen {
         match self.layout {
             Layout::Cards => {
                 f.cols = prefs.num("columns").clamp(2, 6) as usize;
-                f.rect = Rect::new(LEFT, top, 1920.0 - 2.0 * LEFT, 1080.0 - top);
+                f.rect = Rect::new(LEFT, top, 1920.0 - 2.0 * LEFT, bottom - top);
                 f.gap = 28.0;
                 f.row_gap = 32.0;
             }
             Layout::List | Layout::Compact | Layout::Dense => {
                 f.cols = 1;
-                f.rect = Rect::new(LEFT + 40.0, top, 1920.0 - 2.0 * LEFT - 80.0, 1080.0 - top);
+                f.rect = Rect::new(LEFT + 40.0, top, 1920.0 - 2.0 * LEFT - 80.0, bottom - top);
                 f.gap = 0.0;
                 f.row_gap = match self.layout {
                     Layout::Compact => 8.0,
@@ -196,7 +277,7 @@ impl FeedScreen {
             }
             Layout::Split => {
                 f.cols = 1;
-                f.rect = Rect::new(LEFT, top, SPLIT_W, 1080.0 - top);
+                f.rect = Rect::new(LEFT, top, SPLIT_W, bottom - top);
                 f.gap = 0.0;
                 f.row_gap = 6.0;
                 f.margin = 80.0;
@@ -204,7 +285,7 @@ impl FeedScreen {
             Layout::Large => {
                 f.cols = 1;
                 let w = 1280.0;
-                f.rect = Rect::new((1920.0 - w) / 2.0, top, w, 1080.0 - top);
+                f.rect = Rect::new((1920.0 - w) / 2.0, top, w, bottom - top);
                 f.gap = 0.0;
                 f.row_gap = 36.0;
             }
@@ -225,7 +306,8 @@ impl FeedScreen {
             | (st.prefs.num("title_lines") as u64) << 32
             | (st.prefs.on("preview_text") as u64) << 36
             | (st.prefs.on("show_thumbs") as u64) << 37
-            | (st.read.contains("") as u64) << 38;
+            | (st.read.contains("") as u64) << 38
+            | (st.prefs.on("key_hints") as u64) << 39;
         (gen, st.gen, n, prefs_sig)
     }
 
@@ -240,6 +322,16 @@ impl FeedScreen {
         let w = self.flow.col_w();
         let heights: Vec<f32> = items.iter().map(|it| self.item_h(cx, it, w)).collect();
         self.flow.set_heights(&heights);
+        // Back on a feed shown before: where the user was.
+        if !heights.is_empty() {
+            if let Some((elem, scroll)) = self.restore.take() {
+                self.flow.jump(scroll);
+                if self.flow.index(elem).is_some() {
+                    self.focus_req.set(Some(elem));
+                    self.auto_focus.set(false);
+                }
+            }
+        }
     }
 
     fn title_size(&self) -> i32 {
@@ -260,10 +352,9 @@ impl FeedScreen {
     }
 
     fn meta_size(&self) -> i32 {
+        // 21 is the smallest meta line that reads from the couch.
         match self.layout {
-            Layout::Cards if self.flow.cols >= 5 => ui::sz(19),
-            Layout::Cards => ui::sz(21),
-            Layout::Split | Layout::Dense => ui::sz(19),
+            Layout::Cards | Layout::Split | Layout::Dense => ui::sz(21),
             _ => ui::sz(23),
         }
     }
@@ -331,7 +422,8 @@ impl FeedScreen {
             return vec![BarItem::Setup];
         }
         let mut v = Vec::new();
-        if !st.signed_in() && st.feeds.get(&self.key).is_some_and(|f| f.gated) {
+        // A feed that needs a sign-in: a withheld NSFW subreddit, or a sign-in Reddit refused.
+        if st.feeds.get(&self.key).is_some_and(|f| (f.gated && !st.signed_in()) || f.auth_failed) {
             v.push(BarItem::SignIn);
         }
         if !self.key.feed.sorts(st.signed_in()).is_empty() {
@@ -350,6 +442,9 @@ impl FeedScreen {
             v.push(BarItem::Menu);
         }
         v.push(BarItem::Refresh);
+        if !self.root {
+            v.push(BarItem::Home);
+        }
         v
     }
 
@@ -384,6 +479,7 @@ impl FeedScreen {
             }
             BarItem::Refresh => ("Refresh".into(), Some(Icon::Repeat), false),
             BarItem::Menu => ("More".into(), Some(Icon::Info), false),
+            BarItem::Home => ("Home".into(), Some(Icon::Home), false),
         }
     }
 
@@ -433,17 +529,98 @@ impl FeedScreen {
 
     fn switch_feed(&mut self, feed: Feed, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
         if feed == self.key.feed {
-            fx.push(Fx::App(RdFx::LoadFeed { key: self.key.clone(), reload: true }));
+            self.refresh(fx);
             return;
         }
+        self.remember();
+        if let Some(code) = feed_code(&feed) {
+            fx.push(Fx::App(RdFx::EditPrefs(|p, c| p.last_feed = Some(c.to_string()), code)));
+        }
         self.key = cx.views.store.key_for(feed);
+        self.reset_view();
+        // A feed shown before comes back where the user left it, unless it is out of date and
+        // they were near its top: then it is fetched again.
+        let st = cx.views.store;
+        let place = self.memory.get(&self.key).copied();
+        match st.feed(&self.key).filter(|f| !f.ids.is_empty()) {
+            Some(fd) if fd.stale(rd_core::now_secs()) && place.is_none_or(|(e, _)| near_top(e)) => self.refresh(fx),
+            Some(_) => self.restore.set(place),
+            None => {}
+        }
+        self.load(cx, fx, false);
+        fx.invalidate(plx_machine::present::Provenance::Input);
+    }
+
+    /// Keeps the current feed's place (its focused post and scroll) for coming back to it.
+    fn remember(&mut self) {
+        let elem = Some(self.content_last.get()).filter(|e| self.flow.index(*e).is_some()).unwrap_or(POST_BASE);
+        self.memory.insert(self.key.clone(), (elem, self.flow.scroll()));
+    }
+
+    /// A new feed (or the same one for a new account): from its top, with nothing asked yet.
+    fn reset_view(&mut self) {
         self.flow.to_top();
         self.sig.set((u32::MAX, 0, 0, 0));
         self.content_last.set(POST_BASE);
         self.asked_more_at.set(usize::MAX);
         self.auto_focus.set(true);
-        self.load(cx, fx, false);
+        self.auto_pages = 0;
+        self.shown_n = 0;
+        self.watched.0 = None;
+        self.restore.set(None);
+    }
+
+    /// Loads the feed again from its top.
+    fn refresh(&mut self, fx: &mut Effects<'_, RdHost>) {
+        self.flow.to_top();
+        self.auto_pages = 0;
+        fx.push(Fx::App(RdFx::LoadFeed { key: self.key.clone(), reload: true }));
         fx.invalidate(plx_machine::present::Provenance::Input);
+    }
+
+    /// Reacts to what changed in the store (results reach screens only through it): an error
+    /// focuses Refresh on an empty feed and arms the rate limit's retry; posts that leave little
+    /// to show (or a focus at the end) fetch the next page; after a resume an out-of-date feed
+    /// is refreshed when the user is at its top.
+    fn watch(&mut self, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
+        let st = cx.views.store;
+        let Some(fd) = st.feed(&self.key) else { return };
+        let resumed = st.resume_gen != self.watched.1;
+        if self.watched.0 == Some(fd.gen) && !resumed {
+            return;
+        }
+        self.watched = (Some(fd.gen), st.resume_gen);
+        if fd.loading {
+            return;
+        }
+        let n = self.items(cx).len();
+        if n > self.shown_n {
+            self.auto_pages = 0;
+        }
+        self.shown_n = n;
+        if fd.error.is_some() {
+            // Another try is allowed from the end of the list.
+            self.asked_more_at.set(usize::MAX);
+            if n == 0 && !self.on_nav(cx) && self.choice.is_none() {
+                if let Some(i) = self.bar_items(cx).iter().position(|b| *b == BarItem::Refresh) {
+                    self.focus_req.set(Some(BAR_BASE + i as u32));
+                }
+            }
+            if let Some((secs, _)) = fd.retry {
+                fx.push(Fx::CancelTimer(T_RETRY));
+                fx.push(Fx::Timer { id: T_RETRY, after_ms: secs.clamp(1, 120) as u32 * 1000 + 500 });
+            }
+        } else if !fd.done && !fd.ids.is_empty() && self.auto_pages < AUTO_PAGES {
+            let at_end = self.flow.focused(cx).is_some_and(|i| i + self.flow.cols * 3 >= n);
+            if n < AUTO_MIN_ITEMS || at_end {
+                self.auto_pages += 1;
+                fx.push(Fx::App(RdFx::MoreFeed(self.key.clone())));
+            }
+        }
+        if resumed && fd.stale(rd_core::now_secs()) && near_top(self.content_last.get()) {
+            self.refresh(fx);
+        }
+        fx.invalidate(plx_machine::present::Provenance::Lifecycle);
     }
 
     fn load(&self, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>, reload: bool) {
@@ -457,8 +634,8 @@ impl FeedScreen {
     }
 
     fn set_key(&mut self, key: FeedKey, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
-        if let (Some(sub), true) = (key.feed.sub(), cx.views.store.prefs.on("remember_sort")) {
-            let v = format!("{}|{}:{}", sub.to_ascii_lowercase(), key.sort.key(), key.time.key());
+        if let (Some(slot), true) = (crate::store::sort_slot(&key.feed), cx.views.store.prefs.on("remember_sort")) {
+            let v = format!("{slot}|{}:{}", key.sort.key(), key.time.key());
             fx.push(Fx::App(RdFx::EditPrefs(
                 |p, a| {
                     if let Some((s, v)) = a.split_once('|') {
@@ -472,6 +649,7 @@ impl FeedScreen {
         self.flow.to_top();
         self.sig.set((u32::MAX, 0, 0, 0));
         self.asked_more_at.set(usize::MAX);
+        self.auto_pages = 0;
         self.focus_req.set(Some(POST_BASE));
         self.load(cx, fx, false);
     }
@@ -564,15 +742,14 @@ impl FeedScreen {
                     fx.push(Fx::App(RdFx::Subscribe { sub: sub.to_string(), on: !on }));
                 }
             }
-            BarItem::Refresh => {
-                self.flow.to_top();
-                fx.push(Fx::App(RdFx::LoadFeed { key: self.key.clone(), reload: true }));
-            }
+            BarItem::Refresh => self.refresh(fx),
             BarItem::Menu => {
                 if let Some(sub) = self.key.feed.sub() {
                     fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Sub(sub.to_string())))));
                 }
             }
+            // The start page as it was left, under the pages opened since.
+            BarItem::Home => fx.push(Fx::Nav(NavOp::PopToArg(RdArg::Home))),
         }
         fx.invalidate(plx_machine::present::Provenance::Input);
     }
@@ -600,6 +777,22 @@ impl FeedScreen {
     fn focused_post<'a>(&self, cx: &Cx<'a, RdHost>) -> Option<&'a PostItem> {
         let i = self.flow.focused(cx)?;
         self.items(cx).get(i).copied()
+    }
+
+    fn on_preview(&self, cx: &Cx<'_, RdHost>) -> bool {
+        cx.focus.current.is_some_and(|k| k.entry == self.entry && k.elem == PREVIEW_ELEM)
+    }
+
+    /// The post the two-pane preview shows: the one focused last.
+    fn preview_post<'a>(&self, cx: &Cx<'a, RdHost>) -> Option<&'a PostItem> {
+        let items = self.items(cx);
+        let i = self.flow.focused(cx).or_else(|| self.flow.index(self.content_last.get()));
+        i.and_then(|i| items.get(i)).or(items.first()).copied()
+    }
+
+    /// The post the colour buttons act on: the focused one, or the preview's.
+    fn target_post<'a>(&self, cx: &Cx<'a, RdHost>) -> Option<&'a PostItem> {
+        self.focused_post(cx).or_else(|| self.on_preview(cx).then(|| self.preview_post(cx)).flatten())
     }
 
     fn on_nav(&self, cx: &Cx<'_, RdHost>) -> bool {
@@ -656,8 +849,16 @@ impl Machine<RdHost> for FeedScreen {
             return Handled::Yes;
         }
         if let Some(c) = common::color_key(ev) {
-            if cx.views.store.prefs.on("color_keys") {
-                if let Some(it) = self.focused_post(cx) {
+            if !cx.views.store.prefs.on("color_keys") {
+                return Handled::Yes;
+            }
+            // Yellow right after a hide puts the post back (its toast says so).
+            if c == Color::Yellow && cx.views.store.hidden.is_some() {
+                fx.push(Fx::App(RdFx::UndoHide));
+                return Handled::Yes;
+            }
+            match self.target_post(cx) {
+                Some(it) => {
                     let name = it.post.name.clone();
                     match c {
                         Color::Green => fx.push(Fx::App(RdFx::Vote { fullname: name, dir: if it.post.likes == Some(true) { 0 } else { 1 } })),
@@ -666,6 +867,7 @@ impl Machine<RdHost> for FeedScreen {
                         Color::Blue => self.open_post(it, fx),
                     }
                 }
+                None => fx.push(Fx::App(RdFx::Toast("Select a post first".into()))),
             }
             return Handled::Yes;
         }
@@ -676,19 +878,21 @@ impl Machine<RdHost> for FeedScreen {
                 if down {
                     let now = cx.views.now_ms;
                     let twice = cx.views.store.prefs.get("back_exit") == "twice";
-                    if !twice || (self.back_at != 0 && now.wrapping_sub(self.back_at) < 700) {
+                    if !twice || (self.back_at != 0 && now.wrapping_sub(self.back_at) < EXIT_WINDOW_MS) {
                         self.exit_armed = true;
                         return Handled::No;
                     }
+                    self.exit_armed = false;
                     self.back_at = now;
                     fx.push(Fx::CancelTimer(T_BACK));
-                    fx.push(Fx::Timer { id: T_BACK, after_ms: 700 });
-                    fx.push(Fx::App(RdFx::Toast("Press BACK again to leave".into())));
+                    fx.push(Fx::Timer { id: T_BACK, after_ms: EXIT_WINDOW_MS });
+                    fx.push(Fx::App(RdFx::ToastFor("Press BACK again to leave".into(), EXIT_WINDOW_MS)));
                     return Handled::Yes;
                 }
                 return if self.exit_armed { Handled::No } else { Handled::Yes };
             }
             if down {
+                self.exit_armed = false;
                 self.nav_open.set(true);
                 let items = self.nav_items(cx);
                 let i = items.iter().position(|n| matches!(n, NavItem::Feed(f) if *f == self.key.feed)).unwrap_or(1);
@@ -697,7 +901,22 @@ impl Machine<RdHost> for FeedScreen {
             }
             return Handled::Yes;
         }
+        // Down on the last post after the next page failed: try it again.
+        if let ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Down, edge: Edge::Down, .. }, .. }) = ev {
+            let n = self.flow.len();
+            let last_shown = n > 0 && self.flow.focused(cx) == Some(n - 1) && self.flow.screen_rect(n - 1).is_some_and(|r| r.y + r.h <= self.flow.rect.y + self.flow.rect.h + 4.0);
+            if last_shown && cx.views.store.feed(&self.key).is_some_and(|f| f.error.is_some() && !f.loading && !f.done) {
+                fx.push(Fx::App(RdFx::MoreFeed(self.key.clone())));
+                fx.invalidate(plx_machine::present::Provenance::Input);
+                return Handled::Yes;
+            }
+        }
         if let ScreenEvent::Input(InputEvent { kind: InputKind::Click { x, y, .. }, .. }) = ev {
+            // The "Updated … ago" pill: refresh.
+            if !self.nav_open.get() && self.pill.get().is_some_and(|r| *x >= r.x && *x <= r.x + r.w && *y >= r.y && *y <= r.y + r.h) {
+                self.refresh(fx);
+                return Handled::Yes;
+            }
             // Two panes: a click on the preview's picture or video opens it (zoomed or playing).
             if !self.nav_open.get() && self.choice.is_none() && self.layout == Layout::Split {
                 let hit = self.preview_media.borrow().as_ref().filter(|(r, _)| *x >= r.x && *x <= r.x + r.w && *y >= r.y && *y <= r.y + r.h).map(|(_, id)| id.clone());
@@ -725,16 +944,40 @@ impl Machine<RdHost> for FeedScreen {
         match ev {
             ScreenEvent::Mount => {
                 self.load(cx, fx, false);
+                // Opened again long after it was fetched: fetched again (the user is at its top).
+                if cx.views.store.feed(&self.key).is_some_and(|f| !f.ids.is_empty() && f.stale(rd_core::now_secs())) {
+                    self.refresh(fx);
+                }
             }
             ScreenEvent::Uncover => {
+                self.exit_armed = false;
                 if layout_of(cx) != self.layout || self.sig.get().3 != self.signature(cx, 0).3 {
                     self.configure_flow(cx);
                 }
-                if cx.views.store.feed(&self.key).is_none() {
-                    self.key = cx.views.store.key_for(self.key.feed.clone());
+                // The session was reset (signed in or out, new API settings): every feed is new,
+                // and the start page leaves a page of an account that is gone.
+                let st = cx.views.store;
+                if st.feed(&self.key).is_none() {
+                    let feed = match &self.key.feed {
+                        Feed::User(u, _) if self.root && st.username() != Some(u.as_str()) => start_feed(cx),
+                        f => f.clone(),
+                    };
+                    self.key = st.key_for(feed);
+                    self.memory.clear();
+                    self.reset_view();
                     self.load(cx, fx, false);
                 }
                 fx.invalidate(plx_machine::present::Provenance::Nav);
+            }
+            ScreenEvent::Tick(_) => self.watch(cx, fx),
+            ScreenEvent::Timer(T_RETRY) => {
+                if let Some(fd) = cx.views.store.feed(&self.key).filter(|f| f.error.is_some() && !f.loading) {
+                    match fd.retry {
+                        Some((_, true)) => fx.push(Fx::App(RdFx::MoreFeed(self.key.clone()))),
+                        Some((_, false)) => fx.push(Fx::App(RdFx::LoadFeed { key: self.key.clone(), reload: true })),
+                        None => {}
+                    }
+                }
             }
             ScreenEvent::Timer(T_PREVIEW) => {
                 if let Some(it) = self.focused_post(cx) {
@@ -747,14 +990,8 @@ impl Machine<RdHost> for FeedScreen {
                     }
                 }
             }
-            ScreenEvent::Timer(T_BACK) => {
-                self.back_at = 0;
-                if self.on_nav(cx) && self.nav_open.get() {
-                    self.nav_open.set(false);
-                    self.focus_req.set(Some(self.content_last.get()));
-                    fx.invalidate(plx_machine::present::Provenance::Input);
-                }
-            }
+            // The window for leaving is over; the side menu stays open.
+            ScreenEvent::Timer(T_BACK) => self.back_at = 0,
             ScreenEvent::Async(_, RdMsg::Changed) => {
                 // Settings may have changed the layout.
                 if layout_of(cx) != self.layout {
@@ -787,6 +1024,8 @@ impl Machine<RdHost> for FeedScreen {
                 } else if (BAR_BASE..NAV_BASE).contains(&to.elem) {
                     self.nav_open.set(false);
                     self.content_last.set(to.elem);
+                } else if to.elem == PREVIEW_ELEM {
+                    self.nav_open.set(false);
                 }
                 fx.invalidate(plx_machine::present::Provenance::Input);
             }
@@ -806,6 +1045,15 @@ impl Machine<RdHost> for FeedScreen {
                     }
                 } else if e >= BAR_BASE {
                     self.activate_bar((e - BAR_BASE) as usize, cx, fx);
+                } else if e == PREVIEW_ELEM {
+                    // The preview: its media full screen (a text post opens).
+                    if let Some(it) = self.preview_post(cx) {
+                        if matches!(it.media, Media::None) {
+                            self.open_post(it, fx);
+                        } else {
+                            super::post::open_media(it, cx, fx);
+                        }
+                    }
                 } else if let Some(i) = self.flow.index(e) {
                     if let Some(it) = self.items(cx).get(i) {
                         self.open_post(it, fx);
@@ -840,6 +1088,18 @@ impl Focusable<RdHost> for FeedScreen {
         });
         if self.flow.len() > 0 {
             out.push(self.flow.spec());
+            if self.layout == Layout::Split {
+                out.push(GroupSpec {
+                    id: G_PREVIEW,
+                    kind: GroupKind::Column,
+                    seat: Seat::Remembered,
+                    reachable: AxisMask::BOTH,
+                    edge: [EdgeRule::Stop; 4],
+                    extent: preview_pane(),
+                    len: 1,
+                    elem: ElemKind::Bare,
+                });
+            }
         }
         if self.root {
             let mut nav = self.nav.spec(self.nav_items(cx).len());
@@ -855,6 +1115,8 @@ impl Focusable<RdHost> for FeedScreen {
             G_NAV
         } else if *key >= BAR_BASE {
             G_BAR
+        } else if *key == PREVIEW_ELEM {
+            G_PREVIEW
         } else {
             G_POSTS
         })
@@ -882,6 +1144,17 @@ impl Focusable<RdHost> for FeedScreen {
                 Step::Edge
             }
         };
+        if key.elem == PREVIEW_ELEM {
+            return match dir {
+                // Back to the post it shows.
+                Dir::Left => match self.flow.index(self.content_last.get()) {
+                    Some(i) => Step::Move(self.flow.key(i)),
+                    None => Step::Move(self.flow.key(self.flow.visible().start.min(self.flow.len().saturating_sub(1)))),
+                },
+                Dir::Up => Step::Move(FocusKey { entry: self.entry, elem: BAR_BASE + self.bar_items(cx).len().saturating_sub(1) as u32 }),
+                _ => Step::Edge,
+            };
+        }
         if key.elem >= BAR_BASE {
             let i = (key.elem - BAR_BASE) as usize;
             let n = self.bar_items(cx).len();
@@ -907,6 +1180,8 @@ impl Focusable<RdHost> for FeedScreen {
                 Step::Move(FocusKey { entry: self.entry, elem: BAR_BASE })
             }
             Step::Edge if dir == Dir::Left => open_nav(self),
+            // Two panes: Right goes over to the preview.
+            Step::Edge if dir == Dir::Right && self.layout == Layout::Split => Step::Move(FocusKey { entry: self.entry, elem: PREVIEW_ELEM }),
             // Right at the end of a card row goes on to the next row.
             Step::Edge if dir == Dir::Right => match self.flow.index(key.elem) {
                 Some(i) if i + 1 < self.flow.len() => {
@@ -931,6 +1206,10 @@ impl Focusable<RdHost> for FeedScreen {
             let r = *self.bar_rects.borrow().get((*key - BAR_BASE) as usize)?;
             return Some(Placed { rect: r, rest_rect: r, clip: Rect::new(0.0, 0.0, 1920.0, 1080.0), index: Some(*key - BAR_BASE) });
         }
+        if *key == PREVIEW_ELEM {
+            let r = preview_pane();
+            return Some(Placed { rect: r, rest_rect: r, clip: Rect::new(0.0, 0.0, 1920.0, 1080.0), index: Some(0) });
+        }
         self.flow.place(*key)
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
@@ -954,6 +1233,8 @@ impl Focusable<RdHost> for FeedScreen {
             self.root && self.nav.index(want.elem, self.nav_items(cx).len()).is_some()
         } else if want.elem >= BAR_BASE {
             ((want.elem - BAR_BASE) as usize) < self.bar_items(cx).len()
+        } else if want.elem == PREVIEW_ELEM {
+            self.layout == Layout::Split && self.flow.len() > 0
         } else {
             self.flow.index(want.elem).is_some()
         };
@@ -969,6 +1250,7 @@ impl Focusable<RdHost> for FeedScreen {
     fn seat(&self, g: GroupId, _from: Placed, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
         match g {
             G_POSTS if self.flow.len() > 0 => self.flow.key(self.flow.visible().start.min(self.flow.len() - 1)),
+            G_PREVIEW => FocusKey { entry: self.entry, elem: PREVIEW_ELEM },
             G_NAV => self.nav.key(0),
             _ => FocusKey { entry: self.entry, elem: BAR_BASE },
         }
@@ -1004,6 +1286,12 @@ impl FeedScreen {
             common::button(p, f.measure, *r, l, *icon, focus == Some(BAR_BASE + i as u32), *active, false);
         }
         *self.bar_rects.borrow_mut() = rects.clone();
+        // Reloading a feed whose posts are on screen: a small spinner under Refresh.
+        if st.feed(&self.key).is_some_and(|f| f.loading) && !self.items(cx).is_empty() {
+            if let Some(r) = items.iter().position(|b| *b == BarItem::Refresh).and_then(|i| rects.get(i)) {
+                ui::spinner_at(p, cx.views.now_ms, r.x + r.w / 2.0, r.y + r.h + 18.0, 10.0);
+            }
+        }
         let title_room = (bar_left - x - 30.0).max(200.0);
         ui::text_cut(p, f.measure, &title, x, 30.0, title_room, ts, ui::WHITE, ui::ALIGN_LEFT, true);
         // Under the title: the subreddit's members, or the sort.
@@ -1100,7 +1388,7 @@ impl FeedScreen {
             }
         }
         // Badges: media kind (bottom right), NSFW / spoiler / pinned (top left).
-        let bs = ui::sz(17);
+        let bs = ui::sz(20);
         // A link's site name does not fit a small thumbnail.
         if let Some(b) = common::media_badge(it).filter(|b| r.w >= 240.0 || !b.starts_with('\u{2197}')) {
             let w = ui::text_width(m, &b, bs, true) + bs as f32 * 0.9;
@@ -1342,9 +1630,11 @@ impl FeedScreen {
         let m = f.measure;
         let cx = f.cx;
         let prefs = &cx.views.store.prefs;
-        let x0 = LEFT + SPLIT_W + 40.0;
-        let pane = Rect::new(x0, header_h() + 8.0, 1920.0 - LEFT - x0, 1080.0 - header_h() - 40.0);
+        let pane = preview_pane();
         ui::fill(p, pane, 22.0, ui::surface(0.05));
+        if self.on_preview(cx) {
+            p.rring(pane, 22.0, 4.0, ui::accent());
+        }
         // A new selection fades in (and slides a little), instead of popping.
         let now = cx.views.now_ms;
         {
@@ -1420,11 +1710,11 @@ impl FeedScreen {
                 ui::spinner(p, cx.views.now_ms, r.x + r.w / 2.0, r.y + r.h / 2.0);
             }
             if let Some(b) = common::media_badge(it) {
-                let bs = ui::sz(18);
+                let bs = ui::sz(20);
                 common::badge(p, m, r.x + 12.0, r.y + r.h - bs as f32 * 1.45 - 12.0, &b, common::BADGE_BG, ui::WHITE, bs);
             }
             if blur {
-                common::badge(p, m, r.x + 12.0, r.y + 12.0, if it.post.over_18 { "NSFW" } else { "SPOILER" }, common::NSFW_RED, ui::WHITE, ui::sz(18));
+                common::badge(p, m, r.x + 12.0, r.y + 12.0, if it.post.over_18 { "NSFW" } else { "SPOILER" }, common::NSFW_RED, ui::WHITE, ui::sz(20));
             }
             y = r.y + r.h + 18.0;
         } else if !it.post.selftext.trim().is_empty() {
@@ -1458,7 +1748,7 @@ impl FeedScreen {
         ui::fill(p, Rect::new(x, y, w, 1.5), 0.0, [1.0, 1.0, 1.0, 0.1]);
         y += 14.0;
         let cs = ui::csz(22);
-        let hs = ui::sz(19);
+        let hs = ui::sz(21);
         for n in &t.tree {
             let rd_core::comments::Node::Comment(c) = n else { continue };
             if c.stickied && c.distinguished.is_some() {
@@ -1480,6 +1770,26 @@ impl FeedScreen {
             }
             y += h + 16.0;
         }
+    }
+
+    /// "Updated 2h ago · Refresh" over the top of a list that is out of date (a click refreshes).
+    fn draw_pill(&self, f: &mut DrawFrame<'_, '_, RdHost>) {
+        let now = rd_core::now_secs();
+        let Some(fd) = f.cx.views.store.feed(&self.key).filter(|fd| fd.stale(now) && !fd.loading && !fd.ids.is_empty() && self.choice.is_none()) else {
+            self.pill.set(None);
+            return;
+        };
+        let age = rd_core::listing::age(fd.fetched_at as i64, now as i64);
+        let text = format!("{}  \u{b7}  {}", tr("Updated {} ago").replace("{}", &age), tr("Refresh"));
+        let size = ui::sz(22);
+        let h = size as f32 * 1.9;
+        let w = ui::text_width(f.measure, &text, size, true) + h;
+        let r = Rect::new(self.flow.rect.x + (self.flow.rect.w - w) / 2.0, header_h() + 10.0, w, h);
+        let p = f.painter;
+        p.shadow(r, h / 2.0, 20.0, 6.0, [0.0, 0.0, 0.0, 0.5]);
+        ui::fill(p, r, h / 2.0, ui::with_alpha(ui::accent(), 0.92));
+        ui::text_raw(p, &text, r.x + r.w / 2.0, r.y + (h - size as f32 * 1.3) / 2.0, size, ui::WHITE, ui::ALIGN_CENTER, true);
+        self.pill.set(Some(r));
     }
 
     fn draw_nav(&mut self, f: &mut DrawFrame<'_, '_, RdHost>) {
@@ -1560,7 +1870,8 @@ impl Screen<RdHost> for FeedScreen {
             match feed {
                 Some(fd) if fd.loading || (fd.ids.is_empty() && fd.error.is_none() && !fd.done) => ui::spinner(p, cx.views.now_ms, 960.0, 500.0),
                 Some(fd) if fd.error.is_some() => {
-                    common::message(p, f.measure, area, "Couldn't load this feed", fd.error.as_deref().unwrap_or_default());
+                    let detail = format!("{}  {}", fd.error.as_deref().unwrap_or_default(), tr("OK on Refresh tries again."));
+                    common::message(p, f.measure, area, "Couldn't load this feed", &detail);
                 }
                 Some(fd) if fd.gated && !st.signed_in() => common::message(
                     p,
@@ -1576,8 +1887,17 @@ impl Screen<RdHost> for FeedScreen {
                     "Reddit withholds this subreddit",
                     "This is an NSFW (18+) subreddit. Turn on \u{201c}Show mature content\u{201d} in your Reddit account's preferences (on reddit.com), then refresh.",
                 ),
-                Some(fd) if !fd.ids.is_empty() => common::message(p, f.measure, area, "Everything here is filtered out", "Your filters, NSFW or read-post settings hide every post of this feed."),
-                Some(_) => common::message(p, f.measure, area, "Nothing here", "This feed has no posts."),
+                Some(fd) if !fd.ids.is_empty() => common::message(
+                    p,
+                    f.measure,
+                    area,
+                    "Everything here is filtered out",
+                    tr("Your filters, NSFW or read-post settings hide every post of this feed (Settings \u{203a} Content)."),
+                ),
+                Some(_) => match &self.key.feed {
+                    Feed::Search { q, .. } => common::message(p, f.measure, area, &format!("{} \u{201c}{q}\u{201d}", tr("No results for")), tr("Try other words, or another sort.")),
+                    _ => common::message(p, f.measure, area, "Nothing here", "This feed has no posts."),
+                },
                 None => ui::spinner(p, cx.views.now_ms, 960.0, 500.0),
             }
         } else {
@@ -1603,11 +1923,13 @@ impl Screen<RdHost> for FeedScreen {
             // The end of the feed: loading more, or the end.
             if let Some(last) = self.flow.screen_rect(items.len() - 1) {
                 let y = last.y + last.h + 40.0;
-                if y < 1080.0 {
+                if y < 1080.0 - common::hint_band() {
                     match feed {
                         Some(fd) if fd.loading => ui::spinner(p, cx.views.now_ms, 960.0, y + 50.0),
                         Some(fd) if fd.error.is_some() => {
-                            ui::text_raw(p, fd.error.as_deref().unwrap_or_default(), 960.0, y + 20.0, ui::sz(24), ui::DIM, ui::ALIGN_CENTER, false);
+                            let mid = self.flow.rect.x + self.flow.rect.w / 2.0;
+                            ui::text(p, "Couldn't load more \u{b7} press Down to try again", mid, y + 20.0, ui::sz(24), ui::DIM, ui::ALIGN_CENTER, true);
+                            ui::text_cut(p, f.measure, fd.error.as_deref().unwrap_or_default(), mid, y + 20.0 + ui::sz(24) as f32 * 1.5, self.flow.rect.w, ui::sz(22), ui::FAINT, ui::ALIGN_CENTER, false);
                         }
                         Some(fd) if fd.done => {
                             ui::text(p, "You have reached the end", 960.0, y + 20.0, ui::sz(24), ui::FAINT, ui::ALIGN_CENTER, false);
@@ -1620,12 +1942,15 @@ impl Screen<RdHost> for FeedScreen {
                 self.flow.stops(f);
             }
             if self.layout == Layout::Split {
-                let shown = focus.and_then(|i| items.get(i)).or(items.first()).copied();
-                if let Some(it) = shown {
+                if let Some(it) = self.preview_post(cx) {
                     self.draw_preview(f, it);
                 }
             }
+            if focus.is_some() || self.on_preview(cx) {
+                common::key_hints(f.painter, f.measure, cx, 1080.0, common::FEED_HINTS);
+            }
         }
+        self.draw_pill(f);
         if self.nav_open.get() {
             f.drop_stops_since(stops_before);
         }
@@ -1639,5 +1964,33 @@ impl Screen<RdHost> for FeedScreen {
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_last_feed_comes_back() {
+        let favs = vec!["pics".to_string(), "aww".to_string()];
+        for f in [Feed::Front, Feed::Popular, Feed::All, Feed::Sub("Pics".into()), Feed::Multi(favs.clone())] {
+            let code = feed_code(&f).unwrap();
+            assert_eq!(feed_of_code(&code, &favs, None), Some(f), "{code}");
+        }
+        let saved = Feed::User("me".into(), UserTab::Saved);
+        assert_eq!(feed_of_code(&feed_code(&saved).unwrap(), &favs, Some("me")), Some(saved.clone()));
+        // Signed out, or the favourites gone: not a feed to start with.
+        assert_eq!(feed_of_code(&feed_code(&saved).unwrap(), &favs, None), None);
+        assert_eq!(feed_of_code("favorites", &[], None), None);
+        assert_eq!(feed_of_code("r/", &favs, None), None);
+        assert_eq!(feed_code(&Feed::Search { q: "cats".into(), sub: None }), None);
+    }
+
+    #[test]
+    fn near_the_top_is_the_first_three_posts_or_off_the_list() {
+        assert!(near_top(POST_BASE) && near_top(POST_BASE + 2));
+        assert!(!near_top(POST_BASE + 3));
+        assert!(near_top(BAR_BASE + 1) && near_top(PREVIEW_ELEM));
     }
 }

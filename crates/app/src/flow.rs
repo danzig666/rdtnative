@@ -167,6 +167,13 @@ impl Flow {
         self.scroll.set(0.0);
     }
 
+    /// Puts the content at `t` at once (a remembered position), within the laid-out content.
+    pub fn jump(&self, t: f32) {
+        let t = t.clamp(0.0, self.max_scroll());
+        self.target.set(t);
+        self.scroll.set(t);
+    }
+
     /// Steps the glide; call once per drawn frame.
     pub fn animate(&self, now_ms: u32) {
         let dt = now_ms.wrapping_sub(self.last_ms.get()).min(80) as f32;

@@ -387,42 +387,48 @@ impl Screen<RdHost> for KeyboardScreen {
             ui::stop(f, self.kkey(i), Rect::new(r.x - half, r.y - half, r.w + KEY_GAP, r.h + KEY_GAP), Rect::new(0.0, 0.0, 1920.0, 1080.0));
         }
         let (title, help, hint, max) = spec(&self.target);
-        ui::text_raw(p, crate::i18n::tr(&title), 100.0, 60.0, 46, ui::WHITE, ui::ALIGN_LEFT, true);
+        // Sizes follow the Text size option, capped where the keys below leave no more room.
+        ui::text_raw(p, crate::i18n::tr(&title), 100.0, 60.0, ui::sz(46).min(60), ui::WHITE, ui::ALIGN_LEFT, true);
 
         // The text with a cursor (the last lines of a long reply), or the hint when empty.
         let multi = matches!(self.target, Typing::Reply { .. });
-        let field = Rect::new(100.0, 140.0, 1720.0, if multi { 160.0 } else { 100.0 });
+        let field = Rect::new(100.0, 140.0, 1720.0, if multi { ui::ls(160.0).clamp(160.0, 170.0) } else { ui::ls(100.0).clamp(100.0, 140.0) });
         let problem = self.problem();
         ui::fill(p, field, 18.0, [1.0, 1.0, 1.0, 0.08]);
         if problem.is_some() {
             ui::fill(p, Rect::new(field.x, field.y + field.h - 4.0, field.w, 4.0), 2.0, [1.0, 0.45, 0.4, 1.0]);
         }
         let room = field.w - 72.0;
+        let one = ui::sz(36);
+        let one_y = field.y + (field.h - one as f32 * 1.3) / 2.0;
         if self.text.is_empty() {
-            ui::text_cut(p, f.measure, crate::i18n::tr(&hint), field.x + 36.0, field.y + 28.0, room, 36, ui::FAINT, ui::ALIGN_LEFT, false);
+            ui::text_cut(p, f.measure, crate::i18n::tr(&hint), field.x + 36.0, one_y, room, one, ui::FAINT, ui::ALIGN_LEFT, false);
         } else if multi {
+            let size = ui::sz(30);
+            let line_h = size as f32 * 1.42;
             let mut lines: Vec<String> = Vec::new();
             for para in format!("{}|", self.text).split('\n') {
-                let w = ui::wrap_lines(f.measure, para, room, 30, false, 50);
+                let w = ui::wrap_lines(f.measure, para, room, size, false, 50);
                 if w.is_empty() {
                     lines.push(String::new());
                 }
                 lines.extend(w);
             }
-            let start = lines.len().saturating_sub(3);
+            let fit = ((field.h - 18.0) / line_h).floor().max(1.0) as usize;
+            let start = lines.len().saturating_sub(fit);
             for (i, l) in lines[start..].iter().enumerate() {
-                ui::text_raw(p, l, field.x + 36.0, field.y + 18.0 + i as f32 * 44.0, 30, ui::WHITE, ui::ALIGN_LEFT, false);
+                ui::text_raw(p, l, field.x + 36.0, field.y + 18.0 + i as f32 * line_h, size, ui::WHITE, ui::ALIGN_LEFT, false);
             }
         } else {
-            ui::text_cut_start(p, f.measure, &format!("{}|", self.text), field.x + 36.0, field.y + 28.0, room, 36, ui::WHITE, false);
+            ui::text_cut_start(p, f.measure, &format!("{}|", self.text), field.x + 36.0, one_y, room, one, ui::WHITE, false);
         }
         let below = field.y + field.h + 14.0;
         if max < 10_000 {
-            ui::text_raw(p, &format!("{} / {}", self.text.chars().count(), max), field.x + field.w, below, 22, ui::FAINT, ui::ALIGN_RIGHT, false);
+            ui::text_raw(p, &format!("{} / {}", self.text.chars().count(), max), field.x + field.w, below, ui::sz(22), ui::FAINT, ui::ALIGN_RIGHT, false);
         }
         match &problem {
-            Some(e) => ui::text_cut(p, f.measure, e, field.x, below, field.w - 200.0, 26, [1.0, 0.55, 0.5, 1.0], ui::ALIGN_LEFT, true),
-            None => ui::text_cut(p, f.measure, crate::i18n::tr(&help), field.x, below, field.w - 200.0, 24, ui::DIM, ui::ALIGN_LEFT, false),
+            Some(e) => ui::text_cut(p, f.measure, e, field.x, below, field.w - 200.0, ui::sz(26).min(40), [1.0, 0.55, 0.5, 1.0], ui::ALIGN_LEFT, true),
+            None => ui::text_cut(p, f.measure, crate::i18n::tr(&help), field.x, below, field.w - 200.0, ui::sz(24).min(40), ui::DIM, ui::ALIGN_LEFT, false),
         };
 
         // Keyboard
@@ -457,7 +463,8 @@ impl Screen<RdHost> for KeyboardScreen {
         let sug = self.suggestions(cx);
         if !sug.is_empty() {
             let heading = if matches!(self.target, Typing::GoToSub) { "Favourites" } else { "Recent searches" };
-            ui::text(p, heading, self.suggest.rect.x + 10.0, KEYS_Y - 50.0, 24, ui::FAINT, ui::ALIGN_LEFT, true);
+            ui::text(p, heading, self.suggest.rect.x + 10.0, KEYS_Y - 50.0, ui::sz(24).min(34), ui::FAINT, ui::ALIGN_LEFT, true);
+            self.suggest.text_size = ui::sz(26).min(38);
             let rows: Vec<Row> = sug
                 .iter()
                 .map(|s| match s {
@@ -473,7 +480,7 @@ impl Screen<RdHost> for KeyboardScreen {
         } else {
             "Done uses the text. BACK leaves without it. A USB keyboard works too."
         };
-        ui::text(p, hint, 100.0, 960.0, 26, ui::FAINT, ui::ALIGN_LEFT, false);
+        ui::text(p, hint, 100.0, 960.0, ui::sz(26), ui::FAINT, ui::ALIGN_LEFT, false);
         common::toast(p, f.measure, cx);
     }
     fn render(&self) -> RenderStrategy {

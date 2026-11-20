@@ -41,6 +41,8 @@ enum Bar {
     User,
     Links,
     Refresh,
+    /// Back to the start page.
+    Home,
 }
 
 /// The post column's items.
@@ -91,7 +93,7 @@ fn bar_items(signed_in: bool) -> Vec<Bar> {
     if signed_in {
         v.push(Bar::Reply);
     }
-    v.extend([Bar::Sort, Bar::Sub, Bar::User, Bar::Links, Bar::Refresh]);
+    v.extend([Bar::Sort, Bar::Sub, Bar::User, Bar::Links, Bar::Refresh, Bar::Home]);
     v
 }
 
@@ -106,11 +108,13 @@ fn split_x() -> f32 {
 impl PostScreen {
     pub fn new(entry: EntryId, id: String, _comment: Option<String>) -> Self {
         let top = top_h();
-        let mut left = Flow::new(entry, G_POST, POST_BASE, Rect::new(60.0, top, split_x() - 60.0 - 30.0, 1080.0 - top));
+        // The key hints' band is under the columns.
+        let h = 1080.0 - top - common::hint_band();
+        let mut left = Flow::new(entry, G_POST, POST_BASE, Rect::new(60.0, top, split_x() - 60.0 - 30.0, h));
         left.row_gap = 20.0;
         left.pad_top = 6.0;
         left.margin = 30.0;
-        let mut right = Flow::new(entry, G_COMMENTS, COM_BASE, Rect::new(split_x() + 20.0, top, 1920.0 - split_x() - 20.0 - 60.0, 1080.0 - top));
+        let mut right = Flow::new(entry, G_COMMENTS, COM_BASE, Rect::new(split_x() + 20.0, top, 1920.0 - split_x() - 20.0 - 60.0, h));
         right.row_gap = 10.0;
         right.pad_top = 6.0;
         right.margin = 40.0;
@@ -287,6 +291,7 @@ impl PostScreen {
             Bar::User => (it.map_or(String::new(), |i| format!("u/{}", i.post.author)), Icon::User, false),
             Bar::Links => ("Links".into(), Icon::Leave, false),
             Bar::Refresh => (String::new(), Icon::Repeat, false),
+            Bar::Home => (String::new(), Icon::Home, false),
         }
     }
 
@@ -311,6 +316,8 @@ impl PostScreen {
             Bar::User => fx.push(Fx::Nav(NavOp::Push(RdArg::Feed(Feed::User(it.post.author.clone(), UserTab::Submitted))))),
             Bar::Links => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Links(self.id.clone(), String::new()))))),
             Bar::Refresh => fx.push(Fx::App(RdFx::LoadThread { id: self.id.clone(), sort: None, reload: true })),
+            // The start page as it was left, under the pages opened since.
+            Bar::Home => fx.push(Fx::Nav(NavOp::PopToArg(RdArg::Home))),
         }
         fx.invalidate(plx_machine::present::Provenance::Input);
     }
@@ -813,7 +820,7 @@ impl PostScreen {
                 }
                 if let Media::Gallery(g) = &it.media {
                     if g.len() > 1 {
-                        common::badge(p, m, inner.x + 14.0, inner.y + 14.0, &format!("1 / {}", g.len()), common::BADGE_BG, ui::WHITE, ui::sz(18));
+                        common::badge(p, m, inner.x + 14.0, inner.y + 14.0, &format!("1 / {}", g.len()), common::BADGE_BG, ui::WHITE, ui::sz(20));
                     }
                 }
             }
@@ -861,7 +868,7 @@ impl PostScreen {
                     [1.0, 1.0, 1.0, 0.9]
                 };
                 hx += ui::text_raw(p, author, hx, y, ms, author_col, ui::ALIGN_LEFT, true) + 10.0;
-                let bs = (ms as f32 * 0.82) as i32;
+                let bs = (ms as f32 * 0.9) as i32;
                 if *op {
                     hx += common::badge(p, m, hx, y + 2.0, "OP", [0.25, 0.45, 0.9, 1.0], ui::WHITE, bs) + 8.0;
                 }
@@ -983,6 +990,11 @@ impl Screen<RdHost> for PostScreen {
             self.right.stops(f);
         }
         self.right.draw_more_marks(p);
+        match focus {
+            Some(e) if self.right.index(e).is_some() => common::key_hints(f.painter, f.measure, cx, 1080.0, common::COMMENT_HINTS),
+            Some(e) if self.left.index(e).is_some() => common::key_hints(f.painter, f.measure, cx, 1080.0, common::POST_HINTS),
+            _ => {}
+        }
         self.draw_bar(f);
         if let Some(b) = &self.choice {
             ui::fill(f.painter, Rect::new(0.0, 0.0, 1920.0, 1080.0), 0.0, [0.0, 0.0, 0.0, 0.35]);

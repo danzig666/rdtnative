@@ -174,14 +174,20 @@ pub fn ease_out(t: f32) -> f32 {
 pub static MENUS_OPEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 pub fn spinner(p: Painter, now_ms: u32, x: f32, y: f32) {
+    spinner_at(p, now_ms, x, y, 40.0);
+}
+
+/// [`spinner`] with its ring of dots `radius` px around (x, y) (a small one beside a button).
+pub fn spinner_at(p: Painter, now_ms: u32, x: f32, y: f32, radius: f32) {
     let n = 10;
     let head = (now_ms / 80) as usize % n;
+    let dot = (radius * 0.3).max(4.0);
     for i in 0..n {
         let a = i as f32 / n as f32 * std::f32::consts::TAU;
-        let (dx, dy) = (x + 40.0 * a.sin(), y - 40.0 * a.cos());
+        let (dx, dy) = (x + radius * a.sin(), y - radius * a.cos());
         let age = (head + n - i) % n;
         let alpha = 0.15 + 0.8 * (1.0 - age as f32 / n as f32);
-        fill(p, Rect::new(dx - 6.0, dy - 6.0, 12.0, 12.0), 6.0, [1.0, 1.0, 1.0, alpha]);
+        fill(p, Rect::new(dx - dot / 2.0, dy - dot / 2.0, dot, dot), dot / 2.0, [1.0, 1.0, 1.0, alpha]);
     }
     animating();
 }

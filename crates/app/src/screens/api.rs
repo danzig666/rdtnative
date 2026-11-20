@@ -142,74 +142,77 @@ impl Screen<RdHost> for ApiScreen {
         let p = f.painter;
         let cx = f.cx;
         let store = cx.views.store;
-        ui::text(p, "Reddit API settings", 100.0, 80.0, 52, ui::WHITE, ui::ALIGN_LEFT, true);
+        ui::text(p, "Reddit API settings", 100.0, 80.0, ui::sz(52).min(64), ui::WHITE, ui::ALIGN_LEFT, true);
 
         let rows = self.rows(cx);
+        self.list.text_size = ui::sz(30).min(48);
         let focus = self.list.focused(cx, ROWS);
         self.list.draw(p, f.measure, &rows, focus);
         self.list.stops(f, ROWS);
 
-        // Under the list: the setup notes.
+        // Under the list: the setup notes (as many lines as the screen holds at large text).
         let mut y = self.list.rect.y + self.list.rect.h + 30.0;
         for step in rd_core::config::SETUP_STEPS {
-            for line in ui::wrap_lines(f.measure, crate::i18n::tr(step), 1000.0, 26, false, 2) {
-                ui::text_raw(p, &line, 100.0, y, 26, ui::FAINT, ui::ALIGN_LEFT, false);
-                y += 38.0;
+            for line in ui::wrap_lines(f.measure, crate::i18n::tr(step), 1000.0, ui::sz(26), false, 2) {
+                if y + ui::ls(38.0) <= 1070.0 {
+                    ui::text_raw(p, &line, 100.0, y, ui::sz(26), ui::FAINT, ui::ALIGN_LEFT, false);
+                }
+                y += ui::ls(38.0);
             }
         }
 
         ui::fill(p, PANEL, 24.0, [1.0, 1.0, 1.0, 0.06]);
         let (px, pw) = (PANEL.x + 40.0, PANEL.w - 80.0);
         if let Some(phone) = &store.phone {
-            ui::text(p, if phone.opened { "Opened on your phone\u{2026}" } else { "Scan with your phone" }, px, PANEL.y + 36.0, 34, ui::WHITE, ui::ALIGN_LEFT, true);
+            ui::text(p, if phone.opened { "Opened on your phone\u{2026}" } else { "Scan with your phone" }, px, PANEL.y + 36.0, ui::sz(34), ui::WHITE, ui::ALIGN_LEFT, true);
             if let Some((_, qr)) = &self.qr {
                 ui::fill(p, Rect::new(QR_FRAME.x - 20.0, QR_FRAME.y - 20.0, QR_FRAME.w + 40.0, QR_FRAME.h + 40.0), 20.0, ui::WHITE);
                 qr.draw(p, QR_FRAME);
             }
             let mut y = QR_FRAME.y + QR_FRAME.h + 50.0;
-            ui::text_cut(p, f.measure, &phone.url, px, y, pw, 24, ui::DIM, ui::ALIGN_LEFT, false);
-            y += 44.0;
-            for line in ui::wrap_lines(f.measure, crate::i18n::tr("Same Wi-Fi as the TV. The link works once and for 10 minutes; the fields fill in here when you send them."), pw, 24, false, 4) {
-                ui::text_raw(p, &line, px, y, 24, ui::FAINT, ui::ALIGN_LEFT, false);
-                y += 34.0;
+            ui::text_cut(p, f.measure, &phone.url, px, y, pw, ui::sz(24), ui::DIM, ui::ALIGN_LEFT, false);
+            y += ui::ls(44.0);
+            for line in ui::wrap_lines(f.measure, crate::i18n::tr("Same Wi-Fi as the TV. The link works once and for 10 minutes; the fields fill in here when you send them."), pw, ui::sz(24), false, 4) {
+                ui::text_raw(p, &line, px, y, ui::sz(24), ui::FAINT, ui::ALIGN_LEFT, false);
+                y += ui::ls(34.0);
             }
         } else if let Some(i) = focus.filter(|i| *i < Field::ALL.len()) {
             let field = Field::ALL[i];
             let spec = field.spec(&store.draft);
-            ui::text(p, spec.label, px, PANEL.y + 36.0, 34, ui::WHITE, ui::ALIGN_LEFT, true);
-            let mut y = PANEL.y + 100.0;
+            ui::text(p, spec.label, px, PANEL.y + 36.0, ui::sz(34), ui::WHITE, ui::ALIGN_LEFT, true);
+            let mut y = PANEL.y + 36.0 + ui::ls(64.0);
             let (shown, ink) = if spec.value.is_empty() { (spec.placeholder.clone(), ui::FAINT) } else { (spec.value.clone(), ui::WHITE) };
-            for line in ui::wrap_lines(f.measure, &shown, pw, 28, false, 4) {
-                ui::text_raw(p, &line, px, y, 28, ink, ui::ALIGN_LEFT, false);
-                y += 40.0;
+            for line in ui::wrap_lines(f.measure, &shown, pw, ui::sz(28), false, 4) {
+                ui::text_raw(p, &line, px, y, ui::sz(28), ink, ui::ALIGN_LEFT, false);
+                y += ui::ls(40.0);
             }
             y += 20.0;
             if let Some(err) = store.error(field) {
-                for line in ui::wrap_lines(f.measure, err, pw, 26, true, 3) {
-                    ui::text_raw(p, &line, px, y, 26, [1.0, 0.55, 0.5, 1.0], ui::ALIGN_LEFT, true);
-                    y += 36.0;
+                for line in ui::wrap_lines(f.measure, err, pw, ui::sz(26), true, 3) {
+                    ui::text_raw(p, &line, px, y, ui::sz(26), [1.0, 0.55, 0.5, 1.0], ui::ALIGN_LEFT, true);
+                    y += ui::ls(36.0);
                 }
                 y += 14.0;
             }
-            for line in ui::wrap_lines(f.measure, crate::i18n::tr(spec.help), pw, 24, false, 6) {
-                ui::text_raw(p, &line, px, y, 24, ui::DIM, ui::ALIGN_LEFT, false);
-                y += 34.0;
+            for line in ui::wrap_lines(f.measure, crate::i18n::tr(spec.help), pw, ui::sz(24), false, 6) {
+                ui::text_raw(p, &line, px, y, ui::sz(24), ui::DIM, ui::ALIGN_LEFT, false);
+                y += ui::ls(34.0);
             }
-            ui::text(p, "OK edits it with the on-screen keyboard.", px, PANEL.y + PANEL.h - 70.0, 24, ui::FAINT, ui::ALIGN_LEFT, false);
+            ui::text_cut(p, f.measure, crate::i18n::tr("OK edits it with the on-screen keyboard."), px, PANEL.y + PANEL.h - 70.0, pw, ui::sz(24), ui::FAINT, ui::ALIGN_LEFT, false);
         } else {
             let (title, body) = if focus == Some(ROW_PHONE) {
                 ("Enter on phone", "Shows a QR code. Scan it with a phone on the same Wi-Fi: a page opens with all three settings, so you can paste the client ID there.")
             } else {
                 ("Save and connect", "Checks the settings, saves them on this TV and loads the front page with your client ID.")
             };
-            ui::text(p, title, px, PANEL.y + 36.0, 34, ui::WHITE, ui::ALIGN_LEFT, true);
-            let mut y = PANEL.y + 100.0;
-            for line in ui::wrap_lines(f.measure, crate::i18n::tr(body), pw, 26, false, 8) {
-                ui::text_raw(p, &line, px, y, 26, ui::DIM, ui::ALIGN_LEFT, false);
-                y += 38.0;
+            ui::text(p, title, px, PANEL.y + 36.0, ui::sz(34), ui::WHITE, ui::ALIGN_LEFT, true);
+            let mut y = PANEL.y + 36.0 + ui::ls(64.0);
+            for line in ui::wrap_lines(f.measure, crate::i18n::tr(body), pw, ui::sz(26), false, 8) {
+                ui::text_raw(p, &line, px, y, ui::sz(26), ui::DIM, ui::ALIGN_LEFT, false);
+                y += ui::ls(38.0);
             }
             let status = if store.configured() { "Saved settings are in use." } else { "Nothing is saved yet." };
-            ui::text(p, status, px, PANEL.y + PANEL.h - 70.0, 24, ui::FAINT, ui::ALIGN_LEFT, false);
+            ui::text_cut(p, f.measure, crate::i18n::tr(status), px, PANEL.y + PANEL.h - 70.0, pw, ui::sz(24), ui::FAINT, ui::ALIGN_LEFT, false);
         }
         common::toast(p, f.measure, cx);
     }

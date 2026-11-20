@@ -318,8 +318,9 @@ impl Screen<RdHost> for SettingsScreen {
                 }
                 if let Act::Option(k) = act {
                     y += 20.0;
-                    ui::text(p, "Now:", px, y, hs, ui::FAINT, ui::ALIGN_LEFT, false);
-                    ui::text(p, cx.views.store.prefs.label(k), px + 90.0, y, hs, ui::accent(), ui::ALIGN_LEFT, true);
+                    // The value follows the label at any text size.
+                    let now_w = ui::text(p, "Now:", px, y, hs, ui::FAINT, ui::ALIGN_LEFT, false);
+                    ui::text(p, cx.views.store.prefs.label(k), px + now_w + ui::ls(14.0), y, hs, ui::accent(), ui::ALIGN_LEFT, true);
                     y += hs as f32 * 2.0;
                     if matches!(*k, "text_scale" | "content_scale" | "font") {
                         sample(p, f.measure, Rect::new(px, y, pw, PANEL.y + PANEL.h - y - 30.0));

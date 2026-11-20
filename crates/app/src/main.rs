@@ -6,6 +6,7 @@
 
 mod crashtrace; // fatal-signal tracer -> /tmp/rdtnative/crash.log (see `cargo xtask crash`)
 mod edge;
+mod errors;
 mod flow;
 mod host;
 mod i18n;
@@ -278,12 +279,16 @@ fn main() {
                     sdl::SDL_APP_WILLENTERBACKGROUND | sdl::SDL_APP_DIDENTERBACKGROUND => {
                         if foreground {
                             log("lifecycle: background");
+                            rig.flush();
                         }
                         foreground = false;
                         wl::release();
                     }
                     sdl::SDL_APP_DIDENTERFOREGROUND => {
                         log("lifecycle: foreground");
+                        if !foreground {
+                            rig.on_foreground();
+                        }
                         foreground = true;
                         wl::grab(win);
                     }
@@ -372,6 +377,7 @@ fn main() {
             let r = d.frame_with(&mut rig, tick, inputs, results, &mut NoTap, false);
             perf.step(step_t0.elapsed().as_micros() as u64);
             d.prune(&r.unmounted);
+            rig.unmounted(&r.unmounted);
             plx_ui::tex::note_queued(&mut d.budget);
 
             let present = foreground
@@ -414,6 +420,7 @@ fn main() {
                 sdl::SDL_Delay(plx_machine::idle::IDLE_POLL_MS);
             }
         }
+        rig.flush();
         log("rdtnative: exit");
         sdl::SDL_Quit();
     }

@@ -131,16 +131,16 @@ pub const OPTS: &[Opt] = &[
     Opt {
         key: "start_page",
         label: "Start page",
-        help: "The feed shown when the app starts.",
-        values: &[("front", "Home"), ("popular", "Popular"), ("all", "All"), ("favorites", "Favourites")],
+        help: "The feed shown when the app starts. Last feed: the one you looked at last.",
+        values: &[("front", "Home"), ("popular", "Popular"), ("all", "All"), ("favorites", "Favourites"), ("last", "Last feed")],
         default: "front",
     },
     Opt {
         key: "default_sort",
         label: "Default sort",
-        help: "How feeds are sorted when opened.",
-        values: &[("hot", "Hot"), ("best", "Best"), ("new", "New"), ("top", "Top"), ("rising", "Rising")],
-        default: "hot",
+        help: "How feeds are sorted when opened. Reddit's default: Best for your Home, Hot elsewhere.",
+        values: &[("auto", "Reddit's default"), ("hot", "Hot"), ("best", "Best"), ("new", "New"), ("top", "Top"), ("rising", "Rising")],
+        default: "auto",
     },
     Opt {
         key: "default_time",
@@ -184,6 +184,7 @@ pub const OPTS: &[Opt] = &[
     Opt { key: "left_sidebar", label: "Left opens the menu", help: "Left from the first column opens the side menu (BACK always does).", values: ON_OFF, default: "on" },
     Opt { key: "back_exit", label: "Leaving the app", help: "BACK on the side menu leaves the app.", values: &[("twice", "Press BACK twice"), ("once", "Press BACK once")], default: "twice" },
     Opt { key: "color_keys", label: "Colour buttons", help: "Red downvotes, green upvotes, yellow saves, blue opens the comments.", values: ON_OFF, default: "on" },
+    Opt { key: "key_hints", label: "Key hints", help: "A line at the bottom of the feed, a post and pictures says what the colour buttons and OK do.", values: ON_OFF, default: "on" },
 ];
 
 pub fn opt(key: &str) -> Option<&'static Opt> {
@@ -215,7 +216,7 @@ pub fn pages() -> [Page; 4] {
             icon: K::List,
             keys: &["start_page", "default_sort", "default_time", "remember_sort", "comment_sort", "collapse_depth", "collapse_mod"],
         },
-        Page { title: "Remote and navigation", icon: K::Gauge, keys: &["edge_scroll", "wheel_rows", "smooth_scroll", "left_sidebar", "back_exit", "color_keys"] },
+        Page { title: "Remote and navigation", icon: K::Gauge, keys: &["edge_scroll", "wheel_rows", "smooth_scroll", "left_sidebar", "back_exit", "color_keys", "key_hints"] },
     ]
 }
 
@@ -245,6 +246,10 @@ pub struct Prefs {
     /// The user confirmed being an adult (asked the first time NSFW is set to Show).
     #[serde(default)]
     pub adult_ok: bool,
+    /// The feed the start page showed last ("front", "popular", "all", "favorites", "saved",
+    /// "mine" or "r/<name>"), for the start page "Last feed".
+    #[serde(default)]
+    pub last_feed: Option<String>,
 }
 
 impl Prefs {

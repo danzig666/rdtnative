@@ -1,6 +1,7 @@
 //! Pop-up menus over a page: actions on a post, a comment or a subreddit, the links in a post or
 //! comment, one option's values, and the adult check. OK runs the row and closes the menu; BACK
-//! closes it.
+//! closes it. The text size, font, theme and accent menus stay open beside the Settings sample
+//! while values are tried.
 
 use super::common::{self, State};
 use crate::host::{MenuKind, RdArg, RdFx, RdHost, RdMsg, Typing};
@@ -59,8 +60,20 @@ pub struct MenuScreen {
     rows: Vec<(Row, Act)>,
     /// The first focus goes to the current value (option lists).
     seated: std::cell::Cell<bool>,
+    /// When it opened: a menu the app opened by itself ignores OK at first.
+    opened_ms: u32,
+    /// A value was picked in a menu that stays open: rebuilt with the new settings.
+    rebuild: bool,
     state: State,
 }
+
+/// Options whose effect shows on the Settings page behind the menu (its sample, its colours):
+/// their menu stays open, beside the sample, while values are tried.
+const LIVE: &[&str] = &["text_scale", "content_scale", "font", "theme", "accent"];
+
+/// A menu the app opened by itself (not the user's OK) ignores OK this long: a press meant for
+/// the page under it must not pick a row.
+const UNASKED_GRACE_MS: u32 = 800;
 
 impl MenuScreen {
     pub fn new(entry: EntryId, kind: MenuKind, cx: &Cx<'_, RdHost>) -> Self {
@@ -70,10 +83,21 @@ impl MenuScreen {
             title: String::new(),
             rows: Vec::new(),
             seated: std::cell::Cell::new(false),
+            opened_ms: 0,
+            rebuild: false,
             state: State("menu".into()),
         };
         m.build(cx);
         m
+    }
+
+    fn live(&self) -> bool {
+        matches!(self.kind, MenuKind::Option(k) if LIVE.contains(&k))
+    }
+
+    /// Menus the app presents by itself (the update prompt).
+    fn unasked(&self) -> bool {
+        matches!(self.kind, MenuKind::Update)
     }
 
     fn build(&mut self, cx: &Cx<'_, RdHost>) {
@@ -198,8 +222,9 @@ impl MenuScreen {
             MenuKind::Update => {
                 let v = crate::update::found_version().unwrap_or_default();
                 title = format!("{} {v} (you have {})", crate::i18n::tr("rdtnative update available:"), crate::update::current_version());
-                rows.push((Row::new("Install now (closes the app)").icon(Icon::Check), Act::InstallUpdate));
+                // It opens by itself while the user browses: the first focus is the harmless row.
                 rows.push((Row::new("Later (Settings \u{203a} Updates)"), Act::Close));
+                rows.push((Row::new("Install now (closes the app)").icon(Icon::Check), Act::InstallUpdate));
             }
             MenuKind::Sort(_) | MenuKind::Time(_) | MenuKind::CommentSort(_) => {
                 rows.push((Row::new("Close"), Act::Close));
@@ -215,7 +240,9 @@ impl MenuScreen {
         let h = n.min(max_rows) as f32 * row_h;
         let total = title_h + h + 40.0;
         let y = ((1080.0 - total) / 2.0).max(30.0);
-        self.list = VList { rect: Rect::new((1920.0 - w) / 2.0 + 20.0, y + title_h + 20.0, w - 40.0, h), row_h, text_size: ts, ..self.list };
+        // A live option's menu stands left, over the Settings list, so its sample stays in view.
+        let x = if self.live() { 100.0 } else { (1920.0 - w) / 2.0 };
+        self.list = VList { rect: Rect::new(x + 20.0, y + title_h + 20.0, w - 40.0, h), row_h, text_size: ts, ..self.list };
         self.title = title;
         self.rows = rows;
     }
@@ -282,6 +309,13 @@ impl MenuScreen {
                 close(fx);
                 fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::Reply { parent, post }))));
             }
+            // Stays open: the next frame shows the choice ticked and the page behind it changed;
+            // OK on the value already in use closes it.
+            Act::SetPref(key, v) if self.live() && cx.views.store.prefs.get(key) == v => close(fx),
+            Act::SetPref(key, v) if self.live() => {
+                fx.push(Fx::App(RdFx::SetPref(key, v)));
+                self.rebuild = true;
+            }
             Act::SetPref(key, v) => {
                 close(fx);
                 fx.push(Fx::App(RdFx::SetPref(key, v)));
@@ -313,12 +347,14 @@ impl Machine<RdHost> for MenuScreen {
         match ev {
             ScreenEvent::Mount => {
                 ui::MENUS_OPEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.opened_ms = cx.views.now_ms;
                 Handled::Yes
             }
             ScreenEvent::Unmount => {
                 ui::MENUS_OPEN.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 Handled::Yes
             }
+            ScreenEvent::Activate(_) if self.unasked() && cx.views.now_ms.wrapping_sub(self.opened_ms) < UNASKED_GRACE_MS => Handled::Yes,
             ScreenEvent::Activate(e) => {
                 if let Some(i) = self.list.index(*e, self.rows.len()) {
                     self.run(i, cx, fx);
@@ -379,7 +415,11 @@ impl Screen<RdHost> for MenuScreen {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, RdHost>) {
         let p = f.painter;
         let cx = f.cx;
-        ui::fill(p, Rect::new(0.0, 0.0, 1920.0, 1080.0), 0.0, [0.0, 0.0, 0.0, 0.55]);
+        if std::mem::take(&mut self.rebuild) {
+            self.build(cx);
+        }
+        // A live option's menu dims the page only a little: it is there to be seen.
+        ui::fill(p, Rect::new(0.0, 0.0, 1920.0, 1080.0), 0.0, [0.0, 0.0, 0.0, if self.live() { 0.2 } else { 0.55 }]);
         let r = self.list.rect;
         let ts = ui::sz(28);
         let title_h = if self.title.is_empty() { 0.0 } else { ts as f32 * 1.42 * 2.0 + 30.0 };
