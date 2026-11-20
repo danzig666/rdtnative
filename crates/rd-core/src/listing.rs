@@ -371,6 +371,8 @@ pub enum RedditLink {
     User(String),
     /// (post id, optional comment id)
     Post(String, Option<String>),
+    /// A user's custom feed (`/user/<owner>/m/<name>`).
+    Custom { owner: String, name: String },
     /// A share link (`/r/x/s/<code>`): Reddit redirects it to the real address (see
     /// [`share_target`]).
     Share(String),
@@ -401,6 +403,7 @@ pub fn parse_reddit_link(url: &str) -> Option<RedditLink> {
         ["r" | "u" | "user", _, "comments", id, _, c, ..] => Some(RedditLink::Post(id.to_string(), Some(c.to_string()))),
         ["r" | "u" | "user", _, "comments", id, ..] | ["comments", id, ..] | ["gallery", id, ..] => Some(RedditLink::Post(id.to_string(), None)),
         ["r", sub, ..] => Some(RedditLink::Sub(sub.to_string())),
+        ["u" | "user", owner, "m", name, ..] => Some(RedditLink::Custom { owner: owner.to_string(), name: name.to_string() }),
         ["u" | "user", name, ..] => Some(RedditLink::User(name.to_string())),
         _ => None,
     }
@@ -475,6 +478,10 @@ mod tests {
         assert_eq!(parse_reddit_link("https://www.reddit.com/r/pics/s/AbCdE12345"), Some(RedditLink::Share("https://www.reddit.com/r/pics/s/AbCdE12345".into())));
         assert_eq!(parse_reddit_link("https://www.reddit.com/user/bob/comments/xyz/title/"), Some(RedditLink::Post("xyz".into(), None)));
         assert_eq!(parse_reddit_link("https://www.reddit.com/gallery/g1"), Some(RedditLink::Post("g1".into(), None)));
+        // A custom feed, not its owner's profile.
+        let tech = Some(RedditLink::Custom { owner: "alice".into(), name: "tech".into() });
+        assert_eq!(parse_reddit_link("https://www.reddit.com/user/alice/m/tech/"), tech);
+        assert_eq!(parse_reddit_link("/u/alice/m/tech"), tech);
         assert_eq!(parse_reddit_link("https://www.reddit.com/media?url=https%3A%2F%2Fwww.reddit.com%2Fr%2Frust%2F"), Some(RedditLink::Sub("rust".into())));
         assert_eq!(share_target("https://www.reddit.com/r/pics/comments/abc/t/?share_id=x"), Some(RedditLink::Post("abc".into(), None)));
     }

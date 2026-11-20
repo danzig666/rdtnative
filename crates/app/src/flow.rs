@@ -23,6 +23,9 @@ pub struct Flow {
     /// Room above the first row and below the last (inside the scrolled content).
     pub pad_top: f32,
     pub pad_bottom: f32,
+    /// Room under the last row for what the list draws at its end (loading, the end of a feed):
+    /// focus on the last row scrolls it into view.
+    pub footer: f32,
     /// What stays visible above / below a revealed item.
     pub margin: f32,
     scroll: Cell<f32>,
@@ -56,6 +59,7 @@ impl Flow {
             row_gap: 24.0,
             pad_top: 0.0,
             pad_bottom: 40.0,
+            footer: 0.0,
             margin: 60.0,
             scroll: Cell::new(0.0),
             target: Cell::new(0.0),
@@ -84,7 +88,7 @@ impl Flow {
             }
             y += rh + self.row_gap;
         }
-        let h = if heights.is_empty() { 0.0 } else { y - self.row_gap + self.pad_bottom };
+        let h = if heights.is_empty() { 0.0 } else { y - self.row_gap + self.pad_bottom + self.footer };
         self.content_h.set(h);
         *self.boxes.borrow_mut() = boxes;
         // Content shrank under the scroll (a reload): stay within it.
@@ -139,6 +143,9 @@ impl Flow {
         let m = self.margin.min(view / 4.0);
         let t = if h + 2.0 * m >= view {
             top - m.min(20.0)
+        } else if self.footer > 0.0 && self.last_row(i) {
+            // The last row brings what the list draws under it into view too.
+            self.max_scroll()
         } else if top - m < cur {
             top - m
         } else if top + h + m > cur + view {
@@ -147,6 +154,19 @@ impl Flow {
             cur
         };
         self.set_target(t);
+    }
+
+    /// Item `i` is in the last row.
+    pub fn last_row(&self, i: usize) -> bool {
+        let (n, cols) = (self.len(), self.cols.max(1));
+        n > 0 && i / cols == (n - 1) / cols
+    }
+
+    /// The bottom of the last row on screen (its tallest item's).
+    pub fn end_y(&self) -> Option<f32> {
+        let (n, cols) = (self.len(), self.cols.max(1));
+        let first = n.checked_sub(1)? / cols * cols;
+        (first..n).filter_map(|i| self.screen_rect(i)).map(|r| r.y + r.h).reduce(f32::max)
     }
 
     pub fn set_target(&self, t: f32) {
@@ -389,6 +409,28 @@ mod tests {
         // A key moving focus still reveals the item.
         f.on_focus(j + 1, false);
         assert_ne!(f.target.get(), at);
+    }
+
+    #[test]
+    fn the_last_row_brings_the_end_of_the_list_into_view() {
+        let mut f = Flow::new(EntryId(1), GroupId(1), 0, Rect::new(0.0, 0.0, 800.0, 1000.0));
+        f.cols = 4;
+        f.margin = 40.0;
+        f.footer = 100.0;
+        f.set_heights(&[300.0; 10]);
+        assert!(f.last_row(8) && f.last_row(9) && !f.last_row(7));
+        // Any card of the last row scrolls down to the room under it, not only the last card.
+        f.reveal(8);
+        assert_eq!(f.target.get(), f.max_scroll());
+        f.target.set(f.max_scroll());
+        f.scroll.set(f.max_scroll());
+        let end = f.end_y().unwrap();
+        assert_eq!(end + f.pad_bottom + f.footer, f.rect.h);
+        // Without a footer, nothing changes for other lists.
+        let g = Flow::new(EntryId(1), GroupId(1), 0, Rect::new(0.0, 0.0, 800.0, 1000.0));
+        g.set_heights(&[300.0; 2]);
+        g.reveal(1);
+        assert_eq!(g.target.get(), 0.0);
     }
 
     #[test]

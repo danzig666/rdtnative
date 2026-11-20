@@ -1,7 +1,7 @@
 //! Pieces several screens share: buttons, badges, the post meta line, the toast, the clock,
 //! colour keys and BACK, and empty or error states.
 
-use crate::host::{MenuKind, RdArg, RdHost};
+use crate::host::{MenuKind, RdArg, RdFx, RdHost};
 use crate::store::PostItem;
 use crate::ui::{self, icon::Kind as Icon};
 use plx_machine::machine::{Canon, Cx, Edge, Effects, Fx, InputEvent, InputKind, Key, LogicalState, NavOp, ScreenEvent};
@@ -54,6 +54,16 @@ pub fn color_key(ev: &ScreenEvent<RdHost>) -> Option<Color> {
         0x4000_003D => Some(Color::Blue),
         _ => None,
     })
+}
+
+/// Yellow right after a hide puts the post back (the toast says so) on every page whose hold-OK
+/// menu offers Hide. Returns whether it did; asked before anything else a colour key does.
+pub fn undo_hide_first(c: Color, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) -> bool {
+    if c == Color::Yellow && cx.views.store.hidden.is_some() {
+        fx.push(Fx::App(RdFx::UndoHide));
+        return true;
+    }
+    false
 }
 
 /// Signed out, the colour buttons that vote and save (all but Blue) offer to sign in instead.

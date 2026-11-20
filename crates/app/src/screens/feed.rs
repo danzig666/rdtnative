@@ -45,12 +45,21 @@ const NAV_W: f32 = 440.0;
 const T_BACK: plx_machine::machine::TimerId = plx_machine::machine::TimerId(41);
 /// The preview pane asks for the focused post's comments once focus rests on it.
 const T_PREVIEW: plx_machine::machine::TimerId = plx_machine::machine::TimerId(42);
-/// A load refused for the rate limit is tried again once Reddit's wait is over.
-const T_RETRY: plx_machine::machine::TimerId = plx_machine::machine::TimerId(50);
+/// A load refused for the rate limit is tried again once Reddit's wait is over: the timer's id
+/// carries the page's entry, as each feed page has its own (cancelling a timer cancels every
+/// timer with its id, whoever armed it).
+fn retry_timer(entry: EntryId) -> plx_machine::machine::TimerId {
+    plx_machine::machine::TimerId(0x8000_0000 | entry.0)
+}
 /// The second BACK on the side menu leaves the app within this window (the toast lasts as long).
 const EXIT_WINDOW_MS: u32 = 2000;
 /// Width of the list in the two-pane layout.
 const SPLIT_W: f32 = 800.0;
+
+/// The room under the last post for the end-of-feed line: the spinner, or two lines of text.
+fn footer_h() -> f32 {
+    (20.0 + (ui::sz(24) + ui::sz(22)) as f32 * 1.5 + 16.0).max(90.0)
+}
 /// Fewer posts than this left after the filters: the next page is fetched by itself...
 const AUTO_MIN_ITEMS: usize = 8;
 /// ...at most this many pages in a row that add nothing to show.
@@ -64,11 +73,9 @@ enum BarItem {
     Time,
     Layout,
     Search,
-    Favorite,
-    Join,
-    /// The subreddit's info page.
-    About,
     Refresh,
+    /// A subreddit's menu: favourite, join, its info page, slideshow (kept off the bar, which
+    /// has no room for them beside Play, Home, a time range and the clock).
     Menu,
     /// Slideshow or video channel of this feed.
     Play,
@@ -265,6 +272,7 @@ impl FeedScreen {
         let f = &mut self.flow;
         f.pad_top = 8.0;
         f.margin = 40.0;
+        f.footer = footer_h();
         match self.layout {
             Layout::Cards => {
                 f.cols = prefs.num("columns").clamp(2, 6) as usize;
@@ -442,12 +450,7 @@ impl FeedScreen {
         v.push(BarItem::Layout);
         v.push(BarItem::Search);
         v.push(BarItem::Play);
-        if let Some(_sub) = self.key.feed.sub() {
-            v.push(BarItem::Favorite);
-            if st.signed_in() {
-                v.push(BarItem::Join);
-            }
-            v.push(BarItem::About);
+        if self.key.feed.sub().is_some() {
             v.push(BarItem::Menu);
         }
         v.push(BarItem::Refresh);
@@ -457,8 +460,7 @@ impl FeedScreen {
         v
     }
 
-    fn bar_label(&self, b: &BarItem, cx: &Cx<'_, RdHost>) -> (String, Option<Icon>, bool) {
-        let st = cx.views.store;
+    fn bar_label(&self, b: &BarItem) -> (String, Option<Icon>, bool) {
         match b {
             BarItem::Setup => ("Set up Reddit API".into(), Some(Icon::Key), false),
             BarItem::SignIn => ("Sign in".into(), Some(Icon::User), false),
@@ -478,15 +480,6 @@ impl FeedScreen {
                 false,
             ),
             BarItem::Search => ("Search".into(), Some(Icon::Search), false),
-            BarItem::Favorite => {
-                let on = self.key.feed.sub().is_some_and(|s| st.prefs.is_favorite(s));
-                ("Favourite".into(), Some(Icon::Star), on)
-            }
-            BarItem::Join => {
-                let on = self.key.feed.sub().and_then(|s| st.about.get(&s.to_ascii_lowercase())).is_some_and(|a| a.subscribed);
-                (if on { "Joined" } else { "Join" }.into(), Some(Icon::Check), on)
-            }
-            BarItem::About => ("About".into(), Some(Icon::News), false),
             BarItem::Refresh => ("Refresh".into(), Some(Icon::Repeat), false),
             BarItem::Menu => ("More".into(), Some(Icon::Info), false),
             BarItem::Play => ("Play".into(), Some(Icon::Play), false),
@@ -624,8 +617,9 @@ impl FeedScreen {
                 }
             }
             if let Some((secs, _)) = fd.retry {
-                fx.push(Fx::CancelTimer(T_RETRY));
-                fx.push(Fx::Timer { id: T_RETRY, after_ms: secs.clamp(1, 120) as u32 * 1000 + 500 });
+                let t = retry_timer(self.entry);
+                fx.push(Fx::CancelTimer(t));
+                fx.push(Fx::Timer { id: t, after_ms: secs.clamp(1, 120) as u32 * 1000 + 500 });
             }
         } else if !fd.done && !fd.ids.is_empty() && self.auto_pages < AUTO_PAGES {
             let at_end = self.flow.focused(cx).is_some_and(|i| i + self.flow.cols * 3 >= n);
@@ -733,7 +727,6 @@ impl FeedScreen {
         let items = self.bar_items(cx);
         let Some(b) = items.get(i) else { return };
         let anchor = self.bar_rects.borrow().get(i).copied().unwrap_or(Rect::new(1400.0, 40.0, 200.0, 60.0));
-        let st = cx.views.store;
         match b {
             BarItem::Setup => fx.push(Fx::Nav(NavOp::Push(RdArg::ApiSettings))),
             BarItem::SignIn => fx.push(Fx::Nav(NavOp::Push(RdArg::SignIn))),
@@ -741,35 +734,12 @@ impl FeedScreen {
             BarItem::Time => self.open_choice(Choice::Time, anchor, i, cx),
             BarItem::Layout => self.open_choice(Choice::Layout, anchor, i, cx),
             BarItem::Search => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::Search { sub: self.key.feed.sub().map(str::to_string) })))),
-            BarItem::Favorite => {
-                if let Some(sub) = self.key.feed.sub() {
-                    let on = st.prefs.is_favorite(sub);
-                    fx.push(Fx::App(RdFx::EditPrefs(
-                        |p, s| {
-                            p.toggle_favorite(s);
-                        },
-                        sub.to_string(),
-                    )));
-                    fx.push(Fx::App(RdFx::Toast(if on { format!("Removed r/{sub} from favourites") } else { format!("Added r/{sub} to favourites") })));
-                }
-            }
-            BarItem::Join => {
-                if let Some(sub) = self.key.feed.sub() {
-                    let on = st.about.get(&sub.to_ascii_lowercase()).is_some_and(|a| a.subscribed);
-                    fx.push(Fx::App(RdFx::Subscribe { sub: sub.to_string(), on: !on }));
-                }
-            }
-            BarItem::About => {
-                if let Some(sub) = self.key.feed.sub() {
-                    // Search results in r/x are not r/x's feed: its "Open r/x" opens the feed.
-                    let from_feed = matches!(self.key.feed, Feed::Sub(_));
-                    fx.push(Fx::Nav(NavOp::Push(RdArg::SubInfo { sub: sub.to_string(), from_feed })));
-                }
-            }
             BarItem::Refresh => self.refresh(fx),
             BarItem::Menu => {
                 if let Some(sub) = self.key.feed.sub() {
-                    fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Sub(sub.to_string())))));
+                    // Search results in r/x are not r/x's feed: its info page's "Open r/x" opens it.
+                    let from_feed = matches!(self.key.feed, Feed::Sub(_));
+                    fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Sub(sub.to_string(), from_feed)))));
                 }
             }
             BarItem::Play => {
@@ -890,8 +860,7 @@ impl Machine<RdHost> for FeedScreen {
                 return Handled::Yes;
             }
             // Yellow right after a hide puts the post back (its toast says so).
-            if c == Color::Yellow && cx.views.store.hidden.is_some() {
-                fx.push(Fx::App(RdFx::UndoHide));
+            if common::undo_hide_first(c, cx, fx) {
                 return Handled::Yes;
             }
             match self.target_post(cx) {
@@ -944,8 +913,13 @@ impl Machine<RdHost> for FeedScreen {
         }
         // Down on the last post after the next page failed: try it again.
         if let ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Down, edge: Edge::Down, .. }, .. }) = ev {
-            let n = self.flow.len();
-            let last_shown = n > 0 && self.flow.focused(cx) == Some(n - 1) && self.flow.screen_rect(n - 1).is_some_and(|r| r.y + r.h <= self.flow.rect.y + self.flow.rect.h + 4.0);
+            // Any card of the last row (Cards), once it shows whole: a taller one pages first.
+            let last_shown = self
+                .flow
+                .focused(cx)
+                .filter(|&i| self.flow.last_row(i))
+                .and_then(|i| self.flow.screen_rect(i))
+                .is_some_and(|r| r.y + r.h <= self.flow.rect.y + self.flow.rect.h + 4.0);
             if last_shown && cx.views.store.feed(&self.key).is_some_and(|f| f.error.is_some() && !f.loading && !f.done) {
                 fx.push(Fx::App(RdFx::MoreFeed(self.key.clone())));
                 fx.invalidate(plx_machine::present::Provenance::Input);
@@ -992,6 +966,8 @@ impl Machine<RdHost> for FeedScreen {
             }
             ScreenEvent::Uncover => {
                 self.exit_armed = false;
+                // A wait for the rate limit armed before is looked at again (a timer may be gone).
+                self.watched.0 = None;
                 if layout_of(cx) != self.layout || self.sig.get().3 != self.signature(cx, 0).3 {
                     self.configure_flow(cx);
                 }
@@ -1011,7 +987,7 @@ impl Machine<RdHost> for FeedScreen {
                 fx.invalidate(plx_machine::present::Provenance::Nav);
             }
             ScreenEvent::Tick(_) => self.watch(cx, fx),
-            ScreenEvent::Timer(T_RETRY) => {
+            ScreenEvent::Timer(t) if *t == retry_timer(self.entry) => {
                 if let Some(fd) = cx.views.store.feed(&self.key).filter(|f| f.error.is_some() && !f.loading) {
                     match fd.retry {
                         Some((_, true)) => fx.push(Fx::App(RdFx::MoreFeed(self.key.clone()))),
@@ -1319,7 +1295,7 @@ impl FeedScreen {
         }
         // Buttons right, title left in the room that is left.
         let items = self.bar_items(cx);
-        let labels: Vec<(String, Option<Icon>, bool)> = items.iter().map(|b| self.bar_label(b, cx)).collect();
+        let labels: Vec<(String, Option<Icon>, bool)> = items.iter().map(|b| self.bar_label(b)).collect();
         let bh = ui::ls(58.0).max(52.0);
         let right = 1920.0 - LEFT + if st.prefs.on("clock") { -130.0 } else { 0.0 };
         let rects = common::button_row(f.measure, &labels.iter().map(|(l, i, _)| (l.as_str(), i.is_some())).collect::<Vec<_>>(), 0.0, 34.0, bh, 14.0, Some(right));
@@ -1329,13 +1305,15 @@ impl FeedScreen {
             common::button(p, f.measure, *r, l, *icon, focus == Some(BAR_BASE + i as u32), *active, false);
         }
         *self.bar_rects.borrow_mut() = rects.clone();
-        // Reloading a feed whose posts are on screen: a small spinner under Refresh.
-        if st.feed(&self.key).is_some_and(|f| f.loading) && !self.items(cx).is_empty() {
+        // Reloading a feed whose posts are on screen: a small spinner under Refresh (a next page
+        // has its own at the end of the list).
+        if st.feed(&self.key).is_some_and(|f| f.loading && f.reloading) && !self.items(cx).is_empty() {
             if let Some(r) = items.iter().position(|b| *b == BarItem::Refresh).and_then(|i| rects.get(i)) {
                 ui::spinner_at(p, cx.views.now_ms, r.x + r.w / 2.0, r.y + r.h + 18.0, 10.0);
             }
         }
-        let title_room = (bar_left - x - 30.0).max(200.0);
+        // Cut short rather than painted over the buttons.
+        let title_room = (bar_left - x - 30.0).max(0.0);
         ui::text_cut(p, f.measure, &title, x, 30.0, title_room, ts, ui::WHITE, ui::ALIGN_LEFT, true);
         // Under the title: the subreddit's members, or the sort.
         let sub_line = match self.key.feed.sub().and_then(|s| st.about.get(&s.to_ascii_lowercase())) {
@@ -1963,10 +1941,10 @@ impl Screen<RdHost> for FeedScreen {
                     }
                 }
             }
-            // The end of the feed: loading more, or the end.
-            if let Some(last) = self.flow.screen_rect(items.len() - 1) {
-                let y = last.y + last.h + 40.0;
-                if y < 1080.0 - common::hint_band() {
+            // The end of the feed: loading more, or the end (in the room the list keeps for it).
+            if let Some(end) = self.flow.end_y() {
+                let y = end + self.flow.pad_bottom;
+                if y + footer_h() <= self.flow.rect.y + self.flow.rect.h + 1.0 {
                     match feed {
                         Some(fd) if fd.loading => ui::spinner(p, cx.views.now_ms, 960.0, y + 50.0),
                         Some(fd) if fd.error.is_some() => {

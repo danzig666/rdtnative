@@ -171,7 +171,7 @@ impl MenuScreen {
                     rows.push((Row::new("Links in this comment").icon(Icon::Leave), Act::Push(RdArg::Menu(MenuKind::Links(post.clone(), c.name.clone())))));
                 }
             }
-            MenuKind::Sub(sub) => {
+            MenuKind::Sub(sub, from_feed) => {
                 title = format!("r/{sub}");
                 let fav = st.prefs.is_favorite(sub);
                 rows.push((Row::new(if fav { "Remove from favourites" } else { "Add to favourites" }).icon(Icon::Star), Act::Favorite(sub.clone())));
@@ -179,7 +179,7 @@ impl MenuScreen {
                     let joined = st.about.get(&sub.to_ascii_lowercase()).is_some_and(|a| a.subscribed);
                     rows.push((Row::new(if joined { "Leave" } else { "Join" }).icon(Icon::Check), Act::Subscribe(sub.clone(), !joined)));
                 }
-                rows.push((about_row(sub), Act::Push(RdArg::SubInfo { sub: sub.clone(), from_feed: false })));
+                rows.push((about_row(sub), Act::Push(RdArg::SubInfo { sub: sub.clone(), from_feed: *from_feed })));
                 rows.push((Row::new(format!("Search in r/{sub}")).icon(Icon::Search).raw(), Act::Push(RdArg::Type(Typing::Search { sub: Some(sub.clone()) }))));
                 rows.push((Row::new("Hide its posts from Home, Popular and All").icon(Icon::Shield), Act::FilterSub(sub.clone())));
                 let key = st.key_for(Feed::Sub(sub.clone()));
@@ -233,6 +233,7 @@ impl MenuScreen {
                     let act = match rd_core::listing::parse_reddit_link(&u) {
                         Some(rd_core::listing::RedditLink::Sub(s)) => Act::Push(RdArg::Feed(Feed::Sub(s))),
                         Some(rd_core::listing::RedditLink::User(n)) => Act::Push(RdArg::Profile(n)),
+                        Some(rd_core::listing::RedditLink::Custom { owner, name }) => Act::Push(RdArg::Feed(Feed::Custom { owner, name })),
                         Some(rd_core::listing::RedditLink::Post(id, c)) => Act::Push(RdArg::Post { id, comment: c }),
                         Some(rd_core::listing::RedditLink::Share(s)) => Act::Share(s),
                         None => Act::Link(u.clone()),

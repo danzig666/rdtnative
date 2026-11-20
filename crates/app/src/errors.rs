@@ -18,13 +18,15 @@ pub fn plain(e: &RdError) -> String {
     }
 }
 
-/// The subreddit or user a 404 path names ("/r/pics/hot" -> "r/pics").
+/// The subreddit, user or custom feed a 404 path names ("/r/pics/hot" -> "r/pics"; a custom
+/// feed's "/user/alice/m/tech/hot" -> "m/tech": its owner exists, the feed is what is missing).
 fn missing(path: &str) -> Option<String> {
     let mut parts = path.trim_start_matches('/').split(['/', '?']);
     let (kind, name) = (parts.next()?, parts.next().filter(|n| !n.is_empty())?);
-    match kind {
-        "r" => Some(format!("r/{name}")),
-        "user" | "u" => Some(format!("u/{name}")),
+    match (kind, parts.next()) {
+        ("r", _) => Some(format!("r/{name}")),
+        ("user" | "u", Some("m")) => parts.next().filter(|m| !m.is_empty()).map(|m| format!("m/{m}")),
+        ("user" | "u", _) => Some(format!("u/{name}")),
         _ => None,
     }
 }
@@ -39,6 +41,8 @@ mod tests {
         assert_eq!(missing("/user/someone/submitted?sort=new").as_deref(), Some("u/someone"));
         assert_eq!(missing("/comments/abc"), None);
         assert_eq!(missing("/r/"), None);
+        assert_eq!(missing("/user/alice/m/tech/hot").as_deref(), Some("m/tech"));
+        assert_eq!(missing("/user/alice/m/"), None);
         assert!(plain(&RdError::NotFound("/r/nosuchsub/hot".into())).contains("r/nosuchsub"));
         let net = plain(&RdError::Network("error sending request for url (https://oauth.reddit.com/hot)".into()));
         assert!(!net.contains("oauth.reddit.com"), "{net}");

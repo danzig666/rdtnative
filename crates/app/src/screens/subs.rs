@@ -236,7 +236,7 @@ impl Machine<RdHost> for SubsScreen {
         }
         if let Some(e) = common::press_hold(ev, cx) {
             if let Some(Feed::Sub(name)) = self.flow.index(e).and_then(|i| self.rows.borrow().get(i).map(|r| r.feed.clone())) {
-                fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Sub(name)))));
+                fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Sub(name, false)))));
             }
             return Handled::Yes;
         }
@@ -251,7 +251,26 @@ impl Machine<RdHost> for SubsScreen {
                 };
                 self.show(first, cx, fx);
             }
-            ScreenEvent::Async(_, RdMsg::Changed) | ScreenEvent::Uncover => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
+            ScreenEvent::Uncover => {
+                let st = cx.views.store;
+                if !self.tabs(cx).contains(&self.tab) {
+                    // Signed out meanwhile: the Joined and Custom feeds tabs are gone.
+                    let t = if st.prefs.favorites.is_empty() { Tab::Popular } else { Tab::Favorites };
+                    self.show(t, cx, fx);
+                } else {
+                    // A sign-in (or a lost one) meanwhile emptied the account's lists: they load
+                    // again rather than reading as empty. A custom feeds list that loaded stays.
+                    match self.tab {
+                        Tab::Custom if st.multis.gen == 0 && !st.multis.loading && st.multis.error.is_none() => fx.push(Fx::App(RdFx::LoadMultis)),
+                        Tab::Joined if st.subs_mine.items.is_empty() && !st.subs_mine.loading && st.subs_mine.error.is_none() => {
+                            fx.push(Fx::App(RdFx::LoadSubs { mine: true }))
+                        }
+                        _ => {}
+                    }
+                    fx.invalidate(plx_machine::present::Provenance::Lifecycle);
+                }
+            }
+            ScreenEvent::Async(_, RdMsg::Changed) => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
             ScreenEvent::FocusMoved { to, by, .. } => {
                 if matches!(by, By::Dir | By::Pointer) {
                     self.auto_focus.set(false);
@@ -528,6 +547,17 @@ impl Machine<RdHost> for InboxScreen {
         }
         match ev {
             ScreenEvent::Mount => fx.push(Fx::App(RdFx::LoadInbox)),
+            ScreenEvent::Uncover => {
+                let st = cx.views.store;
+                if !st.signed_in() {
+                    // The sign-in was lost and Sign in left without one: no inbox to show.
+                    fx.push(Fx::Nav(NavOp::Pop));
+                } else if st.inbox.gen == 0 && !st.inbox.loading {
+                    // The account changed under the page (a sign-in again): its inbox loads.
+                    fx.push(Fx::App(RdFx::LoadInbox));
+                }
+                fx.invalidate(plx_machine::present::Provenance::Lifecycle);
+            }
             ScreenEvent::Async(_, RdMsg::Changed) => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
             ScreenEvent::FocusMoved { to, by, .. } => {
                 if matches!(by, By::Dir | By::Pointer) {

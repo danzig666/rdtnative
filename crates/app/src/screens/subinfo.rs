@@ -40,6 +40,12 @@ enum Bar {
     Refresh,
 }
 
+/// A bar button's element: by its kind, not its place, so focus stays on the button it is on
+/// when Join comes in front of it (once the page says whether the user joined).
+fn bar_elem(b: Bar) -> u32 {
+    BAR_BASE + b as u32
+}
+
 /// The right column's cards: the short description, the sidebar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Side {
@@ -173,8 +179,8 @@ impl SubInfoScreen {
         }
     }
 
-    fn activate_bar(&mut self, i: usize, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
-        let Some(b) = self.bar_items(cx).get(i).copied() else { return };
+    fn activate_bar(&mut self, elem: u32, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
+        let Some(b) = self.bar_items(cx).into_iter().find(|b| bar_elem(*b) == elem) else { return };
         match b {
             Bar::Join => fx.push(Fx::App(RdFx::Subscribe { sub: self.sub.clone(), on: !self.joined(cx) })),
             // Opened from the subreddit's own feed: back to it, not a second copy.
@@ -255,8 +261,18 @@ impl SubInfoScreen {
         [&self.rules, &self.side].into_iter().find(|f| f.len() > 0).map(|f| f.key(f.visible().start.min(f.len() - 1)))
     }
 
-    fn bar_key(&self, i: usize) -> FocusKey<u32> {
-        FocusKey { entry: self.entry, elem: BAR_BASE + i as u32 }
+    fn bar_key(&self, b: Bar) -> FocusKey<u32> {
+        FocusKey { entry: self.entry, elem: bar_elem(b) }
+    }
+
+    /// The bar's first button as things stand.
+    fn first_bar(&self, cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
+        self.bar_key(self.bar_items(cx).first().copied().unwrap_or(Bar::Open))
+    }
+
+    /// Where button `elem` sits on the bar now (`None`: not on it).
+    fn bar_pos(&self, elem: u32, cx: &Cx<'_, RdHost>) -> Option<usize> {
+        self.bar_items(cx).iter().position(|b| bar_elem(*b) == elem)
     }
 }
 
@@ -299,7 +315,7 @@ impl Machine<RdHost> for SubInfoScreen {
             }
             ScreenEvent::Activate(e) => {
                 if *e >= BAR_BASE {
-                    self.activate_bar((*e - BAR_BASE) as usize, cx, fx);
+                    self.activate_bar(*e, cx, fx);
                 }
                 return Handled::Yes;
             }
@@ -341,18 +357,18 @@ impl Focusable<RdHost> for SubInfoScreen {
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, RdHost>) -> Step<u32> {
         let first = |f: &Flow| (f.len() > 0).then(|| f.key(f.visible().start.min(f.len() - 1)));
         if key.elem >= BAR_BASE {
-            let i = (key.elem - BAR_BASE) as usize;
-            let n = self.bar_items(cx).len();
+            let items = self.bar_items(cx);
+            let Some(i) = items.iter().position(|b| bar_elem(*b) == key.elem) else { return Step::Edge };
             return match dir {
-                Dir::Left if i > 0 => Step::Move(self.bar_key(i - 1)),
-                Dir::Right if i + 1 < n => Step::Move(self.bar_key(i + 1)),
+                Dir::Left if i > 0 => Step::Move(self.bar_key(items[i - 1])),
+                Dir::Right if i + 1 < items.len() => Step::Move(self.bar_key(items[i + 1])),
                 Dir::Down => self.first_content().map_or(Step::Edge, Step::Move),
                 _ => Step::Edge,
             };
         }
         let (flow, other) = if self.rules.index(key.elem).is_some() { (&self.rules, &self.side) } else { (&self.side, &self.rules) };
         match (dir, flow.neighbour(key, dir)) {
-            (Dir::Up, Step::Edge) => Step::Move(self.bar_key(0)),
+            (Dir::Up, Step::Edge) => Step::Move(self.first_bar(cx)),
             (Dir::Left | Dir::Right, _) => {
                 // Across to the other column: Right from the rules, Left from the sidebar.
                 let across = (dir == Dir::Right) == std::ptr::eq(flow, &self.rules);
@@ -364,10 +380,11 @@ impl Focusable<RdHost> for SubInfoScreen {
             (_, s) => s,
         }
     }
-    fn place(&self, key: &u32, _cx: &Cx<'_, RdHost>, _at: At) -> Option<Placed> {
+    fn place(&self, key: &u32, cx: &Cx<'_, RdHost>, _at: At) -> Option<Placed> {
         if *key >= BAR_BASE {
-            let r = *self.bar_rects.borrow().get((*key - BAR_BASE) as usize)?;
-            return Some(Placed { rect: r, rest_rect: r, clip: FULL, index: Some(*key - BAR_BASE) });
+            let i = self.bar_pos(*key, cx)?;
+            let r = *self.bar_rects.borrow().get(i)?;
+            return Some(Placed { rect: r, rest_rect: r, clip: FULL, index: Some(i as u32) });
         }
         if *key >= SIDE_BASE {
             return self.side.place(*key);
@@ -376,17 +393,16 @@ impl Focusable<RdHost> for SubInfoScreen {
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
         let want = self.focus_req.take().map_or(want, |e| FocusKey { entry: self.entry, elem: e });
-        let n = self.bar_items(cx).len();
         // A page that failed to load: Refresh, which tries again.
         let failed = self.page(cx).is_some_and(|p| p.info.is_none() && p.error.is_some() && !p.loading);
         if failed && !self.error_seated.replace(true) {
-            return self.bar_key(n - 1);
+            return self.bar_key(Bar::Refresh);
         }
         if !failed {
             self.error_seated.set(false);
         }
         let valid = if want.elem >= BAR_BASE {
-            ((want.elem - BAR_BASE) as usize) < n
+            self.bar_pos(want.elem, cx).is_some()
         } else if want.elem >= SIDE_BASE {
             self.side.index(want.elem).is_some()
         } else {
@@ -395,16 +411,16 @@ impl Focusable<RdHost> for SubInfoScreen {
         if valid {
             return want;
         }
-        self.bar_key(0)
+        self.first_bar(cx)
     }
-    fn seat(&self, g: GroupId, _from: Placed, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
+    fn seat(&self, g: GroupId, _from: Placed, cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
         let first = |f: &Flow| (f.len() > 0).then(|| f.key(f.visible().start.min(f.len() - 1)));
         match g {
             G_RULES => first(&self.rules),
             G_SIDE => first(&self.side),
             _ => None,
         }
-        .unwrap_or_else(|| self.bar_key(0))
+        .unwrap_or_else(|| self.first_bar(cx))
     }
 }
 
@@ -457,9 +473,9 @@ impl SubInfoScreen {
         let labels: Vec<(String, Icon, bool)> = items.iter().map(|b| self.bar_label(*b, cx)).collect();
         let rects = common::button_row(m, &labels.iter().map(|(l, _, _)| (l.as_str(), true)).collect::<Vec<_>>(), LEFT, bar_y(), bar_h(), 14.0, None);
         let focus = cx.focus.current.filter(|k| k.entry == self.entry).map(|k| k.elem);
-        for (i, (r, (l, icon, active))) in rects.iter().zip(labels.iter()).enumerate() {
-            common::button(p, m, *r, l, Some(*icon), focus == Some(BAR_BASE + i as u32), *active, true);
-            ui::stop(f, self.bar_key(i), *r, FULL);
+        for ((b, r), (l, icon, active)) in items.iter().zip(rects.iter()).zip(labels.iter()) {
+            common::button(p, m, *r, l, Some(*icon), focus == Some(bar_elem(*b)), *active, true);
+            ui::stop(f, self.bar_key(*b), *r, FULL);
         }
         *self.bar_rects.borrow_mut() = rects;
         // The column headings, once there is a page to head.

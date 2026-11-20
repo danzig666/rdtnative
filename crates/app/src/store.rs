@@ -214,6 +214,8 @@ pub struct FeedState {
     pub ids: Vec<String>,
     pub after: Option<String>,
     pub loading: bool,
+    /// The load on its way is of the first page (a reload), not the next one.
+    pub reloading: bool,
     pub error: Option<String>,
     /// Reddit has no more pages.
     pub done: bool,
@@ -229,6 +231,9 @@ pub struct FeedState {
     /// The last request hit the rate limit: try again after this many seconds, the next page
     /// (`true`) or the first.
     pub retry: Option<(u64, bool)>,
+    /// When a page last asked for this feed or its next page (ms): feeds unused the longest are
+    /// dropped first once the store is full.
+    pub used: u32,
 }
 
 /// A feed fetched longer ago than this is out of date (refreshed when the user is near its top).
@@ -244,6 +249,10 @@ impl FeedState {
 /// The store keeps every post it was sent until it holds more than this; then the posts (and
 /// comment threads) no feed and no open page needs are dropped.
 pub const POSTS_MAX: usize = 5000;
+
+/// The feeds used last are never dropped to make room (the pages on screen, the start page's
+/// feeds it switches between).
+const KEEP_FEEDS: usize = 8;
 
 /// A hidden post's places, kept for a few seconds so Yellow can undo the hide.
 #[derive(Clone, Debug)]
@@ -361,6 +370,8 @@ pub struct UserPage {
     /// Reddit has no more pages.
     pub done: bool,
     pub gen: u32,
+    /// The error is a next page's (else the first page's: Refresh failed).
+    pub error_more: bool,
 }
 
 impl UserPage {
@@ -639,13 +650,15 @@ impl Store {
         self.bump();
     }
 
-    /// Once there are more than [`POSTS_MAX`] posts: drops the posts no feed lists and that are
-    /// not in `open` (posts on pages still on the stack), and the comment threads of those posts
-    /// (a thread key may carry a comment after a '/').
-    pub fn evict(&mut self, open: &HashSet<String>) {
+    /// Once there are more than [`POSTS_MAX`] posts: drops the feeds unused the longest (until
+    /// the feeds list at most half as many posts), then the posts no feed lists and that are not
+    /// in `open` (posts on pages still on the stack), and the comment threads of those posts (a
+    /// thread key may carry a comment after a '/'). A page whose feed went loads it again.
+    pub fn evict(&mut self, open: &HashSet<String>, now_ms: u32) {
         if self.posts.len() <= POSTS_MAX {
             return;
         }
+        self.prune_feeds(now_ms);
         let mut keep: HashSet<&str> = open.iter().map(String::as_str).collect();
         for f in self.feeds.values() {
             keep.extend(f.ids.iter().map(String::as_str));
@@ -663,8 +676,30 @@ impl Store {
         let before = (self.posts.len(), self.threads.len());
         self.posts.retain(|id, _| keep.contains(id.as_str()));
         self.threads.retain(|k, _| keep.contains(k.split('/').next().unwrap_or(k)));
-        crate::log(&format!("store: dropped {} posts and {} threads", before.0 - self.posts.len(), before.1 - self.threads.len()));
-        self.bump();
+        let dropped = (before.0 - self.posts.len(), before.1 - self.threads.len());
+        if dropped != (0, 0) {
+            crate::log(&format!("store: dropped {} posts and {} threads", dropped.0, dropped.1));
+            self.bump();
+        }
+    }
+
+    /// Drops the feeds unused the longest until the feeds list at most half of [`POSTS_MAX`];
+    /// the [`KEEP_FEEDS`] used last and any loading stay.
+    fn prune_feeds(&mut self, now_ms: u32) {
+        let mut by_age: Vec<(u32, FeedKey)> = self.feeds.iter().map(|(k, f)| (now_ms.wrapping_sub(f.used), k.clone())).collect();
+        by_age.sort_by(|a, b| b.0.cmp(&a.0));
+        let old = by_age.len().saturating_sub(KEEP_FEEDS);
+        let mut listed: usize = self.feeds.values().map(|f| f.ids.len()).sum();
+        for (_, k) in by_age.into_iter().take(old) {
+            if listed <= POSTS_MAX / 2 {
+                break;
+            }
+            if self.feeds.get(&k).is_some_and(|f| !f.loading) {
+                if let Some(f) = self.feeds.remove(&k) {
+                    listed -= f.ids.len();
+                }
+            }
+        }
     }
 }
 
@@ -747,11 +782,32 @@ mod tests {
         };
         s.threads.insert("3/c1".into(), thread());
         s.threads.insert("4".into(), thread());
-        s.evict(&HashSet::from(["3".to_string()]));
+        s.evict(&HashSet::from(["3".to_string()]), 0);
         let mut kept: Vec<&String> = s.posts.keys().collect();
         kept.sort();
         assert_eq!(kept, ["1", "2", "3"]);
         assert!(s.threads.contains_key("3/c1") && !s.threads.contains_key("4"));
+    }
+
+    #[test]
+    fn a_full_store_drops_the_feeds_unused_longest() {
+        let mut s = blank();
+        for i in 0..=POSTS_MAX {
+            s.posts.insert(i.to_string(), post(&i.to_string()));
+        }
+        // Twenty-one feeds of 250 posts each list every post; feed i was last used at i ms.
+        let ids: Vec<String> = (0..=POSTS_MAX).map(|i| i.to_string()).collect();
+        for (i, chunk) in ids.chunks(250).enumerate() {
+            let key = s.key_for(Feed::Sub(format!("s{i}")));
+            s.feeds.insert(key, FeedState { ids: chunk.to_vec(), used: i as u32, ..Default::default() });
+        }
+        s.evict(&HashSet::new(), 100);
+        let listed: usize = s.feeds.values().map(|f| f.ids.len()).sum();
+        assert!(listed <= POSTS_MAX / 2, "{listed}");
+        // The ones used last stay, and so do their posts.
+        assert!(s.feeds.contains_key(&s.key_for(Feed::Sub("s20".into()))));
+        assert!(!s.feeds.contains_key(&s.key_for(Feed::Sub("s0".into()))));
+        assert!(s.posts.contains_key("5000") && !s.posts.contains_key("0"));
     }
 
     #[test]

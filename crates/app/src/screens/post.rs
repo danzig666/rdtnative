@@ -789,6 +789,7 @@ pub fn open_reddit_link(link: rd_core::listing::RedditLink, fx: &mut Effects<'_,
     let arg = match link {
         RedditLink::Sub(s) => RdArg::Feed(Feed::Sub(s)),
         RedditLink::User(u) => RdArg::Profile(u),
+        RedditLink::Custom { owner, name } => RdArg::Feed(Feed::Custom { owner, name }),
         RedditLink::Post(id, c) => RdArg::Post { id, comment: c },
         RedditLink::Share(url) => {
             fx.push(Fx::App(RdFx::OpenShare(url)));
@@ -834,7 +835,8 @@ impl Machine<RdHost> for PostScreen {
             return Handled::Yes;
         }
         if let Some(c) = common::color_key(ev) {
-            if !cx.views.store.prefs.on("color_keys") || common::sign_in_first(c, cx, fx) {
+            // Yellow right after a hide (from the post's menu) puts the post back.
+            if !cx.views.store.prefs.on("color_keys") || common::undo_hide_first(c, cx, fx) || common::sign_in_first(c, cx, fx) {
                 return Handled::Yes;
             }
             let focus = cx.focus.current.map(|k| k.elem);

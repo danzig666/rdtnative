@@ -54,8 +54,9 @@ pub enum MenuKind {
     Time(FeedKey),
     /// Comment sort of a post.
     CommentSort(String),
-    /// Actions on a subreddit.
-    Sub(String),
+    /// Actions on a subreddit; `1`: opened on that subreddit's own feed (its info page's "Open
+    /// r/x" goes back to it).
+    Sub(String, bool),
     /// One settings option's values.
     Option(&'static str),
     /// Confirm being an adult before showing NSFW unblurred.
@@ -384,12 +385,12 @@ enum Work {
     Thread { epoch: u64, id: String, sort: CommentSort, partial: bool, merge: bool, result: Result<(Post, Vec<Node>), String> },
     More { epoch: u64, post: String, more_id: String, result: Result<(Vec<Node>, Vec<String>), String> },
     Imgur { id: String, media: Option<Media> },
-    About { sub: String, result: Result<SubAbout, String> },
+    About { epoch: u64, sub: String, result: Result<SubAbout, String> },
     Multis { epoch: u64, result: Result<Vec<model::Multi>, String> },
     SubInfo { epoch: u64, sub: String, result: Result<(model::SubInfo, Vec<model::Rule>), String> },
     Profile { epoch: u64, name: String, result: Result<model::UserInfo, String> },
     UserItems { epoch: u64, key: FeedKey, more: bool, result: Result<(Vec<comments::Thing>, Option<String>), String> },
-    Subs { mine: bool, query: Option<String>, result: Result<Vec<Subreddit>, String> },
+    Subs { epoch: u64, mine: bool, query: Option<String>, result: Result<Vec<Subreddit>, String> },
     /// An action went through, or failed with this message.
     Action { undo: Option<Box<dyn FnOnce(&mut Store) + Send>>, error: Option<String>, ok_toast: Option<String> },
     Replied { parent: String, post: String, result: Result<Option<Node>, String> },
@@ -435,6 +436,8 @@ pub struct AppRig {
     listeners: Vec<MachineId>,
     read_dirty: bool,
     read_saved_ms: u32,
+    /// The posts left after the last eviction.
+    kept_after_evict: usize,
     seen_dirty: bool,
     seen_saved_ms: u32,
     player: crate::player::Player,
@@ -472,6 +475,7 @@ impl AppRig {
             listeners: Vec::new(),
             read_dirty: false,
             read_saved_ms: 0,
+            kept_after_evict: 0,
             seen_dirty: false,
             seen_saved_ms: 0,
             player: crate::player::Player::new(),
@@ -527,11 +531,13 @@ impl AppRig {
         self.mounter.open.retain(|(i, _)| !gone.contains(i));
     }
 
-    /// Drops posts and threads nothing shows once the store is large.
+    /// Drops posts and threads nothing shows once the store is large. When the posts that stay
+    /// still fill it (pages need them), it waits for a few hundred more before trying again.
     fn evict(&mut self) {
-        if self.store.posts.len() > store::POSTS_MAX {
+        if self.store.posts.len() > store::POSTS_MAX.max(self.kept_after_evict + 500) {
             let open: HashSet<String> = self.mounter.open.iter().map(|(_, id)| id.clone()).collect();
-            self.store.evict(&open);
+            self.store.evict(&open, self.now_ms);
+            self.kept_after_evict = self.store.posts.len();
         }
     }
 
@@ -665,6 +671,7 @@ impl AppRig {
                 }
                 let st = self.store.feeds.entry(key).or_default();
                 st.loading = false;
+                st.reloading = false;
                 st.gen = st.gen.wrapping_add(1);
                 let had = !st.ids.is_empty();
                 let mut failed = None;
@@ -806,7 +813,9 @@ impl AppRig {
                     }
                 }
             }
-            Work::About { sub, result } => match result {
+            Work::About { epoch, sub, result } => match result {
+                // Asked for under the previous account: its "joined" is not this one's.
+                _ if epoch != self.epoch => {}
                 Ok(a) => {
                     self.store.about.insert(sub.to_ascii_lowercase(), a);
                 }
@@ -904,10 +913,17 @@ impl AppRig {
                 page.gen = page.gen.wrapping_add(1);
                 match result {
                     Ok((items, after)) => page.take(items, after, more),
-                    Err(e) => page.error = Some(e),
+                    Err(e) => {
+                        page.error = Some(e);
+                        page.error_more = more;
+                    }
                 }
             }
-            Work::Subs { mine, query, result } => {
+            Work::Subs { epoch, mine, query, result } => {
+                // The previous account's subscriptions (the session reset already emptied the list).
+                if mine && query.is_none() && epoch != self.epoch {
+                    return;
+                }
                 let list = match (&query, mine) {
                     (Some(q), _) => {
                         if self.store.subs_search.0 != *q {
@@ -979,10 +995,11 @@ impl AppRig {
                 }
             }
             Work::Inbox { epoch, result } => {
-                self.store.inbox.loading = false;
+                // The previous account's (the new one's own load may be on its way).
                 if epoch != self.epoch {
                     return;
                 }
+                self.store.inbox.loading = false;
                 self.store.inbox.gen = self.store.inbox.gen.wrapping_add(1);
                 match result {
                     Ok(m) => {
@@ -1239,11 +1256,14 @@ impl AppRig {
 
     fn load_feed(&mut self, from: MachineId, key: FeedKey, more: bool) {
         let Some(s) = self.session() else { return };
+        let now = self.now_ms;
         let st = self.store.feeds.entry(key.clone()).or_default();
+        st.used = now;
         if st.loading || (more && (st.done || st.after.is_none())) {
             return;
         }
         st.loading = true;
+        st.reloading = !more;
         if !more {
             st.error = None;
         }
@@ -1468,6 +1488,7 @@ impl AppRig {
         if self.store.about.contains_key(&sub.to_ascii_lowercase()) {
             return;
         }
+        let epoch = self.epoch;
         self.spawn(from, "about", move || {
             let result = s
                 .get(&format!("/r/{sub}/about"), &[], Priority::Page)
@@ -1480,7 +1501,7 @@ impl AppRig {
                     }
                 })
                 .map_err(|e| e.to_string());
-            Work::About { sub, result }
+            Work::About { epoch, sub, result }
         });
     }
 
@@ -1493,10 +1514,11 @@ impl AppRig {
         self.store.multis.error = None;
         let epoch = self.epoch;
         self.spawn(from, "multis", move || {
-            let result = s.get("/api/multi/mine", &[], Priority::Page).and_then(|r| model::parse_multis(&r.json)).map_err(|e| e.to_string());
-            if let Err(e) = &result {
+            // The details go to the log; the page says it plainly.
+            let result = s.get("/api/multi/mine", &[], Priority::Page).and_then(|r| model::parse_multis(&r.json)).map_err(|e| {
                 crate::log(&format!("custom feeds: {e}"));
-            }
+                crate::errors::plain(&e)
+            });
             Work::Multis { epoch, result }
         });
     }
@@ -1566,15 +1588,16 @@ impl AppRig {
         self.spawn(from, "user", move || {
             let (path, q) = key.feed.request(key.sort, key.time, after.as_deref(), 50);
             let q: Vec<(&str, &str)> = q.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-            let result = s.get(&path, &q, Priority::Page).and_then(|r| comments::parse_things(&r.json)).map(|l| (l.items, l.after)).map_err(|e| e.to_string());
-            if let Err(e) = &result {
+            let result = s.get(&path, &q, Priority::Page).and_then(|r| comments::parse_things(&r.json)).map(|l| (l.items, l.after)).map_err(|e| {
                 crate::log(&format!("user {path}: {e}"));
-            }
+                crate::errors::plain(&e)
+            });
             Work::UserItems { epoch, key, more, result }
         });
     }
 
-    /// Keeps a post that arrived outside a feed; one resolved before (Imgur) keeps its media.
+    /// Keeps a post that arrived outside a feed; one resolved before (Imgur) keeps its media, and
+    /// its new comments since the last visit are counted as a feed counts them.
     fn keep_post(&mut self, p: Post) {
         let mut item = PostItem::new(p);
         if let (Some(old), Media::Imgur(_)) = (self.store.posts.get(&item.post.id), &item.media) {
@@ -1582,6 +1605,7 @@ impl AppRig {
                 item.media = old.media.clone();
             }
         }
+        item.new_comments = self.store.seen.grown(&item.post.id, item.post.num_comments);
         self.store.posts.insert(item.post.id.clone(), item);
     }
 
@@ -1592,6 +1616,7 @@ impl AppRig {
             return;
         }
         list.loading = true;
+        let epoch = self.epoch;
         self.spawn(from, "subs", move || {
             let mut all = Vec::new();
             let mut after: Option<String> = None;
@@ -1612,20 +1637,21 @@ impl AppRig {
                     Err(e) => break Err(e.to_string()),
                 }
             };
-            Work::Subs { mine, query: None, result }
+            Work::Subs { epoch, mine, query: None, result }
         });
     }
 
     fn search_subs(&mut self, from: MachineId, q: String) {
         let Some(s) = self.session() else { return };
         self.store.subs_search = (q.clone(), store::SubList { loading: true, ..Default::default() });
+        let epoch = self.epoch;
         self.spawn(from, "subsearch", move || {
             let result = s
                 .get("/subreddits/search", &[("q", q.as_str()), ("limit", "50"), ("include_over_18", "on")], Priority::Page)
                 .and_then(|r| model::parse_subreddits(&r.json))
                 .map(|l| l.items)
                 .map_err(|e| e.to_string());
-            Work::Subs { mine: false, query: Some(q), result }
+            Work::Subs { epoch, mine: false, query: Some(q), result }
         });
     }
 
@@ -2181,7 +2207,7 @@ fn check_signin_state(text: &str, nonce: &str) -> Result<(), String> {
 fn missing_place(e: rd_core::RdError, place: &str) -> String {
     match e {
         rd_core::RdError::NotFound(_) | rd_core::RdError::Parse(_) => crate::i18n::tr("{} does not exist, or Reddit removed it.").replace("{}", place),
-        e => e.to_string(),
+        e => crate::errors::plain(&e),
     }
 }
 
@@ -2377,6 +2403,9 @@ impl Rig<RdHost> for AppRig {
             RdFx::TypePhoneStart { target, text } => self.open_type_phone(target, text),
             RdFx::TypePhoneStop => self.close_type_phone(),
             RdFx::LoadFeed { key, reload } => {
+                if let Some(f) = self.store.feeds.get_mut(&key) {
+                    f.used = now;
+                }
                 let have = self.store.feeds.get(&key).is_some_and(|f| !f.ids.is_empty() || f.loading);
                 if reload || !have {
                     self.load_feed(from, key, false);
@@ -2518,6 +2547,7 @@ impl Rig<RdHost> for AppRig {
                     Work::Navigate(resolve_share(&url).map(|l| match l {
                         RedditLink::Sub(s) => RdArg::Feed(Feed::Sub(s)),
                         RedditLink::User(u) => RdArg::Profile(u),
+                        RedditLink::Custom { owner, name } => RdArg::Feed(Feed::Custom { owner, name }),
                         RedditLink::Post(id, c) => RdArg::Post { id, comment: c },
                         RedditLink::Share(_) => RdArg::Link(url.clone()),
                     }))
@@ -2643,7 +2673,10 @@ mod tests {
         let search = missing_place(rd_core::RdError::Parse("expected a subreddit".into()), "r/x");
         assert!(search.contains("r/x") && !search.contains("expected"), "{search}");
         let other = missing_place(rd_core::RdError::RateLimited { reset_secs: 30 }, "u/bob");
-        assert_eq!(other, rd_core::RdError::RateLimited { reset_secs: 30 }.to_string());
+        assert_eq!(other, crate::errors::plain(&rd_core::RdError::RateLimited { reset_secs: 30 }));
+        // No network reads plainly too, without the request's address.
+        let net = missing_place(rd_core::RdError::Network("error sending request for url (https://oauth.reddit.com/user/bob/about)".into()), "u/bob");
+        assert!(!net.contains("oauth.reddit.com"), "{net}");
     }
 
     #[test]

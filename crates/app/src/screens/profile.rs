@@ -30,6 +30,8 @@ const PAD: f32 = 18.0;
 const FULL: Rect = Rect::new(0.0, 0.0, 1920.0, 1080.0);
 /// A comment's text is cut after this many lines (OK opens it whole, in its thread).
 const COMMENT_LINES: f32 = 4.0;
+/// Pages in a row asked for by themselves while they bring nothing to show.
+const AUTO_PAGES: u8 = 5;
 
 /// The tabs, in order.
 const TABS: [UserTab; 3] = [UserTab::Overview, UserTab::Submitted, UserTab::Comments];
@@ -139,8 +141,14 @@ pub struct ProfileScreen {
     choice: Option<ChoiceBox>,
     focus_req: Cell<Option<u32>>,
     asked_more_at: Cell<usize>,
-    /// Down on the last entry after a page failed: ask again (on the next tick).
-    retry_more: Cell<bool>,
+    /// Down on the last entry after a load failed: on the next tick, the next page again (`true`)
+    /// or the first (a failed Refresh).
+    retry_more: Cell<Option<bool>>,
+    /// The page's gen last looked at, the rows it showed then, and the pages asked for by
+    /// themselves since rows last came (a page of filtered entries adds none).
+    watched_gen: Option<u32>,
+    shown_n: usize,
+    auto_pages: u8,
     /// Until the user moves, focus goes to the first entry when the list arrives.
     auto_focus: Cell<bool>,
     /// The page failed to load and focus went to Refresh.
@@ -168,7 +176,10 @@ impl ProfileScreen {
             choice: None,
             focus_req: Cell::new(None),
             asked_more_at: Cell::new(usize::MAX),
-            retry_more: Cell::new(false),
+            retry_more: Cell::new(None),
+            watched_gen: None,
+            shown_n: 0,
+            auto_pages: 0,
             auto_focus: Cell::new(true),
             error_seated: Cell::new(false),
         };
@@ -288,6 +299,38 @@ impl ProfileScreen {
         FocusKey { entry: self.entry, elem: BAR_BASE + i as u32 }
     }
 
+    /// Paging starts over (a new tab or sort, Refresh).
+    fn restart_paging(&mut self) {
+        self.asked_more_at.set(usize::MAX);
+        self.watched_gen = None;
+        self.shown_n = 0;
+        self.auto_pages = 0;
+    }
+
+    /// A page that landed: when focus is near the end (or nothing shows yet) and it added no row
+    /// to show (all of it filtered, or entries already listed), the next one is asked for by
+    /// itself, a few at most, as a feed does. A request the host dropped is asked again too.
+    fn watch(&mut self, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
+        let Some(p) = self.page(cx) else { return };
+        if p.loading || self.watched_gen == Some(p.gen) {
+            return;
+        }
+        self.watched_gen = Some(p.gen);
+        self.relayout(cx);
+        let n = self.flow.len();
+        if n > self.shown_n {
+            self.auto_pages = 0;
+        }
+        self.shown_n = n;
+        self.asked_more_at.set(usize::MAX);
+        let near_end = n == 0 || self.flow.focused(cx).is_some_and(|i| i + 4 >= n);
+        if near_end && !p.done && p.error.is_none() && !p.items.is_empty() && self.auto_pages < AUTO_PAGES {
+            self.auto_pages += 1;
+            self.asked_more_at.set(n);
+            fx.push(Fx::App(RdFx::MoreUserItems(self.key())));
+        }
+    }
+
     /// A new tab or sort: from the top, focus staying on the bar.
     fn show(&mut self, tab: UserTab, sort: Sort, fx: &mut Effects<'_, RdHost>) {
         let same = tab == self.tab && sort == self.sort;
@@ -295,7 +338,7 @@ impl ProfileScreen {
         self.sort = sort;
         self.flow.to_top();
         self.sig.set((u32::MAX, 0, 0));
-        self.asked_more_at.set(usize::MAX);
+        self.restart_paging();
         self.auto_focus.set(false);
         // Choosing the tab already shown loads it again.
         fx.push(Fx::App(RdFx::LoadUserItems { key: self.key(), reload: same }));
@@ -322,7 +365,7 @@ impl ProfileScreen {
             }
             Bar::Refresh => {
                 self.flow.to_top();
-                self.asked_more_at.set(usize::MAX);
+                self.restart_paging();
                 self.load(cx, fx, true);
             }
         }
@@ -375,7 +418,8 @@ impl Machine<RdHost> for ProfileScreen {
             return Handled::Yes;
         }
         if let Some(c) = common::color_key(ev) {
-            if cx.views.store.prefs.on("color_keys") {
+            // Yellow right after a hide (from a post's menu) puts the post back, as on a feed.
+            if cx.views.store.prefs.on("color_keys") && !common::undo_hide_first(c, cx, fx) {
                 match self.flow.focused(cx).and_then(|i| self.row(i)) {
                     // Signed out, the vote and save buttons offer to sign in, as on a feed.
                     Some(UserItem::Post(_)) if common::sign_in_first(c, cx, fx) => {}
@@ -386,7 +430,11 @@ impl Machine<RdHost> for ProfileScreen {
                                 Color::Green => fx.push(Fx::App(RdFx::Vote { fullname: name, dir: if it.post.likes == Some(true) { 0 } else { 1 } })),
                                 Color::Red => fx.push(Fx::App(RdFx::Vote { fullname: name, dir: if it.post.likes == Some(false) { 0 } else { -1 } })),
                                 Color::Yellow => fx.push(Fx::App(RdFx::Save { fullname: name, on: !it.post.saved })),
-                                Color::Blue => self.open(&UserItem::Post(id), fx),
+                                // The comments, as Blue opens them on a feed (OK opens the post).
+                                Color::Blue => {
+                                    fx.push(Fx::App(RdFx::MarkRead(id.clone())));
+                                    fx.push(Fx::Nav(NavOp::Push(RdArg::PostComments { id })));
+                                }
                             }
                         }
                     }
@@ -407,9 +455,16 @@ impl Machine<RdHost> for ProfileScreen {
             }
             ScreenEvent::Async(_, RdMsg::Changed) => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
             ScreenEvent::Tick(_) => {
-                if self.retry_more.take() {
-                    fx.push(Fx::App(RdFx::MoreUserItems(self.key())));
+                match self.retry_more.take() {
+                    Some(true) => fx.push(Fx::App(RdFx::MoreUserItems(self.key()))),
+                    // A failed Refresh: the first page (and the profile) again.
+                    Some(false) => {
+                        self.restart_paging();
+                        self.load(cx, fx, true);
+                    }
+                    None => {}
                 }
+                self.watch(cx, fx);
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
                 if matches!(by, By::Dir | By::Pointer) {
@@ -417,9 +472,11 @@ impl Machine<RdHost> for ProfileScreen {
                 }
                 if let Some(i) = self.flow.index(to.elem) {
                     self.flow.on_focus(i, *by == By::Pointer);
-                    // Near the end: the next page.
+                    // Near the end: the next page (not while a failed Refresh waits for Down,
+                    // which would hide it under the next page).
                     let n = self.flow.len();
-                    if i + 4 >= n && self.asked_more_at.get() != n {
+                    let first_failed = self.page(cx).is_some_and(|p| p.error.is_some() && !p.error_more);
+                    if i + 4 >= n && self.asked_more_at.get() != n && !first_failed {
                         self.asked_more_at.set(n);
                         fx.push(Fx::App(RdFx::MoreUserItems(self.key())));
                     }
@@ -506,9 +563,10 @@ impl Focusable<RdHost> for ProfileScreen {
                 Step::Move(self.tab_key())
             }
             Step::Edge if dir == Dir::Down => {
-                // The last entry: after a failed page, Down asks for it again.
-                if self.page(cx).is_some_and(|p| p.error.is_some() && !p.loading && !p.done) {
-                    self.retry_more.set(true);
+                // The last entry: after a failed load, Down asks for it again (the next page, or
+                // the first after a failed Refresh).
+                if let Some(p) = self.page(cx).filter(|p| p.error.is_some() && !p.loading) {
+                    self.retry_more.set(Some(p.error_more));
                 }
                 Step::Edge
             }
