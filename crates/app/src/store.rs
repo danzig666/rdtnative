@@ -481,6 +481,8 @@ pub struct Store {
     pub resume_gen: u32,
     /// The post hidden last, while Yellow can still undo it.
     pub hidden: Option<HiddenPost>,
+    /// Reddit refused the sign-in: Sign in opens once the user is on a page they browse.
+    pub signin_lost: bool,
 }
 
 impl Store {
@@ -526,6 +528,7 @@ impl Store {
             toast_len: TOAST_MS,
             resume_gen: 0,
             hidden: None,
+            signin_lost: false,
         }
     }
 

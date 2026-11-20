@@ -90,5 +90,8 @@ mod tests {
         // Activity alone (a video) is not a button.
         w.note(2 * AWAKE_MAX_MS, false, true);
         assert_eq!(w.awake(2 * AWAKE_MAX_MS + 30, true), Some(false));
+        // Coming back from the background hours later counts as one (the frame loop says so).
+        w.note(3 * AWAKE_MAX_MS, true, true);
+        assert_eq!(w.awake(3 * AWAKE_MAX_MS + 1, true), Some(true));
     }
 }

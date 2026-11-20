@@ -46,11 +46,18 @@ const SETTLE_MS: u32 = 1500;
 const MAX_DRY: u8 = 5;
 /// Posts ahead whose Imgur or RedGIFs media is looked up.
 const LOOKAHEAD: usize = 12;
+/// A feed request that failed is tried again after this long (doubling on each failure, up to
+/// [`RETRY_MAX_MS`]), at most [`MAX_TRIES`] times; a rate limit says itself how long to wait.
+const RETRY_MS: u32 = 30_000;
+const RETRY_MAX_MS: u32 = 600_000;
+const MAX_TRIES: u8 = 5;
 
 /// Slideshows on the navigation stack: the idle screen does not open while one is.
 static OPEN: AtomicUsize = AtomicUsize::new(0);
 /// A slideshow on top is moving on by itself: the TV's screensaver is held off meanwhile.
 static ADVANCING: AtomicBool = AtomicBool::new(false);
+/// The idle screen is the page on top.
+static IDLE_TOP: AtomicBool = AtomicBool::new(false);
 
 /// A slideshow (any mode) is open.
 pub fn open() -> bool {
@@ -60,6 +67,11 @@ pub fn open() -> bool {
 /// A slideshow is on screen and moving on by itself (not paused, covered or in the background).
 pub fn advancing() -> bool {
     ADVANCING.load(Ordering::Relaxed)
+}
+
+/// The idle screen is on top: a page asked for meanwhile replaces it rather than going over it.
+pub fn idle_on_top() -> bool {
+    IDLE_TOP.load(Ordering::Relaxed)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +161,15 @@ impl Spot {
     }
 }
 
+/// How long a failed feed request waits before it is tried again: what a rate limit asked for
+/// (`limit_secs`), else [`RETRY_MS`] doubling with each failed try.
+fn retry_wait(limit_secs: Option<u64>, tries: u8) -> u32 {
+    match limit_secs {
+        Some(secs) => (secs.min(3600) as u32).saturating_mul(1000).saturating_add(500),
+        None => RETRY_MS.saturating_mul(1 << tries.min(5)).min(RETRY_MAX_MS),
+    }
+}
+
 /// The spot after `cur`: its post's next slide, else the next post's first; `None` at the end.
 fn next(list: &[Entry], cur: &Spot) -> Option<Spot> {
     match cur.index(list) {
@@ -231,14 +252,23 @@ pub struct SlideshowScreen {
     sound: bool,
     /// The video plane shows: the page is drawn transparent over it.
     video_up: bool,
-    /// The next page asked for: (posts in the feed, entries in the show) then.
-    asked: Option<(usize, usize)>,
+    /// The next page asked for: (the feed's gen, entries in the show) then. Any page that lands
+    /// or fails moves the gen, so a page of posts already listed does not leave it set.
+    asked: Option<(u32, usize)>,
     /// Pages in a row that added nothing to show.
     dry: u8,
     /// Posts whose Imgur / RedGIFs media was looked up (a failed one stays unresolved).
     tried: HashSet<String>,
     /// The idle screen was told to leave.
     leaving: bool,
+    /// The feed was gone (a sign-in, sign-out or account switch drops every feed) and was asked
+    /// for again: not asked again until it is back.
+    reloading: bool,
+    /// The first page is being fetched afresh: the show starts on the new listing, not the old.
+    wait_fresh: bool,
+    /// A failed request is tried again at this time (ms); how many tries failed so far.
+    retry_at: Option<u32>,
+    tries: u8,
     state: State,
 }
 
@@ -268,6 +298,10 @@ impl SlideshowScreen {
             dry: 0,
             tried: HashSet::new(),
             leaving: false,
+            reloading: false,
+            wait_fresh: false,
+            retry_at: None,
+            tries: 0,
         }
     }
 
@@ -288,13 +322,35 @@ impl SlideshowScreen {
     /// up and asks for the next page before the show runs out.
     fn refresh(&mut self, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
         let st = cx.views.store;
-        let Some(fd) = st.feed(&self.key) else { return };
+        let Some(fd) = st.feed(&self.key) else {
+            // The session was reset (a sign-in, sign-out or account switch): every feed is gone.
+            if !std::mem::replace(&mut self.reloading, true) {
+                // A sort only a signed-in user has (Best) falls back to the feed's own.
+                if !self.key.feed.sorts(st.signed_in()).contains(&self.key.sort) {
+                    self.key = st.key_for(self.key.feed.clone());
+                }
+                self.asked = None;
+                self.dry = 0;
+                self.tried.clear();
+                self.retry_at = None;
+                self.tries = 0;
+                self.sig = (u32::MAX, u32::MAX);
+                fx.push(Fx::App(RdFx::LoadFeed { key: self.key.clone(), reload: false }));
+            }
+            return;
+        };
+        self.reloading = false;
+        if self.wait_fresh && !fd.loading {
+            self.wait_fresh = false;
+        }
         if (fd.gen, st.gen) != self.sig {
             self.sig = (fd.gen, st.gen);
             let items = st.feed_items(&self.key);
             self.list = entries(&items, &st.prefs, self.mode);
-            if let Some((ids, n)) = self.asked {
-                if !fd.loading && (fd.ids.len() > ids || fd.done || fd.error.is_some()) {
+            if let Some((gen, n)) = self.asked {
+                if !fd.loading && fd.gen != gen {
+                    // A page that added nothing to show (all filtered, or posts already listed)
+                    // counts as dry, so the show still ends at the end of the feed.
                     self.dry = if self.list.len() > n { 0 } else { self.dry.saturating_add(1) };
                     self.asked = None;
                 }
@@ -306,6 +362,8 @@ impl SlideshowScreen {
                 }
             }
             match &self.at {
+                // The listing is being fetched afresh: the show starts on the new one.
+                None if self.wait_fresh => {}
                 None => {
                     let ids: Vec<&str> = items.iter().map(|it| it.post.id.as_str()).collect();
                     let to = first(&self.list, &ids, self.start.as_deref());
@@ -327,8 +385,40 @@ impl SlideshowScreen {
             None => 0,
         };
         if left < 5 && self.asked.is_none() && self.dry < MAX_DRY && !fd.loading && !fd.done && fd.error.is_none() && !fd.ids.is_empty() {
-            self.asked = Some((fd.ids.len(), self.list.len()));
+            self.asked = Some((fd.gen, self.list.len()));
             fx.push(Fx::App(RdFx::MoreFeed(self.key.clone())));
+        }
+    }
+
+    /// A failed request (the network was down, Reddit asked to wait) is tried again a while
+    /// later while the show runs; meanwhile the show goes round what it has.
+    fn retry(&mut self, now: u32, running: bool, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
+        let Some(fd) = cx.views.store.feed(&self.key) else { return };
+        if fd.error.is_none() {
+            self.retry_at = None;
+            self.tries = 0;
+            return;
+        }
+        // A refused sign-in does not get better by asking again, and a feed with no next page
+        // (a failed reload of one that ended) has nothing to ask for.
+        let nothing_next = !fd.ids.is_empty() && (fd.done || fd.after.is_none());
+        if fd.loading || fd.auth_failed || nothing_next || self.asked.is_some() || !running || self.tries >= MAX_TRIES {
+            return;
+        }
+        match self.retry_at {
+            None => self.retry_at = Some(now.wrapping_add(retry_wait(fd.retry.map(|r| r.0), self.tries))),
+            Some(t) if now.wrapping_sub(t) < u32::MAX / 2 => {
+                self.retry_at = None;
+                self.tries += 1;
+                if fd.ids.is_empty() {
+                    fx.push(Fx::App(RdFx::LoadFeed { key: self.key.clone(), reload: false }));
+                } else {
+                    // Never a reload: that would empty the listing under the show.
+                    self.asked = Some((fd.gen, self.list.len()));
+                    fx.push(Fx::App(RdFx::MoreFeed(self.key.clone())));
+                }
+            }
+            Some(_) => {}
         }
     }
 
@@ -380,9 +470,11 @@ impl SlideshowScreen {
         }
     }
 
+    /// Flips the sound switch. The player hears of it only while the video plays (one still
+    /// loading or paused would not take it); the tick sets it as soon as the video plays.
     fn switch_sound(&mut self, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
         self.sound = !self.sound;
-        if self.playing.is_some() && matches!(self.slide(), Some(Slide::Clip { gif: false, .. })) {
+        if self.playing.is_some() && cx.views.store.play.phase == Phase::Playing && matches!(self.slide(), Some(Slide::Clip { gif: false, .. })) {
             fx.push(Fx::App(RdFx::MuteVideo(!self.sound)));
             self.asked_player_at = cx.views.now_ms;
         }
@@ -394,7 +486,12 @@ impl SlideshowScreen {
         self.last_tick = now;
         self.refresh(cx, fx);
         let running = !self.paused && !self.covered && crate::FOREGROUND.load(Ordering::Relaxed);
-        ADVANCING.store(running && self.at.is_some(), Ordering::Relaxed);
+        self.retry(now, running, cx, fx);
+        // A show that cannot move on (at its last slide, with no page coming) never holds the
+        // screensaver off over a still picture.
+        let can_move =
+            self.at.as_ref().is_some_and(|a| next(&self.list, a).is_some()) || self.exhausted(cx) || cx.views.store.feed(&self.key).is_some_and(|f| f.loading);
+        ADVANCING.store(running && self.at.is_some() && can_move, Ordering::Relaxed);
         let Some(slide) = self.slide().cloned() else {
             self.video_up = false;
             return;
@@ -619,12 +716,19 @@ impl Machine<RdHost> for SlideshowScreen {
                 OPEN.fetch_add(1, Ordering::Relaxed);
                 self.last_tick = now;
                 self.hud_at = now;
-                fx.push(Fx::App(RdFx::LoadFeed { key: self.key.clone(), reload: false }));
+                // The idle screen shows the subreddit's pictures of now, not those of its first
+                // time, and an old listing is fetched again; the show starts on the new one.
+                let stale = cx.views.store.feed(&self.key).is_some_and(|f| !f.ids.is_empty() && f.stale(rd_core::now_secs()));
+                let reload = self.mode == ShowMode::Idle || stale;
+                self.wait_fresh = reload;
+                IDLE_TOP.store(self.mode == ShowMode::Idle, Ordering::Relaxed);
+                fx.push(Fx::App(RdFx::LoadFeed { key: self.key.clone(), reload }));
                 Handled::Yes
             }
             ScreenEvent::Unmount => {
                 OPEN.fetch_sub(1, Ordering::Relaxed);
                 ADVANCING.store(false, Ordering::Relaxed);
+                IDLE_TOP.store(false, Ordering::Relaxed);
                 if self.playing.take().is_some() {
                     fx.push(Fx::App(RdFx::StopVideo));
                 }
@@ -632,7 +736,10 @@ impl Machine<RdHost> for SlideshowScreen {
             }
             ScreenEvent::Cover => {
                 self.covered = true;
+                // A page pushed over the idle screen replaced its Pop: the next key asks again.
+                self.leaving = false;
                 ADVANCING.store(false, Ordering::Relaxed);
+                IDLE_TOP.store(false, Ordering::Relaxed);
                 // A clip waits under the comments: paused when it plays, stopped while it still
                 // loads (it would start, with its sound, under the page).
                 if self.playing.is_some() {
@@ -652,6 +759,8 @@ impl Machine<RdHost> for SlideshowScreen {
             }
             ScreenEvent::Uncover => {
                 self.covered = false;
+                self.leaving = false;
+                IDLE_TOP.store(self.mode == ShowMode::Idle, Ordering::Relaxed);
                 self.last_tick = now;
                 self.hud_at = now;
                 // A video opened from the comments took the player: the clip starts again.
@@ -904,6 +1013,16 @@ mod tests {
         assert_eq!(length_ms(&known, 11_500), 11_500);
         assert_eq!(hold_ms(&known, length_ms(&known, 0), 8_000, 60_000), 12_000);
         assert_eq!(length_ms(&p, 0), 0);
+    }
+
+    #[test]
+    fn failed_requests_wait_longer_each_time() {
+        assert_eq!(retry_wait(None, 0), 30_000);
+        assert_eq!(retry_wait(None, 1), 60_000);
+        assert_eq!(retry_wait(None, 4), 480_000);
+        assert_eq!(retry_wait(None, 9), RETRY_MAX_MS);
+        // A rate limit says how long.
+        assert_eq!(retry_wait(Some(42), 3), 42_500);
     }
 
     #[test]

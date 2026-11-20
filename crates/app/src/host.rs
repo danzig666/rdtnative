@@ -1065,6 +1065,7 @@ impl AppRig {
                         crate::accounts::store(&self.store.accounts);
                         self.store.saved = Some(saved);
                         self.store.signins = self.store.signins.wrapping_add(1);
+                        self.store.signin_lost = false;
                         self.signin_stop();
                         self.account_changed();
                         self.store.toast(format!("Signed in as u/{name}"), now);
@@ -2007,12 +2008,16 @@ impl AppRig {
     }
 
     /// Reddit no longer takes the sign-in (revoked, expired, or every fresh token refused): sign
-    /// out here without revoking, say so and open Sign in.
+    /// out here without revoking. Sign in opens, with the reason, once the user is on a page they
+    /// browse (the frame loop waits for one: not over a video, nor in the background); while the
+    /// app is hidden the TV says so at once.
     fn sign_in_lost(&mut self) {
         crate::log("account: Reddit refused the sign-in; signing out");
         self.sign_out(false);
-        self.store.toast("Your Reddit sign-in expired. Sign in again.", self.now_ms);
-        self.store.nav_request = Some(RdArg::SignIn);
+        self.store.signin_lost = true;
+        if !self.foreground {
+            crate::inbox::system_toast(crate::i18n::tr("Your Reddit sign-in expired. Sign in again."));
+        }
     }
 
     /// Uses account `name` ("" browses without an account); the one in use stays on the TV.

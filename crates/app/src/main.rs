@@ -306,6 +306,9 @@ fn main() {
                         log("lifecycle: foreground");
                         if !foreground {
                             rig.on_foreground();
+                            // Coming back is the user's doing (the launcher's keys never reach
+                            // the app): it counts as a button for the idle and screensaver clocks.
+                            real_input = true;
                         }
                         foreground = true;
                         FOREGROUND.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -381,14 +384,18 @@ fn main() {
                 });
             }
             // Words said to LG's voice search: into the open keyboard, else a Reddit search.
+            // (The mic button may reach the app as no key at all: speaking counts as a button.)
             for q in voice::take() {
+                real_input = true;
                 rig.voice_text(q, d.top_screen().map(|s| s.name()) == Some("keyboard"));
             }
-            // Lean-back: the idle screen after a while without a button (never over a video, a
-            // slideshow or a menu), and the TV kept awake while pictures or a video move.
+            // Lean-back: the idle screen after a while without a button (only over a page being
+            // browsed or read: never over a video, a slideshow, the keyboard or a menu, nor while
+            // the phone types for the keyboard), and the TV kept awake while pictures or a video move.
             {
                 let video = matches!(rig.store.play.phase, player::Phase::Playing | player::Phase::Loading);
-                let busy = video || screens::slideshow::open() || !foreground || ui::menu_open() || !rig.store.configured();
+                let browsing = browsing(d.top_screen().map(|s| s.name()));
+                let busy = video || screens::slideshow::open() || !foreground || ui::menu_open() || !rig.store.configured() || rig.store.type_phone.is_some() || !browsing;
                 watch.note(now, real_input, busy);
                 if watch.idle_due(now, rig.store.prefs.num("idle_after").max(0) as u32) && rig.store.nav_request.is_none() {
                     log("idle: opening the idle screen");
@@ -404,11 +411,22 @@ fn main() {
                     }
                 }
             }
+            // Reddit refused the sign-in: Sign in opens once the user is on a page they browse
+            // (never over a video, a slideshow, the keyboard or a menu, nor in the background).
+            if rig.store.signin_lost && rig.store.nav_request.is_none() && foreground && !ui::menu_open() && browsing(d.top_screen().map(|s| s.name())) {
+                rig.store.signin_lost = false;
+                rig.store.toast("Your Reddit sign-in expired. Sign in again.", now);
+                rig.store.nav_request = Some(RdArg::SignIn);
+            }
+            if let Some(arg) = rig.store.nav_request.take() {
+                // A page asked for over the idle screen (a voice search, a share link) takes its
+                // place: BACK from it goes to where the user was.
+                let idle = matches!(arg, RdArg::Slideshow { mode: screens::slideshow::ShowMode::Idle, .. });
+                let op = if screens::slideshow::idle_on_top() && !idle { NavOp::Replace(arg) } else { NavOp::Push(arg) };
+                d.request(MachineId::Nav, op);
+            }
             // The automatic update check found a newer version: ask once, on the feed (never over
             // a video or a page being read).
-            if let Some(arg) = rig.store.nav_request.take() {
-                d.request(MachineId::Nav, NavOp::Push(arg));
-            }
             if d.top_screen().map(|s| s.name()) == Some("feed") && update::take_prompt() {
                 d.request(MachineId::Nav, NavOp::Present(RdArg::Menu(host::MenuKind::Update)));
             }
@@ -470,6 +488,12 @@ fn main() {
         log("rdtnative: exit");
         sdl::SDL_Quit();
     }
+}
+
+/// A page the user browses or reads (a feed, a post, the lists, the inbox, a profile, a
+/// subreddit's page): the idle screen and an expired sign-in's Sign in page open only over one.
+fn browsing(top: Option<&str>) -> bool {
+    matches!(top, Some("feed" | "post" | "subs" | "inbox" | "message" | "profile" | "subinfo"))
 }
 
 /// Hides LG's Magic Remote pointer (`SDL_webOSCursorVisibility(0)`); the compositor shows it again
