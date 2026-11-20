@@ -6,65 +6,76 @@
 > phone). With an app address (like `myapp://`) as redirect URI, signing in takes one copy and
 > paste on a computer, once per account; the TV keeps the sign-in (see [Signing in](#signing-in)).
 
-A native Reddit client for LG webOS TVs (webOS 4+), built for the Magic Remote. It is a Rust app
-with no browser or Android runtime, built the same way as
-[ytnative](https://github.com/danzig666/ytnative): the UI core is vendored from
+A native Reddit client for LG webOS TVs, built for the remote: arrows, OK, BACK, the colour
+buttons and the Magic Remote pointer. It is a Rust app with no browser or Android runtime, built
+the same way as [ytnative](https://github.com/danzig666/ytnative): the UI core is vendored from
 [plx-native](https://github.com/GLinnik21/plx-native) and draws with OpenGL ES.
 
-The API key (client ID), redirect URI and user agent are typed with the remote, or entered on a
-phone by scanning a QR code (a one-time page on the home network).
+Runs on webOS 4 and newer; videos need webOS 5 or newer. Install it from the webOS Homebrew
+Channel (see [Install](#install)).
 
 > Not affiliated with Reddit or LG. Use at your own risk.
 
-**Status:** a full client, tested in the simulator against live Reddit; TV testing next.
-
 | | |
 |---|---|
-| ![Two panes: list and preview](docs/screenshots/feed-two-panes.jpg) | ![A post and its comments](docs/screenshots/post-comments.jpg) |
-| ![Dense list](docs/screenshots/feed-dense.jpg) | ![Post menu (hold OK)](docs/screenshots/post-menu.jpg) |
-| ![Subreddits](docs/screenshots/subreddits.jpg) | ![Display settings](docs/screenshots/settings-display.jpg) |
+| ![Two panes: the list and a live preview](docs/screenshots/feed-two-panes.jpg) | ![A post and its comments](docs/screenshots/post-comments.jpg) |
+| ![Slideshow of a subreddit](docs/screenshots/slideshow.jpg) | ![A subreddit's info page: rules and sidebar](docs/screenshots/subreddit-info.jpg) |
+| ![A user profile with their comments](docs/screenshots/profile.jpg) | ![A subreddit's menu](docs/screenshots/subreddit-menu.jpg) |
+| ![The keyboard, with typing on a phone](docs/screenshots/keyboard.jpg) | ![A subreddit feed](docs/screenshots/feed-subreddit.jpg) |
 
-These are screenshots from the Windows simulator, which runs the same UI code as the TV build.
+Screenshots from the Windows simulator, which runs the same UI code as the TV.
 
-### Features
+## Features
 
-- **Feeds:** Home, Popular, All, any subreddit, favourites (one or all together), custom feeds,
-  users, saved posts, search. Sorts (Best, Hot, New, Top, Rising, Controversial) with time ranges,
-  remembered per subreddit. Endless paging; each feed keeps its place, and the start page can be
-  the last feed shown.
-- **Subreddits and users:** a subreddit's info page (members, rules, sidebar, join) and user
-  profiles (karma, cake day, posts and comments).
-- **Six layouts:** Two panes (a list with a live preview of the selected post and its top
-  comments; the default), Cards (2-6 per row), List, Large, Compact and Dense (one line per post).
-- **Posts:** pictures, galleries with captions, v.redd.it videos and GIFs (played by the TV),
-  Imgur images, albums and GIFs, YouTube (opens in ytnative or LG's YouTube app), links (QR code),
-  crossposts, and Reddit markdown: headings, quotes, lists, code, tables, spoilers, superscript,
-  links.
-- **Comments:** threaded with coloured depth rails, collapse with OK, "load more" in place,
-  "continue this thread", OP / moderator / pinned marks, flairs; Left goes to the parent, Right to
-  the next thread. Links to a comment open on it. Comments new since the last visit are marked
-  (CH▲ / CH▼ jump between them), and Live mode keeps match and game threads updating.
-- **Full screen:** pictures with zoom and pan, galleries with thumbnails, the video player with
-  speed, quality, loop, replay and the remote's media keys.
-- **Lean back:** a slideshow or a video channel of any feed, and an idle screen of pictures from a
-  subreddit; the TV stays awake while they play.
+- **Feeds:** Home, Popular, All, any subreddit, favourites (one or all together), custom feeds
+  (multireddits), users, saved posts and search. Sorts (Best, Hot, New, Top, Rising,
+  Controversial) with time ranges, remembered per feed. Endless paging; each feed keeps its
+  place, and the start page can be the last feed shown.
+- **Six layouts:** Two panes (a list with a live preview of the selected post; the default),
+  Cards (2-6 per row), List, Large, Compact and Dense (one line per post).
+- **Posts:** pictures, galleries with captions, v.redd.it videos, GIFs, Imgur, RedGIFs, YouTube
+  (opens in ytnative or LG's YouTube app), crossposts, and Reddit markdown (headings, quotes,
+  lists, code, tables, spoilers, links). Links open in the TV's browser or as a QR code for a
+  phone.
+- **Comments:** threaded with coloured depth rails; collapse with OK; "load more" and "continue
+  this thread" in place; pictures and GIFs in comments; Left goes to the parent, Right to the
+  next thread. Links to a comment open on that comment. Comments new since your last visit are
+  marked (CH▲ / CH▼ jump between them), and **Live mode** keeps match and game threads updating.
+- **Lean back:** a **slideshow** or a **video channel** of any feed (the Play button): pictures
+  change every few seconds, videos play to the end. An optional **idle screen** shows pictures
+  from a subreddit you choose. The TV's screensaver stays away while they play.
+- **Player:** speed (0.5×–2×), quality (Auto to 360p), loop and replay, and the remote's
+  Play, Pause, Stop, fast-forward and rewind keys.
+- **Places:** a subreddit's info page (members, rules, sidebar, join) and user profiles (karma,
+  cake day, posts and comments).
 - **Signed in:** vote, save posts and comments, hide (with undo), join and leave subreddits,
-  reply (drafts are kept), inbox with new-message alerts, your saved and submitted posts. Several
-  accounts with a switcher. With rdtnative's page as redirect URI, sign in on the TV itself or
-  from a phone or computer; with an app address (like `myapp://`), one copy and paste on a
-  computer, once per account (see [Signing in](#signing-in)).
-- **Typing:** the on-screen keyboard, a phone (scan a QR code and type or dictate there), a USB
-  keyboard, or LG voice search. Any post or comment can be sent to a phone as a QR code.
+  reply (drafts are kept), your saved and submitted posts, and the inbox, checked every 2 minutes
+  with an alert for new messages. Several accounts with a switcher.
+- **Typing:** the on-screen keyboard, a phone (scan a QR code, then type or dictate there), a USB
+  keyboard, or LG voice search where the TV lets the app use it. Any post or comment can be sent
+  to a phone as a QR code.
 - **Display:** text size (70-175 %, for any TV size and distance) with a separate size for post and
   comment text, five fonts, five themes (including OLED black), eight accent colours, picture
   quality, title lines, clock.
 - **Content:** NSFW and spoilers blurred, hidden or shown; read posts dimmed or hidden; hidden
   subreddits and words; pinned posts hidden; scores, flairs and sites on or off.
-- **Remote:** pointer hover and click, pointer edge scrolling (speed setting), wheel step,
-  smooth scrolling, hold OK for menus, colour buttons (green/red vote, yellow saves, blue
-  comments) with a key hints line, BACK opens the side menu (twice leaves).
-- **Setup:** Reddit API settings (client ID, any redirect URI scheme, user agent) and an Imgur
-  client ID, typed with the remote or entered on a phone through a QR code.
+- **Languages:** English, Hungarian, German, Spanish, French and Russian: the TV's own, or the
+  one chosen in Settings › Display › Language.
+
+### Remote
+
+| Button | What it does |
+|---|---|
+| OK | Open; on a comment, collapse or expand it |
+| Hold OK | The menu of a post, comment or subreddit |
+| BACK | Back; on the start page it opens the side menu, and twice quickly leaves the app |
+| Red / Green | Downvote / upvote |
+| Yellow | Save; right after Hide, undo it |
+| Blue | Open the comments |
+| CH▲ / CH▼ | Jump between new comments |
+| Pointer | Hover and click; push against the top or bottom edge to scroll |
+
+A line at the bottom of the screen shows what the colour buttons do on each page.
 
 ## Signing in
 
@@ -114,8 +125,8 @@ your client ID:
 - **By hand:** download the `.ipk` from [Releases](https://github.com/danzig666/rdtnative/releases)
   and run `ares-install --device <tv> io.github.danzig666.rdtnative_<version>_arm.ipk`.
 
-Then enter your API key (client ID) in Settings › Reddit API (with the remote, or scan the QR
-code and paste it on your phone). Releasing is described in [docs/release.md](docs/release.md).
+Then enter your API key (client ID) in Settings › Reddit API and sign in: see
+[Signing in](#signing-in). Releasing is described in [docs/release.md](docs/release.md).
 
 ## Building
 

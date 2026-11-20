@@ -405,6 +405,8 @@ enum Work {
 }
 
 pub struct AppRig {
+    /// The interface language last applied (the "language" option); empty before the first frame.
+    applied_language: String,
     mounter: Mount,
     pub store: Store,
     pub now_ms: u32,
@@ -465,6 +467,7 @@ impl AppRig {
             phone_from: None,
             signin_phone: None,
             signin_nonce: String::new(),
+            applied_language: String::new(),
             signin_authorize: String::new(),
             signin_browser: false,
             signin_from: None,
@@ -609,6 +612,14 @@ impl AppRig {
     /// store, and return the notifications for the screens that asked.
     pub fn drain(&mut self, now_ms: u32) -> Vec<(Addr, RdMsg)> {
         self.now_ms = now_ms;
+        // The translations in strings.tsv: the chosen language, or the TV's ("system").
+        let lang = self.store.prefs.get("language");
+        if lang != self.applied_language {
+            self.applied_language = lang.to_string();
+            crate::i18n::set_language(lang, plx_platform::i18n::current().format_locale());
+            crate::log(&format!("language: {lang} -> {}", crate::i18n::current()));
+            self.store.bump();
+        }
         if self.store.toast.as_ref().is_some_and(|(_, until)| now_ms.wrapping_sub(*until) < u32::MAX / 2) {
             self.store.toast = None;
             plx_machine::present::wake_from_worker();

@@ -97,6 +97,14 @@ pub const OPTS: &[Opt] = &[
     },
     Opt { key: "preview_text", label: "Text preview in the feed", help: "Show the start of text posts in the feed.", values: ON_OFF, default: "on" },
     Opt { key: "show_thumbs", label: "Pictures in the feed", help: "Off shows titles only, for slow networks.", values: ON_OFF, default: "on" },
+    // The language names stay in their own language (no rows in strings.tsv).
+    Opt {
+        key: "language",
+        label: "Language",
+        help: "The language of the app's own texts. Posts and comments stay as written.",
+        values: &[("system", "Same as the TV"), ("en", "English"), ("hu", "Magyar"), ("de", "Deutsch"), ("es", "Español"), ("fr", "Français"), ("ru", "Русский")],
+        default: "system",
+    },
     Opt { key: "clock", label: "Clock", help: "Show the time in the corner of the feed.", values: OFF_ON, default: "off" },
     Opt {
         key: "image_quality",
@@ -248,7 +256,7 @@ pub fn pages() -> [Page; 5] {
         Page {
             title: "Display",
             icon: K::Film,
-            keys: &["text_scale", "content_scale", "font", "theme", "accent", "layout", "columns", "title_lines", "preview_text", "show_thumbs", "image_quality", "clock"],
+            keys: &["language", "text_scale", "content_scale", "font", "theme", "accent", "layout", "columns", "title_lines", "preview_text", "show_thumbs", "image_quality", "clock"],
         },
         Page {
             title: "Content",
