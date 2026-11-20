@@ -1,6 +1,6 @@
 //! Subreddits: tabs for favourites, the subreddits the user joined, popular ones and search
 //! results, plus "Find subreddits" and "Go to r/…". OK opens one; holding OK opens its menu.
-//! `InboxScreen` lists the signed-in user's messages and replies.
+//! `InboxScreen` lists the signed-in user's messages and replies; `MessageScreen` shows one in full.
 
 use super::common::{self, State};
 use crate::flow::Flow;
@@ -399,20 +399,40 @@ impl Screen<RdHost> for SubsScreen {
     }
 }
 
-/// The inbox: replies, mentions and messages.
+/// The inbox: replies, mentions and messages. What it shows is marked read once it arrives (the
+/// accent bars stay for this visit); Refresh in the header loads it again. OK opens the thread a
+/// reply is from; a private message, or a reply longer than its card, opens in full.
 pub struct InboxScreen {
     entry: EntryId,
     flow: Flow,
     sig: Cell<u32>,
+    /// Per message: its text is longer than its card shows.
+    cut: RefCell<Vec<bool>>,
+    refresh_rect: Cell<Rect>,
+    /// Until the user moves, focus goes to the list when it fills.
+    auto_focus: Cell<bool>,
     state: State,
 }
+
+/// The header's Refresh button.
+const REFRESH: u32 = TAB_BASE;
+/// The lines of text a message card shows.
+const CARD_LINES: f32 = 6.0;
 
 impl InboxScreen {
     pub fn new(entry: EntryId) -> Self {
         let top = header_h();
         let mut flow = Flow::new(entry, G_LIST, LIST_BASE, Rect::new(200.0, top, 1520.0, 1080.0 - top));
         flow.row_gap = 16.0;
-        InboxScreen { entry, flow, sig: Cell::new(u32::MAX), state: State("inbox".into()) }
+        InboxScreen {
+            entry,
+            flow,
+            sig: Cell::new(u32::MAX),
+            cut: Default::default(),
+            refresh_rect: Cell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
+            auto_focus: Cell::new(true),
+            state: State("inbox".into()),
+        }
     }
 
     fn relayout(&self, cx: &Cx<'_, RdHost>) {
@@ -422,15 +442,23 @@ impl InboxScreen {
         }
         self.sig.set(st.inbox.gen);
         let w = self.flow.col_w();
+        let most = ui::csz(24) as f32 * 1.42 * CARD_LINES;
+        let mut cut = Vec::new();
         let heights: Vec<f32> = st
             .messages
             .iter()
             .map(|m| {
                 let laid = richtext::cached(&m.name, &m.body, w - 48.0, ui::csz(24));
-                24.0 + ui::sz(24) as f32 * 1.42 * 2.0 + laid.h.min(ui::csz(24) as f32 * 1.42 * 6.0) + 24.0
+                cut.push(laid.h > most + 1.0);
+                24.0 + ui::sz(24) as f32 * 1.42 * 2.0 + laid.h.min(most) + 24.0
             })
             .collect();
         self.flow.set_heights(&heights);
+        *self.cut.borrow_mut() = cut;
+    }
+
+    fn refresh_key(&self) -> FocusKey<u32> {
+        FocusKey { entry: self.entry, elem: REFRESH }
     }
 }
 
@@ -450,16 +478,27 @@ impl Machine<RdHost> for InboxScreen {
             ScreenEvent::Mount => fx.push(Fx::App(RdFx::LoadInbox)),
             ScreenEvent::Async(_, RdMsg::Changed) => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
             ScreenEvent::FocusMoved { to, by, .. } => {
+                if matches!(by, By::Dir | By::Pointer) {
+                    self.auto_focus.set(false);
+                }
                 if let Some(i) = self.flow.index(to.elem) {
                     self.flow.on_focus(i, *by == By::Pointer);
                 }
                 fx.invalidate(plx_machine::present::Provenance::Input);
             }
+            ScreenEvent::Activate(REFRESH) => {
+                fx.push(Fx::App(RdFx::LoadInbox));
+                fx.invalidate(plx_machine::present::Provenance::Input);
+                return Handled::Yes;
+            }
             ScreenEvent::Activate(e) => {
-                if let Some(m) = self.flow.index(*e).and_then(|i| cx.views.store.messages.get(i)) {
-                    match m.context.as_deref().and_then(rd_core::listing::parse_reddit_link) {
-                        Some(link) => super::post::open_reddit_link(link, fx),
-                        None => fx.push(Fx::App(RdFx::Toast("A private message: open it on reddit.com to reply".into()))),
+                if let Some(i) = self.flow.index(*e) {
+                    if let Some(m) = cx.views.store.messages.get(i) {
+                        let cut = self.cut.borrow().get(i).copied().unwrap_or(false);
+                        match m.context.as_deref().and_then(rd_core::listing::parse_reddit_link) {
+                            Some(link) if !cut => super::post::open_reddit_link(link, fx),
+                            _ => fx.push(Fx::Nav(NavOp::Push(RdArg::Message(m.name.clone())))),
+                        }
                     }
                 }
                 return Handled::Yes;
@@ -474,28 +513,58 @@ impl Machine<RdHost> for InboxScreen {
 impl Focusable<RdHost> for InboxScreen {
     fn groups(&self, cx: &Cx<'_, RdHost>, out: &mut Vec<GroupSpec>) {
         self.relayout(cx);
+        out.push(GroupSpec {
+            id: G_TABS,
+            kind: GroupKind::Row { wrap: false },
+            seat: Seat::Remembered,
+            reachable: AxisMask::BOTH,
+            edge: [EdgeRule::Geometric; 4],
+            extent: Rect::new(80.0, 20.0, 1760.0, header_h() - 30.0),
+            len: 1,
+            elem: ElemKind::Control,
+        });
         if self.flow.len() > 0 {
             out.push(self.flow.spec());
         }
     }
-    fn group_of(&self, _key: &u32, _cx: &Cx<'_, RdHost>) -> Option<GroupId> {
-        Some(G_LIST)
+    fn group_of(&self, key: &u32, _cx: &Cx<'_, RdHost>) -> Option<GroupId> {
+        Some(if *key >= TAB_BASE { G_TABS } else { G_LIST })
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, RdHost>) -> Step<u32> {
-        self.flow.neighbour(key, dir)
+        if key.elem == REFRESH {
+            return if dir == Dir::Down && self.flow.len() > 0 { Step::Move(self.flow.key(0)) } else { Step::Edge };
+        }
+        match self.flow.neighbour(key, dir) {
+            Step::Edge if dir == Dir::Up => Step::Move(self.refresh_key()),
+            s => s,
+        }
     }
     fn place(&self, key: &u32, _cx: &Cx<'_, RdHost>, _at: At) -> Option<Placed> {
+        if *key == REFRESH {
+            let r = self.refresh_rect.get();
+            return Some(Placed { rect: r, rest_rect: r, clip: Rect::new(0.0, 0.0, 1920.0, 1080.0), index: Some(0) });
+        }
         self.flow.place(*key)
     }
     fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
-        if self.flow.index(want.elem).is_some() || self.flow.len() == 0 {
+        let on_list = self.flow.index(want.elem).is_some();
+        if self.auto_focus.get() && self.flow.len() > 0 && !on_list {
+            self.auto_focus.set(false);
+            return self.flow.key(0);
+        }
+        if on_list || want.elem == REFRESH {
             want
-        } else {
+        } else if self.flow.len() > 0 {
             self.flow.key(0)
+        } else {
+            self.refresh_key()
         }
     }
-    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
-        self.flow.key(0)
+    fn seat(&self, g: GroupId, _from: Placed, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
+        if g == G_LIST && self.flow.len() > 0 {
+            return self.flow.key(0);
+        }
+        self.refresh_key()
     }
 }
 
@@ -526,6 +595,7 @@ impl Screen<RdHost> for InboxScreen {
         }
         {
             let _scope = plx_ui::screen::ClipScope::open_in(p, Rect::new(0.0, header_h() - 10.0, 1920.0, 1090.0 - header_h()));
+            let cut = self.cut.borrow();
             for i in self.flow.visible() {
                 let (Some(r), Some(m)) = (self.flow.screen_rect(i), st.messages.get(i)) else { continue };
                 let focused = focus == Some(self.flow.elem(i));
@@ -544,11 +614,17 @@ impl Screen<RdHost> for InboxScreen {
                     meta.push_str(&format!("  \u{b7}  r/{s}"));
                 }
                 ui::text_cut(p, f.measure, &meta, x, y, w, ts, ui::DIM, ui::ALIGN_LEFT, false);
+                // The text goes on past the card: OK shows all of it.
+                if focused && cut.get(i).copied().unwrap_or(false) {
+                    ui::text(p, "OK reads all \u{203a}", x + w, y, ts, ui::accent(), ui::ALIGN_RIGHT, true);
+                }
                 y += ts as f32 * 1.42;
-                let laid = richtext::cached(&m.name, &m.body, w, ui::csz(24));
-                let clip = Rect::new(r.x, y, r.w, r.y + r.h - y - 8.0);
-                let _s = plx_ui::screen::ClipScope::open_in(p, clip);
-                richtext::draw(p, &laid, x, y, clip, [0.9, 0.9, 0.92, 1.0], false);
+                {
+                    let laid = richtext::cached(&m.name, &m.body, w, ui::csz(24));
+                    let clip = Rect::new(r.x, y, r.w, r.y + r.h - y - 8.0);
+                    let _s = plx_ui::screen::ClipScope::open_in(p, clip);
+                    richtext::draw(p, &laid, x, y, clip, [0.9, 0.9, 0.92, 1.0], false);
+                }
                 if focused {
                     p.rring(r, 16.0, 4.0, ui::accent());
                 }
@@ -557,6 +633,162 @@ impl Screen<RdHost> for InboxScreen {
         self.flow.stops(f);
         ui::header_band(p, Rect::new(0.0, 0.0, 1920.0, header_h()));
         ui::text(p, "Inbox", 200.0, 40.0, ui::sz(44), ui::WHITE, ui::ALIGN_LEFT, true);
+        let bh = ui::ls(56.0).max(50.0);
+        let r = common::button_row(f.measure, &[("Refresh", true)], 0.0, 40.0, bh, 12.0, Some(1720.0))[0];
+        self.refresh_rect.set(r);
+        common::button(p, f.measure, r, "Refresh", Some(Icon::Repeat), focus == Some(REFRESH), false, false);
+        if st.inbox.loading && !st.messages.is_empty() {
+            ui::spinner(p, cx.views.now_ms, r.x - 40.0, r.y + r.h / 2.0);
+        }
+        ui::stop(f, self.refresh_key(), r, Rect::new(0.0, 0.0, 1920.0, 1080.0));
+        common::toast(p, f.measure, cx);
+    }
+    fn render(&self) -> RenderStrategy {
+        RenderStrategy::Page
+    }
+}
+
+/// One inbox message in full: a private message, or a reply too long for its card. OK opens the
+/// thread a reply or mention is from.
+pub struct MessageScreen {
+    name: String,
+    flow: Flow,
+    sig: Cell<u32>,
+    state: State,
+}
+
+fn reader_top() -> f32 {
+    ui::ls(250.0).max(230.0)
+}
+
+impl MessageScreen {
+    pub fn new(entry: EntryId, name: String) -> Self {
+        let top = reader_top();
+        let flow = Flow::new(entry, G_LIST, LIST_BASE, Rect::new(200.0, top, 1520.0, 1020.0 - top));
+        MessageScreen { state: State(format!("message {name}")), name, flow, sig: Cell::new(u32::MAX) }
+    }
+
+    fn message<'a>(&self, cx: &Cx<'a, RdHost>) -> Option<&'a crate::store::Message> {
+        cx.views.store.messages.iter().find(|m| m.name == self.name)
+    }
+
+    fn laid(&self, m: &crate::store::Message) -> std::rc::Rc<richtext::Laid> {
+        richtext::cached(&format!("full:{}", m.name), &m.body, self.flow.col_w() - 80.0, ui::csz(28))
+    }
+
+    fn relayout(&self, cx: &Cx<'_, RdHost>) {
+        let gen = cx.views.store.inbox.gen;
+        if self.sig.get() == gen {
+            return;
+        }
+        self.sig.set(gen);
+        let heights: Vec<f32> = self.message(cx).map(|m| self.laid(m).h + 80.0).into_iter().collect();
+        self.flow.set_heights(&heights);
+    }
+}
+
+impl Machine<RdHost> for MessageScreen {
+    type Ev = ScreenEvent<RdHost>;
+    fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) -> Handled {
+        if let Some(a) = common::press_commit_as_activate(ev, cx, |_| true) {
+            return self.step(&a, cx, fx);
+        }
+        match ev {
+            ScreenEvent::Async(_, RdMsg::Changed) => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
+            ScreenEvent::FocusMoved { to, by, .. } => {
+                if let Some(i) = self.flow.index(to.elem) {
+                    self.flow.on_focus(i, *by == By::Pointer);
+                }
+                fx.invalidate(plx_machine::present::Provenance::Input);
+            }
+            ScreenEvent::Activate(_) => {
+                if let Some(link) = self.message(cx).and_then(|m| m.context.as_deref()).and_then(rd_core::listing::parse_reddit_link) {
+                    super::post::open_reddit_link(link, fx);
+                }
+                return Handled::Yes;
+            }
+            ScreenEvent::Input(_) => return Handled::No,
+            _ => {}
+        }
+        Handled::Yes
+    }
+}
+
+impl Focusable<RdHost> for MessageScreen {
+    fn groups(&self, cx: &Cx<'_, RdHost>, out: &mut Vec<GroupSpec>) {
+        self.relayout(cx);
+        if self.flow.len() > 0 {
+            out.push(self.flow.spec());
+        }
+    }
+    fn group_of(&self, _key: &u32, _cx: &Cx<'_, RdHost>) -> Option<GroupId> {
+        Some(G_LIST)
+    }
+    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, RdHost>) -> Step<u32> {
+        self.flow.neighbour(key, dir)
+    }
+    fn place(&self, key: &u32, _cx: &Cx<'_, RdHost>, _at: At) -> Option<Placed> {
+        self.flow.place(*key)
+    }
+    fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
+        if self.flow.len() > 0 {
+            self.flow.key(0)
+        } else {
+            want
+        }
+    }
+    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
+        self.flow.key(0)
+    }
+}
+
+impl Screen<RdHost> for MessageScreen {
+    fn name(&self) -> &'static str {
+        "message"
+    }
+    fn state(&self) -> &dyn plx_machine::machine::LogicalState {
+        &self.state
+    }
+    fn crumb(&self, _cx: &Cx<'_, RdHost>) -> Option<Cow<'_, str>> {
+        None
+    }
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, RdHost>) {}
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, RdHost>) {
+        let cx = f.cx;
+        self.relayout(cx);
+        self.flow.animate(cx.views.now_ms);
+        let p = f.painter;
+        let Some(m) = self.message(cx) else {
+            common::message(p, f.measure, Rect::new(0.0, 300.0, 1920.0, 400.0), "Nothing to show", "");
+            common::toast(p, f.measure, cx);
+            return;
+        };
+        let ts = ui::sz(40);
+        let mut y = 60.0;
+        for l in ui::wrap_lines(f.measure, &m.subject, 1520.0, ts, true, 2) {
+            ui::text_raw(p, &l, 200.0, y, ts, ui::WHITE, ui::ALIGN_LEFT, true);
+            y += ts as f32 * 1.3;
+        }
+        let mut meta = vec![rd_core::listing::age(m.created, rd_core::now_secs() as i64)];
+        meta.extend(crate::inbox::sender(m));
+        if let Some(s) = m.subreddit.as_ref().filter(|s| !s.is_empty() && !m.author.is_empty()) {
+            meta.push(format!("r/{s}"));
+        }
+        ui::text_cut(p, f.measure, &meta.join("  \u{b7}  "), 200.0, y + 6.0, 1520.0, ui::sz(24), ui::DIM, ui::ALIGN_LEFT, false);
+        if let Some(r) = self.flow.screen_rect(0) {
+            let _scope = plx_ui::screen::ClipScope::open_in(p, self.flow.rect);
+            ui::fill(p, r, 16.0, ui::surface(0.07));
+            if m.unread {
+                ui::fill(p, Rect::new(r.x, r.y + 14.0, 6.0, r.h - 28.0), 3.0, ui::accent());
+            }
+            let laid = self.laid(m);
+            richtext::draw(p, &laid, r.x + 40.0, r.y + 40.0, self.flow.rect, [0.92, 0.92, 0.94, 1.0], false);
+        }
+        self.flow.draw_more_marks(p);
+        self.flow.stops(f);
+        if m.context.is_some() {
+            ui::text(p, "OK opens the thread", 1720.0, 1030.0, ui::sz(22), ui::FAINT, ui::ALIGN_RIGHT, false);
+        }
         common::toast(p, f.measure, cx);
     }
     fn render(&self) -> RenderStrategy {

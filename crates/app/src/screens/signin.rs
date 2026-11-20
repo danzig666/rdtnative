@@ -3,7 +3,9 @@
 //! a phone. That page links to Reddit's approve page and takes back the address Reddit sent the
 //! browser to (pasting sends it); with the app's redirect URI pointing at the page's server,
 //! Reddit's redirect lands there and no copying is needed. The code can also be typed with the
-//! remote. The TV trades it for tokens and closes the page.
+//! remote. The TV trades it for tokens and closes the page. Signing in while signed in adds an
+//! account. Without the Reddit API settings there is nothing to sign in with: the page then only
+//! offers to set them up.
 
 use super::common::{self, State};
 use crate::host::{RdArg, RdFx, RdHost, RdMsg, Typing};
@@ -17,13 +19,34 @@ use std::borrow::Cow;
 
 const G: GroupId = GroupId(1);
 const BASE: u32 = 0x1000_0000;
+/// The most rows the page has.
 const ROWS: usize = 4;
 /// The phone QR code of the sign-in page.
 const QR: Rect = Rect::new(940.0, 330.0, 300.0, 300.0);
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Act {
+    OnTv,
+    Code,
+    NewAddress,
+    SetUpApi,
+    Cancel,
+}
+
+/// The rows: the ways to sign in, or (without API settings) the way to set them up.
+fn acts(configured: bool) -> &'static [Act] {
+    if configured {
+        &[Act::OnTv, Act::Code, Act::NewAddress, Act::Cancel]
+    } else {
+        &[Act::SetUpApi, Act::Cancel]
+    }
+}
+
 pub struct SignInScreen {
     list: VList,
     qr: Option<(String, QrCode)>,
+    /// `Store::signins` when the page opened: a sign-in since then closes it.
+    signins: u32,
     state: State,
 }
 
@@ -32,17 +55,26 @@ impl SignInScreen {
         SignInScreen {
             list: VList { entry, group: G, base: BASE, rect: Rect::new(1340.0, 330.0, 480.0, ROWS as f32 * 80.0), row_h: 80.0, text_size: 28 },
             qr: None,
+            signins: 0,
             state: State("signin".into()),
         }
     }
 
-    fn rows() -> Vec<Row> {
-        vec![
-            Row::new("Sign in on this TV").icon(Icon::User),
-            Row::new("Type the code").icon(Icon::Key),
-            Row::new("New address").icon(Icon::Repeat),
-            Row::new("Cancel"),
-        ]
+    fn acts(cx: &Cx<'_, RdHost>) -> &'static [Act] {
+        acts(cx.views.store.configured())
+    }
+
+    fn rows(cx: &Cx<'_, RdHost>) -> Vec<Row> {
+        Self::acts(cx)
+            .iter()
+            .map(|a| match a {
+                Act::OnTv => Row::new("Sign in on this TV").icon(Icon::User),
+                Act::Code => Row::new("Type the code").icon(Icon::Key),
+                Act::NewAddress => Row::new("New address").icon(Icon::Repeat),
+                Act::SetUpApi => Row::new("Set up Reddit API").icon(Icon::Key),
+                Act::Cancel => Row::new("Cancel"),
+            })
+            .collect()
     }
 }
 
@@ -72,23 +104,36 @@ impl Machine<RdHost> for SignInScreen {
         if let Some(a) = common::press_commit_as_activate(ev, cx, |_| true) {
             return self.step(&a, cx, fx);
         }
+        let st = cx.views.store;
         match ev {
-            ScreenEvent::Mount => fx.push(Fx::App(RdFx::SignInStart)),
+            ScreenEvent::Mount => {
+                self.signins = st.signins;
+                if st.configured() {
+                    fx.push(Fx::App(RdFx::SignInStart));
+                }
+            }
             ScreenEvent::Unmount => fx.push(Fx::App(RdFx::SignInStop)),
-            ScreenEvent::Async(_, RdMsg::Changed) | ScreenEvent::Uncover => {
-                // Signed in: done here.
-                if cx.views.store.signed_in() && cx.views.store.signin.is_none() {
+            ScreenEvent::Tick(_) | ScreenEvent::Async(_, RdMsg::Changed) | ScreenEvent::Uncover => {
+                // Signed in (an account added, too): done here, once this page is on top again.
+                let on_top = cx.focus.current.is_some_and(|k| k.entry == self.list.entry);
+                if on_top && st.signins != self.signins && st.signin.is_none() {
+                    self.signins = st.signins;
                     fx.push(Fx::Nav(NavOp::Pop));
                 }
-                fx.invalidate(plx_machine::present::Provenance::Lifecycle);
+                if !matches!(ev, ScreenEvent::Tick(_)) {
+                    fx.invalidate(plx_machine::present::Provenance::Lifecycle);
+                }
             }
             ScreenEvent::Activate(e) => {
-                match self.list.index(*e, ROWS) {
-                    Some(0) => fx.push(Fx::App(RdFx::SignInOnTv)),
-                    Some(1) => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::SignInCode)))),
-                    Some(2) => fx.push(Fx::App(RdFx::SignInStart)),
-                    Some(3) => fx.push(Fx::Nav(NavOp::Pop)),
-                    _ => {}
+                let acts = Self::acts(cx);
+                match self.list.index(*e, acts.len()).map(|i| acts[i]) {
+                    Some(Act::OnTv) => fx.push(Fx::App(RdFx::SignInOnTv)),
+                    Some(Act::Code) => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::SignInCode)))),
+                    Some(Act::NewAddress) => fx.push(Fx::App(RdFx::SignInStart)),
+                    // In place of this page: once saved, the API page offers to sign in.
+                    Some(Act::SetUpApi) => fx.push(Fx::Nav(NavOp::Replace(RdArg::ApiSettings))),
+                    Some(Act::Cancel) => fx.push(Fx::Nav(NavOp::Pop)),
+                    None => {}
                 }
                 return Handled::Yes;
             }
@@ -99,21 +144,24 @@ impl Machine<RdHost> for SignInScreen {
     }
 }
 
+// The focus group, the arrows and the pointer all count the rows on the page: a group shorter
+// than the list leaves its last rows out of reach.
 impl Focusable<RdHost> for SignInScreen {
-    fn groups(&self, _cx: &Cx<'_, RdHost>, out: &mut Vec<GroupSpec>) {
-        out.push(self.list.spec(3));
+    fn groups(&self, cx: &Cx<'_, RdHost>, out: &mut Vec<GroupSpec>) {
+        out.push(self.list.spec(Self::acts(cx).len()));
     }
     fn group_of(&self, _key: &u32, _cx: &Cx<'_, RdHost>) -> Option<GroupId> {
         Some(G)
     }
-    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, RdHost>) -> Step<u32> {
-        self.list.neighbour(key, dir, ROWS)
+    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, RdHost>) -> Step<u32> {
+        self.list.neighbour(key, dir, Self::acts(cx).len())
     }
     fn place(&self, key: &u32, cx: &Cx<'_, RdHost>, _at: At) -> Option<Placed> {
-        self.list.place(*key, ROWS, self.list.focused(cx, ROWS))
+        let n = Self::acts(cx).len();
+        self.list.place(*key, n, self.list.focused(cx, n))
     }
-    fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
-        if self.list.index(want.elem, ROWS).is_some() {
+    fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
+        if self.list.index(want.elem, Self::acts(cx).len()).is_some() {
             want
         } else {
             self.list.key(0)
@@ -144,6 +192,22 @@ impl Screen<RdHost> for SignInScreen {
         let st = cx.views.store;
         ui::text(p, "Sign in to Reddit", 160.0, 60.0, ui::sz(48), ui::WHITE, ui::ALIGN_LEFT, true);
         let hs = ui::sz(25);
+        let rows = Self::rows(cx);
+        let mut l = self.list;
+        l.text_size = ui::sz(26);
+        self.list = l;
+        let focus = self.list.focused(cx, rows.len());
+        self.list.draw(p, f.measure, &rows, focus);
+        self.list.stops(f, rows.len());
+        if !st.configured() {
+            let ls = ui::sz(30);
+            let why = "Signing in goes through your own Reddit app. Enter its client ID first: \u{201c}Set up Reddit API\u{201d} shows how.";
+            for (i, l) in ui::wrap_lines(f.measure, crate::i18n::tr(why), 1080.0, ls, false, 4).iter().enumerate() {
+                ui::text_raw(p, l, 160.0, 330.0 + i as f32 * ls as f32 * 1.42, ls, ui::WHITE, ui::ALIGN_LEFT, false);
+            }
+            common::toast(p, f.measure, cx);
+            return;
+        }
         let intro = "\u{201c}Sign in on this TV\u{201d} opens Reddit in the TV's browser and comes back here when you approve. Or, on a computer or phone on the same Wi-Fi, open the sign-in page below.";
         for (i, l) in ui::wrap_lines(f.measure, crate::i18n::tr(intro), 1600.0, hs, false, 2).iter().enumerate() {
             ui::text_raw(p, l, 160.0, 150.0 + i as f32 * hs as f32 * 1.42, hs, ui::DIM, ui::ALIGN_LEFT, false);
@@ -200,24 +264,35 @@ impl Screen<RdHost> for SignInScreen {
                     ui::text_raw(p, l, 160.0, y + i as f32 * ls as f32 * 1.4, ls, [1.0, 0.55, 0.5, 1.0], ui::ALIGN_LEFT, true);
                 }
             }
-            None if !st.configured() => {
-                ui::text(p, "Enter your Reddit API settings first (Settings \u{203a} Reddit API).", 160.0, y, ls, [1.0, 0.55, 0.5, 1.0], ui::ALIGN_LEFT, true);
-            }
             _ => {
                 let redirect = st.saved.as_ref().map(|s| s.redirect().to_string()).unwrap_or_default();
                 let note = format!("{} {redirect}", crate::i18n::tr("Your app's redirect URI:"));
                 ui::text_cut(p, f.measure, &note, 160.0, y, 1600.0, ui::sz(22), ui::FAINT, ui::ALIGN_LEFT, false);
             }
         }
-        let rows = Self::rows();
-        let mut l = self.list;
-        l.text_size = ui::sz(26);
-        self.list = l;
-        self.list.draw(p, f.measure, &rows, self.list.focused(cx, ROWS));
-        self.list.stops(f, ROWS);
+        // Reddit approves whoever its site has signed in, not the account being added.
+        if st.signed_in() {
+            let ts = ui::sz(22);
+            let tip = "Adding an account: Reddit approves whoever is signed in on reddit.com in that browser. Sign out there first, or use a private window.";
+            for (i, l) in ui::wrap_lines(f.measure, crate::i18n::tr(tip), 1600.0, ts, false, 2).iter().enumerate() {
+                ui::text_raw(p, l, 160.0, y + 70.0 + i as f32 * ts as f32 * 1.4, ts, ui::FAINT, ui::ALIGN_LEFT, false);
+            }
+        }
         common::toast(p, f.measure, cx);
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn without_api_settings_only_the_setup_is_offered() {
+        assert_eq!(acts(true).len(), ROWS);
+        assert_eq!(acts(true).last(), Some(&Act::Cancel));
+        assert_eq!(acts(false), [Act::SetUpApi, Act::Cancel]);
     }
 }

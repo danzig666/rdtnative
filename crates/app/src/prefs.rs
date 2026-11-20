@@ -184,6 +184,14 @@ pub const OPTS: &[Opt] = &[
     Opt { key: "left_sidebar", label: "Left opens the menu", help: "Left from the first column opens the side menu (BACK always does).", values: ON_OFF, default: "on" },
     Opt { key: "back_exit", label: "Leaving the app", help: "BACK on the side menu leaves the app.", values: &[("twice", "Press BACK twice"), ("once", "Press BACK once")], default: "twice" },
     Opt { key: "color_keys", label: "Colour buttons", help: "Red downvotes, green upvotes, yellow saves, blue opens the comments.", values: ON_OFF, default: "on" },
+    // Settings › Accounts
+    Opt {
+        key: "inbox_alerts",
+        label: "New message alerts",
+        help: "A note when a message arrives (the inbox is checked every 2 minutes). While another app is on screen, the TV shows it.",
+        values: ON_OFF,
+        default: "on",
+    },
 ];
 
 pub fn opt(key: &str) -> Option<&'static Opt> {

@@ -469,7 +469,7 @@ impl Machine<RdHost> for PostScreen {
             return Handled::Yes;
         }
         if let Some(c) = common::color_key(ev) {
-            if !cx.views.store.prefs.on("color_keys") {
+            if !cx.views.store.prefs.on("color_keys") || common::sign_in_first(c, cx, fx) {
                 return Handled::Yes;
             }
             let focus = cx.focus.current.map(|k| k.elem);

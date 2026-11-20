@@ -1,10 +1,10 @@
-//! Settings: the root page (option pages, filters, account, Reddit API, Imgur, history, about),
+//! Settings: the root page (option pages, filters, accounts, Reddit API, Imgur, history, about),
 //! the option pages (each option opens a list of its values), the user's lists (favourites,
-//! filtered subreddits and words, search history) and About. The right panel explains the focused
-//! row; on the text size options it shows a live sample.
+//! filtered subreddits and words, search history), the accounts on this TV and About. The right
+//! panel explains the focused row; on the text size options it shows a live sample.
 
 use super::common::{self, State};
-use crate::host::{MenuKind, RdArg, RdFx, RdHost, RdMsg, Typing};
+use crate::host::{Confirm, MenuKind, RdArg, RdFx, RdHost, RdMsg, Typing};
 use crate::prefs;
 use crate::ui::{self, icon::Kind as Icon, Row, VList};
 use plx_machine::machine::{Cx, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Machine, NavOp, ScreenEvent};
@@ -24,6 +24,7 @@ enum Mode {
     Page(usize),
     Lists,
     About,
+    Accounts,
 }
 
 #[derive(Clone, Debug)]
@@ -33,6 +34,10 @@ enum Act {
     Option(&'static str),
     SignIn,
     SignOut,
+    Accounts,
+    /// Use this account ("" browses without one).
+    Switch(String),
+    RemoveAccount(String),
     Api,
     Imgur,
     ClearRead,
@@ -76,6 +81,9 @@ impl SettingsScreen {
     pub fn about(entry: EntryId) -> Self {
         Self::make(entry, Mode::About)
     }
+    pub fn accounts(entry: EntryId) -> Self {
+        Self::make(entry, Mode::Accounts)
+    }
 
     fn title(&self) -> String {
         match self.mode {
@@ -83,6 +91,7 @@ impl SettingsScreen {
             Mode::Page(i) => prefs::pages().get(i).map_or("Settings".into(), |p| p.title.to_string()),
             Mode::Lists => "Filters and favourites".into(),
             Mode::About => "About rdtnative".into(),
+            Mode::Accounts => "Accounts".into(),
         }
     }
 
@@ -104,11 +113,21 @@ impl SettingsScreen {
                 // No writable folder that survives a restart (Developer Mode on old webOS, or a
                 // package without its data folder): say so instead of signing out silently.
                 let temporary = crate::DATA_TEMPORARY.load(std::sync::atomic::Ordering::Relaxed);
-                match st.username() {
-                    Some(u) if temporary => v.push((Row::new("Sign out").icon(Icon::User).value(format!("u/{u} (until restart)")).raw(), Act::SignOut, "The TV gives rdtnative no folder that survives a restart: the sign-in and settings are lost when the TV restarts.")),
-                    Some(u) => v.push((Row::new("Sign out").icon(Icon::User).value(format!("u/{u}")).raw(), Act::SignOut, "Signs this TV out of your Reddit account. Browsing keeps working without one. The sign-in is kept across restarts and updates.")),
-                    None if temporary => v.push((Row::new("Sign in to Reddit").icon(Icon::User), Act::SignIn, "Sign in to vote, save, join subreddits, reply and see your home feed and inbox. Note: the TV gives rdtnative no folder that survives a restart, so the sign-in is lost when the TV restarts.")),
-                    None => v.push((Row::new("Sign in to Reddit").icon(Icon::User), Act::SignIn, "Sign in to vote, save, join subreddits, reply and see your home feed and inbox. The sign-in is kept across restarts and updates.")),
+                if st.accounts.is_empty() {
+                    if temporary {
+                        v.push((Row::new("Sign in to Reddit").icon(Icon::User), Act::SignIn, "Sign in to vote, save, join subreddits, reply and see your home feed and inbox. Note: the TV gives rdtnative no folder that survives a restart, so the sign-in is lost when the TV restarts."));
+                    } else {
+                        v.push((Row::new("Sign in to Reddit").icon(Icon::User), Act::SignIn, "Sign in to vote, save, join subreddits, reply and see your home feed and inbox. The sign-in is kept across restarts and updates."));
+                    }
+                } else {
+                    let tr = |s: &str| crate::i18n::tr(s).to_string();
+                    let who = st.username().map_or_else(|| tr("Not signed in"), |u| format!("u/{u}"));
+                    let row = |who: String| Row::new(tr("Accounts")).icon(Icon::User).value(who).raw();
+                    if temporary {
+                        v.push((row(format!("{who} {}", tr("(until restart)"))), Act::Accounts, "The TV gives rdtnative no folder that survives a restart: the sign-in and settings are lost when the TV restarts."));
+                    } else {
+                        v.push((row(who), Act::Accounts, "The Reddit accounts on this TV: switch between them, add one or sign out. They are kept across restarts and updates."));
+                    }
                 }
                 v.push((
                     Row::new("Reddit API").icon(Icon::Key).value(st.saved.as_ref().map_or("Not set".into(), |s| s.client_id.clone())).raw(),
@@ -181,6 +200,36 @@ impl SettingsScreen {
                     v.push((Row::new(a).value(b).raw(), Act::Nothing, ""));
                 }
             }
+            Mode::Accounts => {
+                let tr = |s: &str| crate::i18n::tr(s).to_string();
+                let names = crate::accounts::names(st);
+                for name in &names {
+                    let row = Row::new(format!("u/{name}")).icon(Icon::User);
+                    if crate::accounts::in_use(st, name) {
+                        v.push((row.value(tr("In use")).active(true).raw(), Act::Nothing, "The account in use: votes, saves, the inbox and Home are this account's."));
+                    } else {
+                        v.push((row.value(tr("OK switches")).raw(), Act::Switch(name.clone()), "OK switches to this account; Home reloads with its subscriptions."));
+                    }
+                }
+                v.push((
+                    Row::new("Add account").icon(Icon::ListPlus),
+                    Act::SignIn,
+                    "Signs in with another Reddit account; the accounts here stay. Reddit approves whoever is signed in on reddit.com in that browser: sign out there first, or use a private window.",
+                ));
+                if st.signed_in() {
+                    v.push((Row::new("Browse without an account").icon(Icon::Users), Act::Switch(String::new()), "Stops using the account until you switch back to it; it stays on this TV."));
+                }
+                for name in &names {
+                    if crate::accounts::in_use(st, name) {
+                        v.push((Row::new(tr("Sign out of u/{}").replace("{}", name)).icon(Icon::Leave).raw(), Act::SignOut, "Signs this TV out of the account and forgets it here. Signing in again needs a phone or a computer."));
+                    } else {
+                        v.push((Row::new(tr("Remove u/{}").replace("{}", name)).icon(Icon::Leave).raw(), Act::RemoveAccount(name.clone()), "Forgets the account on this TV and signs it out with Reddit."));
+                    }
+                }
+                if let Some(o) = prefs::opt("inbox_alerts") {
+                    v.push((Row::new(o.label).icon(Icon::Bell).value(p.label(o.key)), Act::Option(o.key), o.help));
+                }
+            }
         }
         v
     }
@@ -191,10 +240,17 @@ impl SettingsScreen {
             Act::Lists => fx.push(Fx::Nav(NavOp::Push(RdArg::Lists))),
             Act::Option(k) => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Option(k))))),
             Act::SignIn => fx.push(Fx::Nav(NavOp::Push(RdArg::SignIn))),
-            Act::SignOut => fx.push(Fx::App(RdFx::SignOut)),
+            Act::SignOut => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Confirm(Confirm::SignOut))))),
+            Act::Accounts => fx.push(Fx::Nav(NavOp::Push(RdArg::Accounts))),
+            Act::Switch(name) => {
+                // Another account's Home, from the start.
+                fx.push(Fx::App(RdFx::SwitchAccount(name)));
+                fx.push(Fx::Nav(NavOp::Root(RdArg::Home)));
+            }
+            Act::RemoveAccount(name) => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Confirm(Confirm::Remove(name)))))),
             Act::Api => fx.push(Fx::Nav(NavOp::Push(RdArg::ApiSettings))),
             Act::Imgur => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::ImgurId)))),
-            Act::ClearRead => fx.push(Fx::App(RdFx::ClearReadHistory)),
+            Act::ClearRead => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Confirm(Confirm::ClearRead))))),
             Act::About => fx.push(Fx::Nav(NavOp::Push(RdArg::About))),
             Act::RemoveFavorite(s) => fx.push(Fx::App(RdFx::EditPrefs(
                 |p, s| {

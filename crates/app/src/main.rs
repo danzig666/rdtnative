@@ -4,12 +4,14 @@
 //! `app/run.rs` (GPL-3.0-or-later): SDL + GLES2 window, the plx_ui dispatcher, Magic Remote
 //! pointer, wheel and edge glide.
 
+mod accounts;
 mod crashtrace; // fatal-signal tracer -> /tmp/rdtnative/crash.log (see `cargo xtask crash`)
 mod edge;
 mod flow;
 mod host;
 mod i18n;
 mod images;
+mod inbox;
 mod input;
 #[cfg(not(any(windows, feature = "sim")))]
 mod ls2;
@@ -300,6 +302,7 @@ fn main() {
 
             plx_machine::idle::frame_begin(dt);
             images::THUMBS.deliver();
+            rig.foreground = foreground;
             let results = rig.drain(now);
             for e in &inputs {
                 use plx_machine::machine::InputKind as K;
