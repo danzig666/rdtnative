@@ -165,6 +165,13 @@ pub const OPTS: &[Opt] = &[
         default: "0",
     },
     Opt { key: "collapse_mod", label: "Collapse moderator notes", help: "Pinned moderator and AutoModerator comments start collapsed.", values: ON_OFF, default: "on" },
+    Opt {
+        key: "live_refresh",
+        label: "Live refresh",
+        help: "How often a post in Live mode (match and game threads) loads its newest comments.",
+        values: &[("15", "15 seconds"), ("20", "20 seconds"), ("30", "30 seconds"), ("60", "1 minute")],
+        default: "20",
+    },
     // Navigation
     Opt {
         key: "edge_scroll",
@@ -213,7 +220,7 @@ pub fn pages() -> [Page; 4] {
         Page {
             title: "Feeds and comments",
             icon: K::List,
-            keys: &["start_page", "default_sort", "default_time", "remember_sort", "comment_sort", "collapse_depth", "collapse_mod"],
+            keys: &["start_page", "default_sort", "default_time", "remember_sort", "comment_sort", "collapse_depth", "collapse_mod", "live_refresh"],
         },
         Page { title: "Remote and navigation", icon: K::Gauge, keys: &["edge_scroll", "wheel_rows", "smooth_scroll", "left_sidebar", "back_exit", "color_keys"] },
     ]

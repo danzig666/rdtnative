@@ -663,7 +663,7 @@ impl Machine<RdHost> for FeedScreen {
                         Color::Green => fx.push(Fx::App(RdFx::Vote { fullname: name, dir: if it.post.likes == Some(true) { 0 } else { 1 } })),
                         Color::Red => fx.push(Fx::App(RdFx::Vote { fullname: name, dir: if it.post.likes == Some(false) { 0 } else { -1 } })),
                         Color::Yellow => fx.push(Fx::App(RdFx::Save { fullname: name, on: !it.post.saved })),
-                        Color::Blue => self.open_post(it, fx),
+                        Color::Blue => fx.push(Fx::Nav(NavOp::Push(RdArg::PostComments { id: it.post.id.clone() }))),
                     }
                 }
             }
@@ -739,8 +739,10 @@ impl Machine<RdHost> for FeedScreen {
             ScreenEvent::Timer(T_PREVIEW) => {
                 if let Some(it) = self.focused_post(cx) {
                     let id = it.post.id.clone();
-                    if cx.views.store.thread(&id).is_none() {
-                        fx.push(Fx::App(RdFx::LoadThread { id: id.clone(), sort: None, reload: false }));
+                    // The preview shows a picture or video post's media, not its comments.
+                    let media = Self::thumbs_on(cx) && matches!(it.media, Media::Image(_) | Media::Gallery(_) | Media::Video(_) | Media::Imgur(_) | Media::YouTube { .. });
+                    if !media {
+                        fx.push(Fx::App(RdFx::PrefetchThread { id: id.clone() }));
                     }
                     if matches!(it.media, Media::Imgur(_)) {
                         fx.push(Fx::App(RdFx::ResolveImgur(id)));
@@ -1247,7 +1249,7 @@ impl FeedScreen {
                     "{}{}  \u{b7}  {} \u{1F4AC}  \u{b7}  {}",
                     if with_sub { format!("r/{}", it.post.subreddit) } else { format!("u/{}", it.post.author) },
                     common::media_badge(it).map(|b| format!("  \u{b7}  {b}")).unwrap_or_default(),
-                    common::short_count(it.post.num_comments),
+                    format!("{}{}", common::short_count(it.post.num_comments), common::grown(it)),
                     rd_core::listing::age(it.post.created_utc, rd_core::now_secs() as i64)
                 );
                 let side_w = ui::text_width(m, &side, ms, false).min(r.w * 0.42);
@@ -1279,7 +1281,7 @@ impl FeedScreen {
                     "{}  \u{b7}  {} pts  \u{b7}  {}  \u{b7}  {}",
                     if with_sub { format!("r/{}", it.post.subreddit) } else { format!("u/{}", it.post.author) },
                     common::short_count(it.post.score),
-                    common::comments(it.post.num_comments),
+                    common::comments_of(it),
                     rd_core::listing::age(it.post.created_utc, rd_core::now_secs() as i64)
                 );
                 if it.post.over_18 {
@@ -1316,7 +1318,7 @@ impl FeedScreen {
                 }
                 ui::text_cut(p, m, &title, tx, y, tw, ts, ink, ui::ALIGN_LEFT, true);
                 let mut meta2 = meta;
-                meta2.push_str(&format!("  \u{b7}  {}", common::comments(it.post.num_comments)));
+                meta2.push_str(&format!("  \u{b7}  {}", common::comments_of(it)));
                 // A link's site is already in the meta line.
                 if let Some(b) = common::media_badge(it).filter(|b| !b.starts_with('\u{2197}')) {
                     meta2.push_str(&format!("  \u{b7}  {b}"));

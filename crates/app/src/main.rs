@@ -22,6 +22,7 @@ mod remote;
 mod richtext;
 mod screens;
 mod sdl;
+mod seen;
 #[cfg(any(windows, feature = "sim"))]
 mod sim;
 mod store;
@@ -55,6 +56,9 @@ pub fn log(s: &str) {
 
 /// The app's data (sign-in, settings) lives in /tmp, which a restart clears (Settings says so).
 pub static DATA_TEMPORARY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The app is on screen (not sent to the background): polling pauses while it is not.
+pub static FOREGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// Persistent, writable, survives reinstall in the Developer Mode jail (ytnative's finding);
 /// falls back to the app's tmp dir.
@@ -280,11 +284,13 @@ fn main() {
                             log("lifecycle: background");
                         }
                         foreground = false;
+                        FOREGROUND.store(false, std::sync::atomic::Ordering::Relaxed);
                         wl::release();
                     }
                     sdl::SDL_APP_DIDENTERFOREGROUND => {
                         log("lifecycle: foreground");
                         foreground = true;
+                        FOREGROUND.store(true, std::sync::atomic::Ordering::Relaxed);
                         wl::grab(win);
                     }
                     _ => {}

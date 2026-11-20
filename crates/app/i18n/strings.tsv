@@ -498,3 +498,20 @@ No video is playing	Nem megy videó	Es läuft kein Video	No se está reproducien
 Sign-in and settings	Bejelentkezés és beállítások	Anmeldung und Einstellungen	Sesión y ajustes	Connexion et paramètres	Вход и настройки
 Kept across restarts	Újraindítás után is megmarad	Bleiben nach einem Neustart erhalten	Se conservan al reiniciar	Conservés après un redémarrage	Сохраняются после перезапуска
 Lost at every restart (no writable folder)	Minden újraindításkor elvész (nincs írható mappa)	Gehen bei jedem Neustart verloren (kein beschreibbarer Ordner)	Se pierden en cada reinicio (sin carpeta con permiso de escritura)	Perdus à chaque redémarrage (aucun dossier accessible en écriture)	Теряются при каждом перезапуске (нет папки для записи)
+All comments	Összes hozzászólás	Alle Kommentare	Todos los comentarios	Tous les commentaires	Все комментарии
+{} new	{} új	{} neu	{} nuevos	{} nouveaux	{} новых
+Use as default	Legyen ez az alapértelmezett	Als Standard verwenden	Usar como predeterminado	Utiliser par défaut	Сделать по умолчанию
+Posts now open with comments sorted by {}	A bejegyzések hozzászólásai mostantól így rendezve nyílnak: {}	Kommentare öffnen jetzt sortiert nach: {}	Ahora los comentarios se abren ordenados por: {}	Les commentaires s'ouvrent désormais triés par : {}	Теперь комментарии открываются с сортировкой: {}
+No new comments	Nincs új hozzászólás	Keine neuen Kommentare	No hay comentarios nuevos	Aucun nouveau commentaire	Новых комментариев нет
+NEW	ÚJ	NEU	NUEVO	NOUVEAU	НОВЫЙ
+updating…	frissítés…	wird aktualisiert…	actualizando…	mise à jour…	обновление…
+couldn't update	nem sikerült frissíteni	Aktualisierung fehlgeschlagen	no se pudo actualizar	mise à jour impossible	не удалось обновить
+updated {} s ago	{} mp-e frissítve	vor {} s aktualisiert	actualizado hace {} s	mis à jour il y a {} s	обновлено {} с назад
+updated {} min ago	{} perce frissítve	vor {} Min. aktualisiert	actualizado hace {} min	mis à jour il y a {} min	обновлено {} мин назад
+Couldn't open this post	Nem sikerült megnyitni a bejegyzést	Dieser Beitrag konnte nicht geöffnet werden	No se pudo abrir esta publicación	Impossible d'ouvrir cette publication	Не удалось открыть этот пост
+Live refresh	Élő frissítés	Live-Aktualisierung	Actualización en directo	Actualisation en direct	Обновление в реальном времени
+How often a post in Live mode (match and game threads) loads its newest comments.	Milyen gyakran tölti be az Élő módban lévő bejegyzés (meccs- és játékszálak) a legújabb hozzászólásokat.	Wie oft ein Beitrag im Live-Modus (Spiel- und Match-Threads) die neuesten Kommentare lädt.	Con qué frecuencia una publicación en modo en directo (hilos de partidos) carga los comentarios más recientes.	À quelle fréquence une publication en mode direct (fils de match) charge les commentaires les plus récents.	Как часто пост в режиме реального времени (треды матчей и игр) загружает новые комментарии.
+15 seconds	15 másodperc	15 Sekunden	15 segundos	15 secondes	15 секунд
+20 seconds	20 másodperc	20 Sekunden	20 segundos	20 secondes	20 секунд
+30 seconds	30 másodperc	30 Sekunden	30 segundos	30 secondes	30 секунд
+1 minute	1 perc	1 Minute	1 minuto	1 minute	1 минута

@@ -167,6 +167,19 @@ impl Flow {
         self.scroll.set(0.0);
     }
 
+    /// Item `i`'s top in the content (where the scroll is measured from).
+    pub fn top(&self, i: usize) -> Option<f32> {
+        self.boxes.borrow().get(i).map(|b| b.y)
+    }
+
+    /// Moves the page by `d` at once, glide and all: content came in above what is being read,
+    /// which stays where it was on screen.
+    pub fn shift(&self, d: f32) {
+        let max = self.max_scroll();
+        self.target.set((self.target.get() + d).clamp(0.0, max));
+        self.scroll.set((self.scroll.get() + d).clamp(0.0, max));
+    }
+
     /// Steps the glide; call once per drawn frame.
     pub fn animate(&self, now_ms: u32) {
         let dt = now_ms.wrapping_sub(self.last_ms.get()).min(80) as f32;
@@ -364,5 +377,21 @@ mod tests {
         // A key moving focus still reveals the item.
         f.on_focus(j + 1, false);
         assert_ne!(f.target.get(), at);
+    }
+
+    #[test]
+    fn a_shift_keeps_an_item_in_place_when_rows_come_in_above() {
+        let f = Flow::new(EntryId(1), GroupId(1), 0, Rect::new(0.0, 0.0, 800.0, 1000.0));
+        f.set_heights(&[300.0; 10]);
+        f.target.set(900.0);
+        f.scroll.set(900.0);
+        let (was, on_screen) = (f.top(4).unwrap(), f.screen_rect(4).unwrap().y);
+        // Two rows arrive at the top: item 4 is now item 6.
+        let mut heights = vec![200.0, 200.0];
+        heights.extend([300.0; 10]);
+        f.set_heights(&heights);
+        f.shift(f.top(6).unwrap() - was);
+        assert_eq!(f.screen_rect(6).unwrap().y, on_screen);
+        assert_eq!(f.target.get(), f.scroll());
     }
 }

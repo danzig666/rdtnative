@@ -130,6 +130,23 @@ pub fn comments(n: i64) -> String {
     }
 }
 
+/// " +3" when comments were added since the post was last opened, else nothing.
+pub fn grown(item: &PostItem) -> String {
+    if item.new_comments > 0 {
+        format!(" +{}", short_count(item.new_comments))
+    } else {
+        String::new()
+    }
+}
+
+/// A post's comment count with what was added since it was last opened: "12 comments +3".
+pub fn comments_of(item: &PostItem) -> String {
+    format!("{}{}", comments(item.post.num_comments), grown(item))
+}
+
+/// The star of a saved post or comment.
+pub const SAVED_STAR: [f32; 4] = [1.0, 0.8, 0.2, 1.0];
+
 /// A pill button: icon and label; accent-filled when focused, outlined when `active`.
 #[allow(clippy::too_many_arguments)]
 pub fn button(p: Painter, m: &dyn plx_machine::machine::Measure, r: Rect, label: &str, icon: Option<Icon>, focused: bool, active: bool, raw: bool) {
@@ -230,9 +247,12 @@ pub fn score_line(p: Painter, m: &dyn plx_machine::machine::Measure, item: &Post
     ui::icon::draw(p, Icon::Chat, Rect::new(cx, y + size as f32 * 0.12, s, s), ink, false);
     cx += s + 8.0;
     cx += ui::text_raw(p, &short_count(post.num_comments), cx, y, size, ink, ui::ALIGN_LEFT, false);
+    if item.new_comments > 0 {
+        cx += ui::text_raw(p, &grown(item), cx, y, size, ui::accent(), ui::ALIGN_LEFT, true);
+    }
     if post.saved {
         cx += size as f32 * 1.1;
-        ui::icon::draw(p, Icon::Star, Rect::new(cx, y + size as f32 * 0.12, s, s), [1.0, 0.8, 0.2, 1.0], true);
+        ui::icon::draw(p, Icon::Star, Rect::new(cx, y + size as f32 * 0.12, s, s), SAVED_STAR, true);
         cx += s;
     }
     cx - x

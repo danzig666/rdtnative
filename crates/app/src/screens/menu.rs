@@ -113,19 +113,21 @@ impl MenuScreen {
                     rows.push((Row::new("Share (QR code)").icon(Icon::Phone), Act::Link(format!("https://www.reddit.com{}", p.permalink))));
                 }
             }
+            // `post` is the thread's key: the post's, or a comment link's.
             MenuKind::Comment(post, name) => {
                 if let Some(c) = st.thread(post).and_then(|t| find(&t.tree, name)) {
+                    let post_id = crate::store::split_thread_key(post).0;
                     title = format!("u/{}", c.author);
                     rows.push((Row::new(if c.likes == Some(true) { "Remove upvote" } else { "Upvote" }).icon(Icon::ThumbUp), Act::Vote(c.name.clone(), if c.likes == Some(true) { 0 } else { 1 })));
                     rows.push((Row::new(if c.likes == Some(false) { "Remove downvote" } else { "Downvote" }).icon(Icon::ThumbDown), Act::Vote(c.name.clone(), if c.likes == Some(false) { 0 } else { -1 })));
                     if signed {
-                        rows.push((Row::new("Reply").icon(Icon::Chat), Act::Reply(c.name.clone(), post.clone())));
-                        rows.push((Row::new("Save").icon(Icon::Star), Act::Save(c.name.clone(), true)));
+                        rows.push((Row::new("Reply").icon(Icon::Chat), Act::Reply(c.name.clone(), post_id.to_string())));
+                        rows.push((Row::new(if c.saved { "Remove from saved" } else { "Save" }).icon(Icon::Star), Act::Save(c.name.clone(), !c.saved)));
                     }
                     rows.push((Row::new("Collapse or expand").icon(Icon::List), Act::Toggle(post.clone(), c.name.clone())));
                     rows.push((Row::new(format!("Posts by u/{}", c.author)).icon(Icon::User).raw(), Act::Push(RdArg::Feed(Feed::User(c.author.clone(), UserTab::Submitted)))));
                     rows.push((Row::new("Links in this comment").icon(Icon::Leave), Act::Push(RdArg::Menu(MenuKind::Links(post.clone(), c.name.clone())))));
-                    if let Some(p) = st.post(post) {
+                    if let Some(p) = st.post(post_id) {
                         rows.push((Row::new("Share (QR code)").icon(Icon::Phone), Act::Link(format!("https://www.reddit.com{}{}/", p.post.permalink, c.id))));
                     }
                 }
@@ -228,7 +230,7 @@ impl MenuScreen {
             Act::OpenPost(id) => {
                 close(fx);
                 fx.push(Fx::App(RdFx::MarkRead(id.clone())));
-                fx.push(Fx::Nav(NavOp::Push(RdArg::Post { id, comment: None })));
+                fx.push(Fx::Nav(NavOp::Push(RdArg::PostComments { id })));
             }
             Act::Vote(name, dir) => {
                 close(fx);
