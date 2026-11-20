@@ -3,7 +3,7 @@
 //! preparation). Same shape as ytnative's `host.rs`, with Reddit's state.
 
 use crate::screens;
-use crate::store::{self, FeedKey, FeedState, Field, Message, PhoneView, PostItem, SignInView, Store, SubAbout, ThreadState};
+use crate::store::{self, FeedKey, FeedState, Field, Incoming, Message, PhoneView, PostItem, SignInView, Store, SubAbout, ThreadState, TypePhoneView};
 use plx_machine::machine::{
     Addr, Canon, Chrome, Cx, Effects, EntryId, Handled, Host, InputOwner, InstanceId, LogicalState, MachineId, RequestId, ScreenId,
     TimerId,
@@ -173,6 +173,9 @@ pub enum RdFx {
     /// Open / close the one-time phone form for the API settings.
     PhoneStart,
     PhoneStop,
+    /// Open / close the keyboard's "Type on phone" form, starting from `text`.
+    TypePhoneStart { target: Typing, text: String },
+    TypePhoneStop,
     /// Load a feed (again when `reload`), or its next page.
     LoadFeed { key: FeedKey, reload: bool },
     MoreFeed(FeedKey),
@@ -200,6 +203,8 @@ pub enum RdFx {
     Hide { id: String },
     Subscribe { sub: String, on: bool },
     Reply { parent: String, post: String, text: String },
+    /// Keep the unsent reply to `parent` (an empty one drops the draft).
+    SetDraft { parent: String, text: String },
     /// A post was opened: remember it as read.
     MarkRead(String),
     SetPref(&'static str, String),
@@ -289,9 +294,10 @@ impl Mounter<RdHost> for Mount {
                 let current = match t {
                     Typing::Api(f) => cx.views.store.draft.get(*f).to_string(),
                     Typing::ImgurId => cx.views.store.prefs.imgur_client_id.clone().unwrap_or_default(),
+                    Typing::Reply { parent, .. } => cx.views.store.drafts.get(parent).cloned().unwrap_or_default(),
                     _ => String::new(),
                 };
-                Box::new(keyboard::KeyboardScreen::new(entry, t.clone(), &current))
+                Box::new(keyboard::KeyboardScreen::new(entry, t.clone(), &current, cx))
             }
             RdArg::Subs => Box::new(subs::SubsScreen::new(entry)),
             RdArg::SignIn => Box::new(signin::SignInScreen::new(entry)),
@@ -317,7 +323,7 @@ enum Work {
     Subs { mine: bool, query: Option<String>, result: Result<Vec<Subreddit>, String> },
     /// An action went through, or failed with this message.
     Action { undo: Option<Box<dyn FnOnce(&mut Store) + Send>>, error: Option<String>, ok_toast: Option<String> },
-    Replied { post: String, result: Result<Option<Node>, String> },
+    Replied { parent: String, post: String, result: Result<Option<Node>, String> },
     /// `/api/v1/me`; `asked` is the unread-count generation it was asked in (`None`: it failed).
     Me { epoch: u64, asked: u32, name: Option<String>, unread: Option<i64> },
     Inbox { epoch: u64, result: Result<Vec<Message>, String> },
@@ -352,6 +358,8 @@ pub struct AppRig {
     signin_browser: bool,
     /// The Sign in screen: it hears when the sign-in ends (and closes once signed in).
     signin_from: Option<MachineId>,
+    /// The keyboard's "Type on phone" page.
+    type_phone: Option<rd_phone::PhoneForm>,
     /// Notifications made on the main thread, delivered with the next frame.
     pending: Vec<(Addr, RdMsg)>,
     /// Every screen that asked for something gets `Changed` when anything arrives.
@@ -390,6 +398,7 @@ impl AppRig {
             signin_authorize: String::new(),
             signin_browser: false,
             signin_from: None,
+            type_phone: None,
             pending: Vec::new(),
             listeners: Vec::new(),
             read_dirty: false,
@@ -491,6 +500,7 @@ impl AppRig {
         }
         self.poll_phone();
         self.poll_signin_phone();
+        self.poll_type_phone();
         if self.player.active() {
             self.player.tick();
             let st = self.player.status.lock().unwrap().clone();
@@ -704,8 +714,9 @@ impl AppRig {
                     self.store.toast(t, now);
                 }
             }
-            Work::Replied { post, result } => match result {
+            Work::Replied { parent, post, result } => match result {
                 Ok(node) => {
+                    self.store.drafts.remove(&parent);
                     // Into the post's whole thread and any comment's thread open on it.
                     if let Some(node) = node {
                         let post = store::split_thread_key(&post).0;
@@ -717,7 +728,8 @@ impl AppRig {
                     }
                     self.store.toast("Reply sent", now);
                 }
-                Err(e) => self.store.toast(format!("Couldn't send the reply: {e}"), now),
+                // The draft stays: Reply on the same comment brings the text back.
+                Err(e) => self.store.toast(crate::i18n::tr("Couldn't send the reply: {}. Your text is kept.").replace("{}", e.trim_end_matches('.')), now),
             },
             Work::Me { epoch, asked, name, unread } => {
                 self.me_busy = false;
@@ -896,6 +908,64 @@ impl AppRig {
             }
             Err(e) => self.store.toast(format!("Couldn't open the phone link: {e}"), self.now_ms),
         }
+    }
+
+    /// The keyboard's "Type on phone": a one-time page with one field holding the text so far,
+    /// checked by the keyboard's own rules. What it sends goes to the keyboard as `incoming`.
+    fn open_type_phone(&mut self, target: Typing, text: String) {
+        self.close_type_phone();
+        let form = screens::keyboard::phone_form(&target, &text, &self.store);
+        let rules = target.clone();
+        let validate = move |v: &rd_phone::Values| {
+            screens::keyboard::check(&rules, v.get("text").map_or("", String::as_str)).map_err(|e| vec![("text".to_string(), e)])
+        };
+        match rd_phone::PhoneForm::start(form, Box::new(validate)) {
+            Ok(p) => {
+                crate::log("type on phone: open");
+                self.store.type_phone = Some(TypePhoneView { url: p.url.clone(), opened: false, target });
+                self.type_phone = Some(p);
+            }
+            Err(e) => self.store.toast(crate::i18n::tr("Couldn't open the phone link: {}").replace("{}", &e), self.now_ms),
+        }
+    }
+
+    fn close_type_phone(&mut self) {
+        self.type_phone = None;
+        self.store.type_phone = None;
+    }
+
+    /// The keyboard's phone page: sent (the text goes to the keyboard), expired, or opened.
+    fn poll_type_phone(&mut self) {
+        let Some(p) = &self.type_phone else { return };
+        if let Some(values) = p.take() {
+            self.close_type_phone();
+            let text = values.get("text").cloned().unwrap_or_default();
+            self.store.incoming = Incoming { seq: self.store.incoming.seq.wrapping_add(1), text, done: true };
+        } else if !p.running() {
+            self.close_type_phone();
+            self.store.toast("The phone link expired", self.now_ms);
+        } else {
+            let opened = p.opened();
+            match &mut self.store.type_phone {
+                Some(v) if v.opened != opened => v.opened = opened,
+                _ => return,
+            }
+        }
+        self.store.bump();
+        plx_machine::present::wake_from_worker();
+    }
+
+    /// Words said to the TV's voice search: typed into the open keyboard, otherwise searched for
+    /// on all of Reddit.
+    pub fn voice_text(&mut self, text: String, keyboard_open: bool) {
+        if keyboard_open {
+            self.store.incoming = Incoming { seq: self.store.incoming.seq.wrapping_add(1), text, done: false };
+        } else {
+            self.store.prefs.remember_search(&text);
+            store::store_prefs(&self.store.prefs);
+            self.store.nav_request = Some(RdArg::Feed(Feed::Search { q: text, sub: None }));
+        }
+        self.store.bump();
     }
 
     /// Validates the draft; when valid, stores it (a new client ID starts a new identity, other
@@ -1645,10 +1715,13 @@ impl AppRig {
     }
 
     fn reply(&mut self, from: MachineId, parent: String, post: String, text: String) {
+        // A draft until Reddit has it: whatever goes wrong, Reply on the same parent brings it back.
+        self.store.drafts.insert(parent.clone(), text.clone());
         if self.need_sign_in() {
             return;
         }
         let Some(s) = self.session() else { return };
+        self.store.toast("Sending the reply\u{2026}", self.now_ms);
         self.spawn(from, "reply", move || {
             let (path, fields) = listing::reply(&parent, &text);
             let f: Vec<(&str, &str)> = fields.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
@@ -1663,7 +1736,7 @@ impl AppRig {
                     let thing = r.json["json"]["data"]["things"][0].clone();
                     Ok(comments::parse_morechildren(&serde_json::json!({ "json": { "data": { "things": [thing] } } })).ok().and_then(|mut v| v.pop()))
                 });
-            Work::Replied { post, result }
+            Work::Replied { parent, post, result }
         });
     }
 }
@@ -1956,6 +2029,8 @@ impl Rig<RdHost> for AppRig {
                 }
             }
             RdFx::PhoneStop => self.close_phone(),
+            RdFx::TypePhoneStart { target, text } => self.open_type_phone(target, text),
+            RdFx::TypePhoneStop => self.close_type_phone(),
             RdFx::LoadFeed { key, reload } => {
                 let have = self.store.feeds.get(&key).is_some_and(|f| !f.ids.is_empty() || f.loading);
                 if reload || !have {
@@ -2014,6 +2089,13 @@ impl Rig<RdHost> for AppRig {
                 self.action(from, listing::subscribe(&sub, on), None, Some(if on { format!("Joined r/{sub}") } else { format!("Left r/{sub}") }));
             }
             RdFx::Reply { parent, post, text } => self.reply(from, parent, post, text),
+            RdFx::SetDraft { parent, text } => {
+                if text.trim().is_empty() {
+                    self.store.drafts.remove(&parent);
+                } else {
+                    self.store.drafts.insert(parent, text);
+                }
+            }
             RdFx::MarkRead(id) => {
                 if self.store.read.add(&id) {
                     self.read_dirty = true;

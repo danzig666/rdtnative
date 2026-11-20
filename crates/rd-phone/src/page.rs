@@ -16,7 +16,8 @@ a{color:var(--accent);font-weight:600}.links{margin:10px 0 4px}.links a{display:
 form{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-top:14px}\
 label{display:block;font-weight:600;margin:14px 0 6px}label:first-child{margin-top:0}\
 input[type=text],input[type=url],input[type=password]{width:100%;font:16px ui-monospace,SFMono-Regular,Menlo,monospace;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--field);color:var(--fg)}\
-input.bad{border-color:var(--err)}.help{font-size:14px;color:var(--muted);margin-top:4px}.err{font-size:14px;color:var(--err);margin-top:4px;font-weight:600}\
+input.bad,textarea.bad{border-color:var(--err)}textarea{width:100%;min-height:12em;resize:vertical;font:17px/1.45 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--field);color:var(--fg)}\
+blockquote{margin:12px 0;padding:10px 14px;border-left:4px solid var(--accent);background:var(--card);border-radius:8px;white-space:pre-line;max-height:16em;overflow:auto}.help{font-size:14px;color:var(--muted);margin-top:4px}.err{font-size:14px;color:var(--err);margin-top:4px;font-weight:600}\
 .show{font-weight:400;font-size:14px;color:var(--muted)}\
 button{margin-top:18px;width:100%;font:600 18px system-ui,sans-serif;padding:14px;border:0;border-radius:999px;background:var(--accent);color:#fff}ol{margin:10px 0;padding-left:1.4em;color:var(--fg)}ol li{margin:6px 0}a.action{display:block;text-align:center;margin:16px 0 4px;padding:14px;border-radius:999px;background:var(--accent);color:#fff;text-decoration:none;font-size:18px}details{margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 14px}summary{cursor:pointer;font-weight:600}details p{white-space:pre-line}\
 .copy{display:flex;gap:8px;align-items:center;margin:6px 0 4px}.copy input{flex:1;min-width:0;font:13px ui-monospace,monospace;padding:9px;border-radius:10px;border:1px solid var(--border);background:var(--field);color:var(--muted)}\
@@ -34,6 +35,9 @@ pub fn form(form: &Form, token: &str, values: &Values, errors: &[(String, String
     h += &format!("<h1>{}</h1>", escape(&form.title));
     for p in &form.intro {
         h += &format!("<p>{}</p>", escape(p));
+    }
+    if !form.quote.is_empty() {
+        h += &format!("<blockquote>{}</blockquote>", escape(&form.quote));
     }
     if !form.steps.is_empty() {
         h += "<ol>";
@@ -71,21 +75,25 @@ pub fn form(form: &Form, token: &str, values: &Values, errors: &[(String, String
         let id = format!("f{i}");
         let value = values.get(&f.key).map(String::as_str).unwrap_or("");
         let err: Vec<&str> = errors.iter().filter(|(k, _)| *k == f.key).map(|(_, m)| m.as_str()).collect();
-        let (ty, extra) = match f.kind {
-            Kind::Text => ("text", ""),
-            Kind::Url => ("url", r#" inputmode="url""#),
-            Kind::Secret => ("password", ""),
-        };
+        let bad = if err.is_empty() { "" } else { r#" class="bad""# };
+        let focus = if (errors.is_empty() && i == 0) || (!err.is_empty() && errors.first().map(|e| &e.0) == Some(&f.key)) { " autofocus" } else { "" };
         h += &format!(r#"<label for="{id}">{}</label>"#, escape(&f.label));
-        h += &format!(
-            r#"<input id="{id}" name="{name}" type="{ty}"{extra} value="{value}" placeholder="{ph}" maxlength="{max}" autocapitalize="off" autocorrect="off" spellcheck="false"{bad}{focus}>"#,
-            name = escape(&f.key),
-            value = escape(value),
-            ph = escape(&f.placeholder),
-            max = f.max_len,
-            bad = if err.is_empty() { "" } else { r#" class="bad""# },
-            focus = if (errors.is_empty() && i == 0) || (!err.is_empty() && errors.first().map(|e| &e.0) == Some(&f.key)) { " autofocus" } else { "" },
-        );
+        let (name, value, ph, max) = (escape(&f.key), escape(value), escape(&f.placeholder), f.max_len);
+        let input = |ty: &str, extra: &str| {
+            format!(
+                r#"<input id="{id}" name="{name}" type="{ty}"{extra} value="{value}" placeholder="{ph}" maxlength="{max}" autocapitalize="off" autocorrect="off" spellcheck="false"{bad}{focus}>"#
+            )
+        };
+        h += &match f.kind {
+            Kind::Text => input("text", ""),
+            Kind::Url => input("url", r#" inputmode="url""#),
+            Kind::Secret => input("password", ""),
+            // Prose: the phone may capitalise, correct and dictate. The value is escaped text
+            // content, so it cannot close the element.
+            Kind::Multiline => format!(
+                r#"<textarea id="{id}" name="{name}" rows="8" maxlength="{max}" placeholder="{ph}" autocapitalize="sentences" spellcheck="true"{bad}{focus}>{value}</textarea>"#
+            ),
+        };
         if f.kind == Kind::Secret {
             h += &format!(
                 r#"<label class="show"><input type="checkbox" onchange="document.getElementById('{id}').type=this.checked?'text':'password'"> Show</label>"#

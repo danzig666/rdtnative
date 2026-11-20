@@ -156,6 +156,25 @@ pub struct PhoneView {
     pub opened: bool,
 }
 
+/// The keyboard's "Type on phone" form while it runs (the `PhoneForm` itself lives in the rig).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypePhoneView {
+    pub url: String,
+    pub opened: bool,
+    /// The keyboard it types for.
+    pub target: crate::host::Typing,
+}
+
+/// Text for the open keyboard from the phone or from voice search. Each one gets a new `seq`, and
+/// a keyboard takes only what arrived after it opened.
+#[derive(Clone, Debug, Default)]
+pub struct Incoming {
+    pub seq: u32,
+    pub text: String,
+    /// Used as Done uses it (the phone sent it); otherwise only typed in.
+    pub done: bool,
+}
+
 /// A post as the screens use it: the post, its resolved media and a one-line text preview.
 #[derive(Clone, Debug)]
 pub struct PostItem {
@@ -317,6 +336,10 @@ pub struct Store {
     /// pages that started them see that it went through.
     pub api_saves: u32,
     pub signins: u32,
+    /// Unsent replies by parent fullname: kept when the keyboard closes or the send fails.
+    pub drafts: HashMap<String, String>,
+    pub type_phone: Option<TypePhoneView>,
+    pub incoming: Incoming,
 }
 
 impl Store {
@@ -352,6 +375,9 @@ impl Store {
             accounts,
             api_saves: 0,
             signins: 0,
+            drafts: HashMap::new(),
+            type_phone: None,
+            incoming: Incoming::default(),
         }
     }
 

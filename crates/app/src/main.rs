@@ -30,6 +30,7 @@ mod sim;
 mod store;
 mod ui;
 mod update;
+mod voice;
 #[cfg_attr(any(windows, feature = "sim"), path = "sim/wl.rs")]
 mod wl;
 
@@ -215,6 +216,7 @@ fn main() {
         let mut rig = AppRig::new();
         // Once in a while at start: is there a newer release? (asked about on the feed)
         update::start_auto_check();
+        voice::start();
         let mut d = Dispatcher::<RdHost>::with_transition(Box::new(PageDip::new()));
         d.request(MachineId::Nav, NavOp::Root(RdArg::Home));
         let (mut mouse_down, mut last_wheel) = (false, 0u32);
@@ -224,6 +226,7 @@ fn main() {
         let mut edge_v = edge::Glide::default();
         let (mut cursor_motion_at, mut cursor_hidden) = (0u32, true);
         let mut remote = remote::Remote::open();
+        let mut mods = input::Mods::default();
         let mut ev = [0u8; 128];
         let mut prev = 0u32;
         let mut running = true;
@@ -266,6 +269,7 @@ fn main() {
                     }
                     sdl::SDL_KEYDOWN | sdl::SDL_KEYUP => {
                         let (state, wcode, sym) = input::decode_key(&ev);
+                        let sym = mods.typed(sym, state);
                         // An arrow key puts the Magic Remote pointer away (as plx-native does).
                         if state & 0xff != 0 && !cursor_hidden && sym & (1 << 30) != 0 && (79..=82).contains(&(sym & 0xff)) {
                             hide_cursor();
@@ -361,6 +365,10 @@ fn main() {
                     source: plx_machine::machine::Source::Sdl,
                     kind: plx_machine::machine::InputKind::PointerHidden,
                 });
+            }
+            // Words said to LG's voice search: into the open keyboard, else a Reddit search.
+            for q in voice::take() {
+                rig.voice_text(q, d.top_screen().map(|s| s.name()) == Some("keyboard"));
             }
             // The automatic update check found a newer version: ask once, on the feed (never over
             // a video or a page being read).
