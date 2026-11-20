@@ -1,9 +1,9 @@
 //! Pop-up menus over a page: actions on a post, a comment or a subreddit, the links in a post or
-//! comment, one option's values, and the adult check. OK runs the row and closes the menu; BACK
-//! closes it.
+//! comment, one option's values, the adult check, confirmations, the offer to sign in and the
+//! account switcher. OK runs the row and closes the menu; BACK closes it.
 
 use super::common::{self, State};
-use crate::host::{MenuKind, RdArg, RdFx, RdHost, RdMsg, Typing};
+use crate::host::{Confirm, MenuKind, RdArg, RdFx, RdHost, RdMsg, Typing};
 use crate::ui::{self, icon::Kind as Icon, Row, VList};
 use plx_machine::machine::{Cx, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Machine, NavOp, ScreenEvent};
 use plx_ui::frame::Budget;
@@ -35,6 +35,11 @@ enum Act {
     Adult,
     InstallUpdate,
     Share(String),
+    /// Go ahead with what a confirmation asked about.
+    Confirmed(Confirm),
+    /// Use this account ("" browses without one), from a fresh Home.
+    Switch(String),
+    Nav(NavOp<RdArg>),
     Close,
 }
 
@@ -206,6 +211,45 @@ impl MenuScreen {
             MenuKind::Sort(_) | MenuKind::Time(_) | MenuKind::CommentSort(_) => {
                 rows.push((Row::new("Close"), Act::Close));
             }
+            MenuKind::Confirm(c) => {
+                let tr = |s: &str| crate::i18n::tr(s).to_string();
+                let user = st.username().unwrap_or_default();
+                let (ask, go) = match c {
+                    Confirm::SignOut => (tr("Sign out of u/{}? Signing in again needs a phone or a computer.").replace("{}", user), "Sign out"),
+                    Confirm::Remove(name) => (tr("Remove u/{} from this TV? It is signed out with Reddit too.").replace("{}", name), "Remove"),
+                    Confirm::ClearRead => (tr("Forget which posts you opened? They stop being dimmed or hidden."), "Clear read history"),
+                    Confirm::NewClientId => (tr("Save a new client ID? It signs out every account on this TV."), "Save and sign out"),
+                };
+                title = ask;
+                // Cancel first: a stray OK changes nothing.
+                rows.push((Row::new("Cancel"), Act::Close));
+                rows.push((Row::new(go).icon(Icon::Check), Act::Confirmed(c.clone())));
+            }
+            MenuKind::SignInPrompt(first) => {
+                if *first {
+                    title = crate::i18n::tr("Saved. Sign in to vote, reply and see your inbox?").to_string();
+                    rows.push((Row::new("Sign in now").icon(Icon::User), Act::Nav(NavOp::Replace(RdArg::SignIn))));
+                    rows.push((Row::new("Browse without an account").icon(Icon::Home), Act::Nav(NavOp::PopToArg(RdArg::Home))));
+                } else {
+                    title = crate::i18n::tr("Sign in to vote and save").to_string();
+                    // With accounts on the TV, switching back to one is the quicker way.
+                    let to = if st.accounts.is_empty() { RdArg::SignIn } else { RdArg::Accounts };
+                    rows.push((Row::new("Sign in").icon(Icon::User), Act::Push(to)));
+                    rows.push((Row::new("Not now"), Act::Close));
+                }
+            }
+            MenuKind::Accounts => {
+                title = crate::i18n::tr("Switch account").to_string();
+                for name in crate::accounts::names(st) {
+                    let on = crate::accounts::in_use(st, &name);
+                    let act = if on { Act::Close } else { Act::Switch(name.clone()) };
+                    rows.push((Row::new(format!("u/{name}")).icon(Icon::User).value(if on { "\u{2713}" } else { "" }).active(on).raw(), act));
+                }
+                if signed {
+                    rows.push((Row::new("Browse without an account").icon(Icon::Users), Act::Switch(String::new())));
+                }
+                rows.push((Row::new("Add account").icon(Icon::ListPlus), Act::Push(RdArg::SignIn)));
+            }
         }
         // Size and place the panel for its rows.
         let n = rows.len().max(1);
@@ -300,6 +344,25 @@ impl MenuScreen {
                 close(fx);
                 crate::update::install();
                 fx.push(Fx::App(RdFx::Toast("Homebrew Channel is installing the update; the app closes when it is done".into())));
+            }
+            Act::Confirmed(c) => {
+                close(fx);
+                fx.push(Fx::App(match c {
+                    Confirm::SignOut => RdFx::SignOut,
+                    Confirm::Remove(name) => RdFx::RemoveAccount(name),
+                    Confirm::ClearRead => RdFx::ClearReadHistory,
+                    Confirm::NewClientId => RdFx::SaveApi,
+                }));
+            }
+            Act::Switch(name) => {
+                close(fx);
+                fx.push(Fx::App(RdFx::SwitchAccount(name)));
+                // The switcher opens from Home's side menu: a fresh Home for the other account.
+                fx.push(Fx::Nav(NavOp::Replace(RdArg::Home)));
+            }
+            Act::Nav(op) => {
+                close(fx);
+                fx.push(Fx::Nav(op));
             }
             Act::Close => close(fx),
         }

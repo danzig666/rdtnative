@@ -1,10 +1,11 @@
 //! Settings › Reddit API: the OAuth client ID, the redirect URI and the user agent. Each field
 //! opens the on-screen keyboard; "Enter on phone" shows a QR code of a one-time page on the home
 //! network where all three can be typed or pasted (as RustCouch's "Type on phone"). The right
-//! panel explains the focused field, or shows the QR code while the phone link is open.
+//! panel explains the focused field, or shows the QR code while the phone link is open. Once the
+//! settings are saved and no one is signed in, the page offers to sign in.
 
 use super::common::{self, State};
-use crate::host::{RdArg, RdFx, RdHost, RdMsg, Typing};
+use crate::host::{Confirm, MenuKind, RdArg, RdFx, RdHost, RdMsg, Typing};
 use crate::store::Field;
 use crate::ui::{self, Row, VList};
 use plx_machine::machine::{Cx, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Machine, NavOp, ScreenEvent};
@@ -26,6 +27,8 @@ const QR_FRAME: Rect = Rect::new(1290.0, 320.0, 400.0, 400.0);
 pub struct ApiScreen {
     list: VList,
     qr: Option<(String, QrCode)>,
+    /// `Store::api_saves` already answered: a newer save (keyboard, phone or Save) offers sign-in.
+    saves: u32,
     state: State,
 }
 
@@ -34,6 +37,7 @@ impl ApiScreen {
         ApiScreen {
             list: VList { entry, group: G_ROWS, base: BASE, rect: Rect::new(100.0, 200.0, 1000.0, ROWS as f32 * 96.0), row_h: 96.0, text_size: 30 },
             qr: None,
+            saves: 0,
             state: State("api".into()),
         }
     }
@@ -65,11 +69,26 @@ impl Machine<RdHost> for ApiScreen {
         if let Some(a) = common::press_commit_as_activate(ev, cx, |_| true) {
             return self.step(&a, cx, fx);
         }
+        let st = cx.views.store;
         match ev {
+            ScreenEvent::Mount => {
+                self.saves = st.api_saves;
+                Handled::Yes
+            }
+            // Saved (the keyboard and the phone save as well): offer to sign in, once the page
+            // is on top again.
+            ScreenEvent::Tick(_) if st.api_saves != self.saves && cx.focus.current.is_some_and(|k| k.entry == self.list.entry) => {
+                self.saves = st.api_saves;
+                if !st.signed_in() {
+                    fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::SignInPrompt(true)))));
+                }
+                Handled::Yes
+            }
             ScreenEvent::Activate(e) => {
                 match self.list.index(*e, ROWS) {
                     Some(i) if i < Field::ALL.len() => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::Api(Field::ALL[i]))))),
-                    Some(ROW_PHONE) => fx.push(Fx::App(if cx.views.store.phone.is_some() { RdFx::PhoneStop } else { RdFx::PhoneStart })),
+                    Some(ROW_PHONE) => fx.push(Fx::App(if st.phone.is_some() { RdFx::PhoneStop } else { RdFx::PhoneStart })),
+                    Some(ROW_SAVE) if crate::accounts::new_client_signs_out(st) => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Confirm(Confirm::NewClientId))))),
                     Some(ROW_SAVE) => fx.push(Fx::App(RdFx::SaveApi)),
                     _ => {}
                 }

@@ -24,7 +24,8 @@ pub fn data_file(name: &str) -> PathBuf {
     DATA_DIR.get().cloned().unwrap_or_else(std::env::temp_dir).join(name)
 }
 
-/// The account file: client ID, redirect URI, user agent, device ID and tokens.
+/// The account file: client ID, redirect URI, user agent, device ID and the tokens of the account
+/// in use (every signed-in account is also listed in `accounts.json`).
 fn account_path() -> PathBuf {
     data_file("reddit.json")
 }
@@ -49,6 +50,11 @@ pub(crate) fn write_atomic(p: &std::path::Path, bytes: &[u8], private: bool) -> 
 /// Writes atomically and readable only by the app (it holds tokens).
 pub fn store_saved(s: &Saved) -> std::io::Result<()> {
     write_atomic(&account_path(), &serde_json::to_vec_pretty(s)?, true)
+}
+
+/// Writes a file that holds tokens: atomically, readable only by the app.
+pub fn write_private(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_atomic(p, bytes, true)
 }
 
 pub fn load_prefs() -> Prefs {
@@ -305,11 +311,18 @@ pub struct Store {
     pub play: crate::player::Status,
     /// A page to open, from a background job (a resolved share link); taken by the frame loop.
     pub nav_request: Option<crate::host::RdArg>,
+    /// Every account signed in on this TV, the one in use included (`accounts.rs`).
+    pub accounts: Vec<Saved>,
+    /// Bumped by every successful save of the API settings and every successful sign-in: the
+    /// pages that started them see that it went through.
+    pub api_saves: u32,
+    pub signins: u32,
 }
 
 impl Store {
     pub fn new() -> Store {
         let saved = load_saved();
+        let accounts = crate::accounts::load(saved.as_ref());
         let prefs = load_prefs();
         prefs.apply();
         Store {
@@ -336,6 +349,9 @@ impl Store {
             gen: 0,
             play: Default::default(),
             nav_request: None,
+            accounts,
+            api_saves: 0,
+            signins: 0,
         }
     }
 

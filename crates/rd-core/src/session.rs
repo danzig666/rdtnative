@@ -7,10 +7,15 @@ use crate::ratelimit::{should_wait, Priority, RateLimit};
 use crate::{now_secs, RdError, OAUTH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 
 /// Refresh this many seconds before the access token expires.
 const EXPIRY_SKEW: u64 = 120;
+
+/// Requests in a row that a fresh token could not get through (401 twice each) before a signed-in
+/// session counts its sign-in as gone.
+const UNAUTHORIZED_LIMIT: u32 = 3;
 
 /// What is stored per account on disk (the TV keeps one per account; the spike keeps one file).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -69,6 +74,9 @@ pub struct Session {
     username: Mutex<Option<String>>,
     token: Mutex<Option<Token>>,
     rate: Mutex<Option<RateLimit>>,
+    /// Reddit no longer takes this user's sign-in (see [`Session::take_auth_lost`]).
+    auth_lost: AtomicBool,
+    unauthorized: AtomicU32,
 }
 
 /// A JSON response with the rate-limit snapshot that came with it.
@@ -91,6 +99,8 @@ impl Session {
             username: Mutex::new(None),
             token: Mutex::new(None),
             rate: Mutex::new(None),
+            auth_lost: AtomicBool::new(false),
+            unauthorized: AtomicU32::new(0),
         }
     }
 
@@ -157,6 +167,30 @@ impl Session {
         *self.rate.lock().unwrap()
     }
 
+    /// Whether Reddit stopped taking the signed-in user's sign-in (the refresh token was revoked
+    /// or expired, or fresh tokens keep being refused), once: the app signs out and asks again.
+    pub fn take_auth_lost(&self) -> bool {
+        self.auth_lost.swap(false, Ordering::Relaxed)
+    }
+
+    /// Notes how a request went for [`Self::take_auth_lost`]; app-only sessions never lose one.
+    fn note_auth<T>(&self, r: &Result<T, RdError>) {
+        if !self.is_signed_in() {
+            return;
+        }
+        match r {
+            Ok(_) => self.unauthorized.store(0, Ordering::Relaxed),
+            Err(RdError::InvalidGrant) => self.auth_lost.store(true, Ordering::Relaxed),
+            Err(RdError::Unauthorized) => {
+                if self.unauthorized.fetch_add(1, Ordering::Relaxed) + 1 >= UNAUTHORIZED_LIMIT {
+                    self.unauthorized.store(0, Ordering::Relaxed);
+                    self.auth_lost.store(true, Ordering::Relaxed);
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
     /// A valid access token, minting or refreshing one when needed.
     pub fn token(&self) -> Result<Token, RdError> {
         if let Some(t) = self.token.lock().unwrap().clone() {
@@ -200,6 +234,17 @@ impl Session {
     }
 
     fn send(
+        &self,
+        prio: Priority,
+        what: &str,
+        build: impl Fn(&str) -> reqwest::blocking::RequestBuilder,
+    ) -> Result<Reply, RdError> {
+        let r = self.send_retrying(prio, what, build);
+        self.note_auth(&r);
+        r
+    }
+
+    fn send_retrying(
         &self,
         prio: Priority,
         what: &str,
@@ -313,5 +358,30 @@ mod tests {
         let s = Session::from_saved(http_client(), &custom, "linux").unwrap();
         assert_eq!(s.user_agent(), "webos:x.y:v9 (by /u/me)");
         assert_eq!(s.to_saved(&custom.device_id), custom);
+    }
+
+    #[test]
+    fn a_refused_sign_in_is_noticed_once() {
+        let user = Saved { client_id: "abcdefghijklmn".into(), device_id: "d".repeat(30), refresh_token: Some("RT".into()), ..Saved::default() };
+        let s = Session::from_saved(http_client(), &user, "linux").unwrap();
+        let unauthorized: Result<(), RdError> = Err(RdError::Unauthorized);
+        // A revoked refresh token: at once.
+        s.note_auth(&Err::<(), _>(RdError::InvalidGrant));
+        assert!(s.take_auth_lost());
+        assert!(!s.take_auth_lost(), "reported once");
+        // Refused tokens: only when it keeps happening; a success in between starts over.
+        s.note_auth(&unauthorized);
+        s.note_auth(&unauthorized);
+        s.note_auth(&Ok(()));
+        s.note_auth(&unauthorized);
+        s.note_auth(&Err::<(), _>(RdError::NotFound("/x".into())));
+        assert!(!s.take_auth_lost());
+        s.note_auth(&unauthorized);
+        s.note_auth(&unauthorized);
+        assert!(s.take_auth_lost());
+        // Browsing without an account has no sign-in to lose.
+        let anon = Session::from_saved(http_client(), &Saved { refresh_token: None, ..user }, "linux").unwrap();
+        anon.note_auth(&Err::<(), _>(RdError::InvalidGrant));
+        assert!(!anon.take_auth_lost());
     }
 }

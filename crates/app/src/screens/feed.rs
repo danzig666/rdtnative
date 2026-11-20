@@ -59,6 +59,8 @@ enum NavItem {
     Inbox,
     Settings,
     Account,
+    /// Switch to another account on this TV (when there is more than one).
+    SwitchAccount,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -403,6 +405,9 @@ impl FeedScreen {
         }
         v.push(NavItem::Settings);
         v.push(NavItem::Account);
+        if st.accounts.len() > 1 {
+            v.push(NavItem::SwitchAccount);
+        }
         v
     }
 
@@ -428,6 +433,7 @@ impl FeedScreen {
                 Some(u) => Row::new(format!("u/{u}")).icon(Icon::User).raw(),
                 None => Row::new("Sign in").icon(Icon::User),
             },
+            NavItem::SwitchAccount => Row::new("Switch account").icon(Icon::Users),
         }
     }
 
@@ -588,7 +594,8 @@ impl FeedScreen {
             NavItem::Subs => fx.push(Fx::Nav(NavOp::Push(RdArg::Subs))),
             NavItem::Inbox => fx.push(Fx::Nav(NavOp::Push(RdArg::Inbox))),
             NavItem::Settings => fx.push(Fx::Nav(NavOp::Push(RdArg::Settings))),
-            NavItem::Account => fx.push(Fx::Nav(NavOp::Push(if cx.views.store.signed_in() { RdArg::Settings } else { RdArg::SignIn }))),
+            NavItem::Account => fx.push(Fx::Nav(NavOp::Push(if cx.views.store.accounts.is_empty() { RdArg::SignIn } else { RdArg::Accounts }))),
+            NavItem::SwitchAccount => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Accounts)))),
         }
     }
 
@@ -658,6 +665,9 @@ impl Machine<RdHost> for FeedScreen {
         if let Some(c) = common::color_key(ev) {
             if cx.views.store.prefs.on("color_keys") {
                 if let Some(it) = self.focused_post(cx) {
+                    if common::sign_in_first(c, cx, fx) {
+                        return Handled::Yes;
+                    }
                     let name = it.post.name.clone();
                     match c {
                         Color::Green => fx.push(Fx::App(RdFx::Vote { fullname: name, dir: if it.post.likes == Some(true) { 0 } else { 1 } })),

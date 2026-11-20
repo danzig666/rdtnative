@@ -62,6 +62,25 @@ pub enum MenuKind {
     Links(String, String),
     /// A newer release was found: install it now?
     Update,
+    /// "Are you sure?" before something that cannot be taken back; Cancel comes first.
+    Confirm(Confirm),
+    /// Offer to sign in: right after the API settings were saved (`true`, on their page), or for
+    /// a vote or save while signed out.
+    SignInPrompt(bool),
+    /// Switch to another account on this TV (from the side menu).
+    Accounts,
+}
+
+/// What a [`MenuKind::Confirm`] asks about.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Confirm {
+    /// Sign out of the account in use (it is forgotten on this TV).
+    SignOut,
+    /// Remove this account (not the one in use) from the TV.
+    Remove(String),
+    ClearRead,
+    /// Save API settings with a new client ID: every account is signed out.
+    NewClientId,
 }
 
 /// What a navigation entry shows.
@@ -94,6 +113,10 @@ pub enum RdArg {
     Play { url: String, title: String, looping: bool },
     /// A post opened for its comments: focus starts on the first comment.
     PostComments { id: String },
+    /// Settings › Accounts: the accounts on this TV.
+    Accounts,
+    /// One inbox message in full (by fullname).
+    Message(String),
 }
 
 impl ScreenArg for RdArg {
@@ -119,6 +142,8 @@ impl ScreenArg for RdArg {
             RdArg::Menu(_) => 15,
             RdArg::Play { .. } => 16,
             RdArg::PostComments { .. } => 30,
+            RdArg::Accounts => 45,
+            RdArg::Message(_) => 46,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -187,6 +212,10 @@ pub enum RdFx {
     /// Sign in with the TV's own browser, opened on Reddit's approve page.
     SignInOnTv,
     SignOut,
+    /// Use another account on this TV ("" browses without an account).
+    SwitchAccount(String),
+    /// Forget an account on this TV (signs it out with Reddit too).
+    RemoveAccount(String),
     LoadInbox,
     ClearReadHistory,
     Play { url: String, looping: bool },
@@ -270,6 +299,8 @@ impl Mounter<RdHost> for Mount {
             RdArg::Menu(k) => Box::new(menu::MenuScreen::new(entry, k.clone(), cx)),
             RdArg::Play { url, title, looping } => Box::new(player::PlayerScreen::new(entry, url.clone(), title.clone(), *looping)),
             RdArg::PostComments { id } => Box::new(post::PostScreen::new(entry, id.clone(), None).to_comments()),
+            RdArg::Accounts => Box::new(settings::SettingsScreen::accounts(entry)),
+            RdArg::Message(name) => Box::new(subs::MessageScreen::new(entry, name.clone())),
         }
     }
 }
@@ -287,11 +318,14 @@ enum Work {
     /// An action went through, or failed with this message.
     Action { undo: Option<Box<dyn FnOnce(&mut Store) + Send>>, error: Option<String>, ok_toast: Option<String> },
     Replied { post: String, result: Result<Option<Node>, String> },
-    Me { name: Option<String>, unread: i64 },
-    Inbox { result: Result<Vec<Message>, String> },
+    /// `/api/v1/me`; `asked` is the unread-count generation it was asked in (`None`: it failed).
+    Me { epoch: u64, asked: u32, name: Option<String>, unread: Option<i64> },
+    Inbox { epoch: u64, result: Result<Vec<Message>, String> },
+    /// One message arrived; from whom, when known.
+    NewMessage { epoch: u64, from: Option<String> },
     SignedIn { result: Result<Saved, String> },
     /// The session's token changed: keep it.
-    Saved(Saved),
+    Saved { epoch: u64, saved: Saved },
     /// Open this page (a share link was resolved).
     Navigate(Option<RdArg>),
 }
@@ -327,6 +361,15 @@ pub struct AppRig {
     seen_dirty: bool,
     seen_saved_ms: u32,
     player: crate::player::Player,
+    /// The app is on screen (the frame loop sets it): news is a toast, else the TV's notification.
+    pub foreground: bool,
+    /// The unread count: when it was last asked, whether an answer is out, whether the count is
+    /// known yet (only growth after that is news), and its generation (bumped when messages are
+    /// marked read here, so an answer asked before that is not taken).
+    me_at: u32,
+    me_busy: bool,
+    unread_known: bool,
+    unread_gen: u32,
 }
 
 impl AppRig {
@@ -354,6 +397,11 @@ impl AppRig {
             seen_dirty: false,
             seen_saved_ms: 0,
             player: crate::player::Player::new(),
+            foreground: true,
+            me_at: 0,
+            me_busy: false,
+            unread_known: false,
+            unread_gen: 0,
         };
         rig.apply_prefs();
         if rig.store.signed_in() {
@@ -460,6 +508,12 @@ impl AppRig {
             self.seen_dirty = false;
             self.seen_saved_ms = now_ms;
             crate::seen::save(&self.store.seen);
+        }
+        if self.session.as_ref().is_some_and(|s| s.take_auth_lost()) {
+            self.sign_in_lost();
+        }
+        if self.store.signed_in() && !self.me_busy && now_ms.wrapping_sub(self.me_at) >= crate::inbox::POLL_MS {
+            self.refresh_me();
         }
         let mut out = std::mem::take(&mut self.pending);
         let done = std::mem::take(&mut *self.done.lock().unwrap());
@@ -665,8 +719,19 @@ impl AppRig {
                 }
                 Err(e) => self.store.toast(format!("Couldn't send the reply: {e}"), now),
             },
-            Work::Me { name, unread } => {
-                self.store.unread = unread;
+            Work::Me { epoch, asked, name, unread } => {
+                self.me_busy = false;
+                if epoch != self.epoch {
+                    return;
+                }
+                if let Some(n) = unread.filter(|_| asked == self.unread_gen) {
+                    let grew = crate::inbox::grew(self.unread_known.then_some(self.store.unread), n);
+                    self.store.unread = n;
+                    self.unread_known = true;
+                    if let Some(more) = grew {
+                        self.announce(more);
+                    }
+                }
                 if let (Some(n), Some(s)) = (name, self.store.saved.as_mut()) {
                     if s.username.as_deref() != Some(&n) {
                         s.username = Some(n);
@@ -674,15 +739,33 @@ impl AppRig {
                     }
                 }
             }
-            Work::Inbox { result } => {
+            Work::Inbox { epoch, result } => {
                 self.store.inbox.loading = false;
+                if epoch != self.epoch {
+                    return;
+                }
                 self.store.inbox.gen = self.store.inbox.gen.wrapping_add(1);
                 match result {
                     Ok(m) => {
+                        // What is shown is read now (the bars stay for this visit).
+                        let unread: Vec<String> = m.iter().filter(|m| m.unread).map(|m| m.name.clone()).collect();
                         self.store.messages = m;
                         self.store.inbox.error = None;
+                        if !unread.is_empty() {
+                            // Counts asked before this are stale, and the next one only sets the
+                            // mark (a mark that did not go through is no news).
+                            self.store.unread = (self.store.unread - unread.len() as i64).max(0);
+                            self.unread_gen = self.unread_gen.wrapping_add(1);
+                            self.unread_known = false;
+                            self.action(MachineId::Nav, listing::mark_read(&unread), None, None);
+                        }
                     }
                     Err(e) => self.store.inbox.error = Some(e),
+                }
+            }
+            Work::NewMessage { epoch, from } => {
+                if epoch == self.epoch {
+                    self.tell(crate::inbox::alert(1, from.as_deref()));
                 }
             }
             Work::SignedIn { result } => {
@@ -696,11 +779,17 @@ impl AppRig {
                             self.store.toast(format!("Couldn't save the account: {e}"), now);
                             return;
                         }
+                        // An account added while another was in use: both stay on the TV.
+                        if let Some(cur) = self.store.saved.take().filter(|c| c.refresh_token.is_some()) {
+                            crate::accounts::upsert(&mut self.store.accounts, cur);
+                        }
+                        crate::accounts::upsert(&mut self.store.accounts, saved.clone());
+                        crate::accounts::store(&self.store.accounts);
                         self.store.saved = Some(saved);
+                        self.store.signins = self.store.signins.wrapping_add(1);
                         self.signin_stop();
-                        self.reset_session();
+                        self.account_changed();
                         self.store.toast(format!("Signed in as u/{name}"), now);
-                        self.refresh_me();
                     }
                     Err(e) => {
                         // A code works once: start a fresh sign-in (new page and address) and
@@ -718,8 +807,10 @@ impl AppRig {
                 Some(a) => self.store.nav_request = Some(a),
                 None => self.store.toast("Couldn't open that share link", now),
             },
-            Work::Saved(s) => {
-                if self.store.saved.as_ref().is_some_and(|old| old.client_id == s.client_id && old.access_token != s.access_token) {
+            Work::Saved { epoch, saved: s } => {
+                // Only the same account's newer token: a late one must not undo a sign-out or a switch.
+                let same = |old: &Saved| old.client_id == s.client_id && old.refresh_token == s.refresh_token;
+                if epoch == self.epoch && self.store.saved.as_ref().is_some_and(|old| same(old) && old.access_token != s.access_token) {
                     let _ = store::store_saved(&s);
                     self.store.saved = Some(s);
                 }
@@ -736,8 +827,13 @@ impl AppRig {
                 self.store.draft.set(f, get(f.key()));
             }
             self.close_phone();
-            // The page validated with the same rules, so this saves.
-            self.save_api(true);
+            if crate::accounts::new_client_signs_out(&self.store) {
+                // Not without asking: the page's Save asks first.
+                self.store.toast("A new client ID signs out every account: choose Save and connect to go ahead", self.now_ms);
+            } else {
+                // The page validated with the same rules, so this saves.
+                self.save_api(true);
+            }
             self.notify_phone_owner();
             return;
         }
@@ -812,7 +908,8 @@ impl AppRig {
             }
             Ok(cfg) => {
                 self.store.errors.clear();
-                let saved = merge(self.store.saved.as_ref(), &cfg);
+                let old = self.store.saved.clone();
+                let saved = merge(old.as_ref(), &cfg);
                 if let Err(e) = store::store_saved(&saved) {
                     crate::log(&format!("api: save failed: {e}"));
                     self.store.toast(format!("Couldn't save: {e}"), self.now_ms);
@@ -820,8 +917,22 @@ impl AppRig {
                 }
                 self.store.draft = store::Draft::from_saved(Some(&saved));
                 self.store.saved = Some(saved);
+                self.store.api_saves = self.store.api_saves.wrapping_add(1);
                 self.store.toast(if from_phone { "Received from your phone and saved" } else { "Saved" }, self.now_ms);
-                self.reset_session();
+                // Tokens are the old client ID's: every account on the TV ends with it.
+                if let Some(old) = old.filter(|o| self.store.saved.as_ref().is_some_and(|s| s.client_id != o.client_id)) {
+                    let mut gone = std::mem::take(&mut self.store.accounts);
+                    if old.refresh_token.is_some() {
+                        crate::accounts::upsert(&mut gone, old);
+                    }
+                    for a in &gone {
+                        revoke(a);
+                    }
+                    crate::accounts::store(&self.store.accounts);
+                    self.account_changed();
+                } else {
+                    self.reset_session();
+                }
                 self.notify_all();
             }
         }
@@ -863,9 +974,10 @@ impl AppRig {
     fn save_token_later(&mut self, from: MachineId) {
         let Some(s) = self.session.clone() else { return };
         let Some(device) = self.store.saved.as_ref().map(|s| s.device_id.clone()) else { return };
+        let epoch = self.epoch;
         self.spawn(from, "token", move || {
             std::thread::sleep(std::time::Duration::from_secs(4));
-            Work::Saved(s.to_saved(&device))
+            Work::Saved { epoch, saved: s.to_saved(&device) }
         });
     }
 
@@ -1123,7 +1235,7 @@ impl AppRig {
         if self.store.signed_in() {
             return false;
         }
-        self.store.toast("Sign in to vote, save, subscribe and reply (Settings \u{203a} Account)", self.now_ms);
+        self.store.toast("Sign in to vote, save, join and reply: side menu \u{203a} Sign in", self.now_ms);
         true
     }
 
@@ -1203,51 +1315,64 @@ impl AppRig {
         self.action(from, listing::save(&fullname, on), Some(undo), Some(if on { "Saved".into() } else { "Removed from saved".into() }));
     }
 
+    /// Asks for the user's name and unread count (at start, after a sign-in or switch, and every
+    /// two minutes from `drain`).
     fn refresh_me(&mut self) {
+        self.me_at = self.now_ms;
         let Some(s) = self.session() else { return };
         if !s.is_signed_in() {
             return;
         }
+        self.me_busy = true;
+        let (epoch, asked) = (self.epoch, self.unread_gen);
         self.spawn(MachineId::Nav, "me", move || match s.get("/api/v1/me", &[], Priority::Prefetch) {
-            Ok(r) => Work::Me { name: r.json["name"].as_str().map(str::to_string), unread: r.json["inbox_count"].as_i64().unwrap_or(0) },
+            Ok(r) => Work::Me { epoch, asked, name: r.json["name"].as_str().map(str::to_string), unread: r.json["inbox_count"].as_i64() },
             Err(e) => {
                 crate::log(&format!("me: {e}"));
-                Work::Me { name: None, unread: 0 }
+                Work::Me { epoch, asked, name: None, unread: None }
             }
         });
     }
 
+    /// `more` messages arrived: say so (from whom, when it is one), if the user wants to know.
+    fn announce(&mut self, more: i64) {
+        if !self.store.prefs.on("inbox_alerts") {
+            return;
+        }
+        if more > 1 {
+            self.tell(crate::inbox::alert(more, None));
+            return;
+        }
+        let Some(s) = self.session() else { return };
+        let epoch = self.epoch;
+        self.spawn(MachineId::Nav, "unread", move || {
+            let newest = s.get("/message/unread", &[("limit", "1")], Priority::Prefetch).map(|r| crate::inbox::parse_messages(&r.json));
+            if let Err(e) = &newest {
+                crate::log(&format!("unread: {e}"));
+            }
+            Work::NewMessage { epoch, from: newest.ok().and_then(|m| m.first().and_then(crate::inbox::sender)) }
+        });
+    }
+
+    /// News for the user: a toast on screen, or the TV's notification while the app is hidden.
+    fn tell(&mut self, msg: String) {
+        if self.foreground {
+            self.store.toast(msg, self.now_ms);
+        } else {
+            crate::inbox::system_toast(&msg);
+        }
+    }
+
     fn load_inbox(&mut self, from: MachineId) {
         let Some(s) = self.session() else { return };
+        if self.store.inbox.loading {
+            return;
+        }
         self.store.inbox.loading = true;
+        let epoch = self.epoch;
         self.spawn(from, "inbox", move || {
-            let result = s
-                .get("/message/inbox", &[("limit", "50")], Priority::Page)
-                .map(|r| {
-                    r.json["data"]["children"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .map(|t| {
-                                    let d = &t["data"];
-                                    let g = |k: &str| d[k].as_str().unwrap_or_default().to_string();
-                                    Message {
-                                        name: g("name"),
-                                        author: g("author"),
-                                        subject: g("subject"),
-                                        body: g("body"),
-                                        created: d["created_utc"].as_f64().unwrap_or(0.0) as i64,
-                                        unread: d["new"].as_bool().unwrap_or(false),
-                                        context: d["context"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
-                                        subreddit: d["subreddit"].as_str().map(str::to_string),
-                                    }
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                })
-                .map_err(|e| e.to_string());
-            Work::Inbox { result }
+            let result = s.get("/message/inbox", &[("limit", "50")], Priority::Page).map(|r| crate::inbox::parse_messages(&r.json)).map_err(|e| e.to_string());
+            Work::Inbox { epoch, result }
         });
     }
 
@@ -1407,24 +1532,77 @@ impl AppRig {
         });
     }
 
-    fn sign_out(&mut self) {
-        let Some(saved) = self.store.saved.as_mut() else { return };
-        let rt = saved.refresh_token.take();
-        saved.username = None;
-        saved.access_token = None;
-        saved.expires_at = 0;
-        let copy = saved.clone();
-        let _ = store::store_saved(&copy);
-        if let (Some(rt), Ok(client)) = (rt, rd_core::auth::ClientId::parse(&copy.client_id)) {
-            let ua = rd_core::ua::user_agent(rd_core::ua::host_platform(), None);
-            let _ = plx_base::task::spawn("revoke", move || {
-                let _ = rd_core::auth::revoke(&rd_core::session::http_client(), &ua, &client, &rt);
-            });
+    /// Signs out of the account in use and forgets it on this TV; browsing goes on without an
+    /// account. `tell_reddit` revokes the sign-in (not when Reddit already refused it).
+    fn sign_out(&mut self, tell_reddit: bool) {
+        let Some(saved) = self.store.saved.clone() else { return };
+        let _ = store::store_saved(&crate::accounts::signed_out(&saved));
+        if let Some(name) = &saved.username {
+            crate::accounts::remove(&mut self.store.accounts, name);
+            crate::accounts::store(&self.store.accounts);
         }
+        if tell_reddit {
+            revoke(&saved);
+        }
+        self.store.saved = Some(crate::accounts::signed_out(&saved));
+        self.account_changed();
+    }
+
+    /// Reddit no longer takes the sign-in (revoked, expired, or every fresh token refused): sign
+    /// out here without revoking, say so and open Sign in.
+    fn sign_in_lost(&mut self) {
+        crate::log("account: Reddit refused the sign-in; signing out");
+        self.sign_out(false);
+        self.store.toast("Your Reddit sign-in expired. Sign in again.", self.now_ms);
+        self.store.nav_request = Some(RdArg::SignIn);
+    }
+
+    /// Uses account `name` ("" browses without an account); the one in use stays on the TV.
+    fn switch_account(&mut self, name: &str) {
+        let Some(cur) = self.store.saved.clone() else { return };
+        if self.store.username().map_or(name.is_empty(), |u| u.eq_ignore_ascii_case(name)) {
+            return;
+        }
+        let Some(next) = crate::accounts::switch_to(&self.store.accounts, &cur, name) else { return };
+        if let Err(e) = store::store_saved(&next) {
+            self.store.toast(format!("Couldn't save the account: {e}"), self.now_ms);
+            return;
+        }
+        if cur.refresh_token.is_some() {
+            crate::accounts::upsert(&mut self.store.accounts, cur);
+            crate::accounts::store(&self.store.accounts);
+        }
+        self.store.saved = Some(next);
+        // Votes and saves on the posts are the previous account's.
+        self.store.posts.clear();
+        self.account_changed();
+        let msg = if name.is_empty() { crate::i18n::tr("Browsing without an account").to_string() } else { crate::i18n::tr("Switched to u/{}").replace("{}", name) };
+        self.store.toast(msg, self.now_ms);
+    }
+
+    /// Forgets account `name` on this TV and with Reddit (the one in use: a sign-out).
+    fn remove_account(&mut self, name: &str) {
+        if crate::accounts::in_use(&self.store, name) {
+            self.sign_out(true);
+            self.store.toast("Signed out", self.now_ms);
+            return;
+        }
+        if let Some(a) = crate::accounts::remove(&mut self.store.accounts, name) {
+            crate::accounts::store(&self.store.accounts);
+            revoke(&a);
+            self.store.toast(crate::i18n::tr("Removed u/{}").replace("{}", name), self.now_ms);
+        }
+    }
+
+    /// The account in use changed (signed in, out or switched): the previous one's inbox and
+    /// cached pages go, and the new one's unread count is asked.
+    fn account_changed(&mut self) {
         self.store.unread = 0;
         self.store.messages.clear();
+        self.store.inbox = Default::default();
+        self.unread_known = false;
         self.reset_session();
-        self.store.toast("Signed out", self.now_ms);
+        self.refresh_me();
     }
 
     fn typed(&mut self, from: MachineId, t: Typing, text: String) {
@@ -1553,6 +1731,17 @@ fn signin_form(authorize_url: &str) -> rd_phone::Form {
     ];
     form.done = ("Sent to the TV.".into(), "The TV is signing in now; it says when it is done. You can close this page.".into());
     form
+}
+
+/// Tells Reddit to forget an account's sign-in, in the background (best effort).
+fn revoke(a: &Saved) {
+    let (Some(rt), Ok(client)) = (a.refresh_token.clone(), rd_core::auth::ClientId::parse(&a.client_id)) else { return };
+    let ua = rd_core::ua::user_agent(rd_core::ua::host_platform(), None);
+    let _ = plx_base::task::spawn("revoke", move || {
+        if let Err(e) = rd_core::auth::revoke(&rd_core::session::http_client(), &ua, &client, &rt) {
+            crate::log(&format!("revoke: {e}"));
+        }
+    });
 }
 
 /// Checks a sign-in page submission: a callback address or code, from this sign-in.
@@ -1753,6 +1942,11 @@ impl Rig<RdHost> for AppRig {
             RdFx::SetField(f, v) => {
                 self.store.draft.set(f, v);
                 self.store.errors.retain(|e| e.field != f.key());
+                // First run: the client ID typed with the remote is all it takes (the other two
+                // have defaults), so it is saved without looking for "Save and connect".
+                if f == Field::ClientId && !self.store.configured() && !self.store.draft.client_id.trim().is_empty() {
+                    self.save_api(false);
+                }
             }
             RdFx::SaveApi => self.save_api(false),
             RdFx::PhoneStart => {
@@ -1854,7 +2048,12 @@ impl Rig<RdHost> for AppRig {
             }
             RdFx::SignInStop => self.signin_stop(),
             RdFx::SignInOnTv => self.signin_on_tv(from),
-            RdFx::SignOut => self.sign_out(),
+            RdFx::SignOut => {
+                self.sign_out(true);
+                self.store.toast("Signed out", now);
+            }
+            RdFx::SwitchAccount(name) => self.switch_account(&name),
+            RdFx::RemoveAccount(name) => self.remove_account(&name),
             RdFx::LoadInbox => self.load_inbox(from),
             RdFx::Play { url, looping } => {
                 self.player.start(url, looping);

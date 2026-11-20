@@ -1,10 +1,10 @@
 //! Pieces several screens share: buttons, badges, the post meta line, the toast, the clock,
 //! colour keys and BACK, and empty or error states.
 
-use crate::host::RdHost;
+use crate::host::{MenuKind, RdArg, RdHost};
 use crate::store::PostItem;
 use crate::ui::{self, icon::Kind as Icon};
-use plx_machine::machine::{Canon, Cx, Edge, InputEvent, InputKind, Key, LogicalState, ScreenEvent};
+use plx_machine::machine::{Canon, Cx, Edge, Effects, Fx, InputEvent, InputKind, Key, LogicalState, NavOp, ScreenEvent};
 use plx_ui::{Painter, Rect};
 
 /// OK on a `Control` element (`VList` rows, the keyboard) arms a press in the dispatcher, and its
@@ -54,6 +54,16 @@ pub fn color_key(ev: &ScreenEvent<RdHost>) -> Option<Color> {
         0x4000_003D => Some(Color::Blue),
         _ => None,
     })
+}
+
+/// Signed out, the colour buttons that vote and save (all but Blue) offer to sign in instead.
+/// Returns whether it did.
+pub fn sign_in_first(c: Color, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) -> bool {
+    if c == Color::Blue || cx.views.store.signed_in() {
+        return false;
+    }
+    fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::SignInPrompt(false)))));
+    true
 }
 
 /// A smooth wheel step (the pointer edge glide): rows, > 0 toward the top.
