@@ -60,6 +60,8 @@ enum Bar {
     User,
     Links,
     Refresh,
+    /// Back to the start page.
+    Home,
 }
 
 /// The post column's items.
@@ -174,7 +176,8 @@ fn live_h() -> f32 {
 /// The comment column: under the Live header while it shows.
 fn comments_rect(live: bool) -> Rect {
     let top = top_h() + if live { live_h() } else { 0.0 };
-    Rect::new(split_x() + 20.0, top, 1920.0 - split_x() - 20.0 - 60.0, 1080.0 - top)
+    // The key hints' band is under the comments.
+    Rect::new(split_x() + 20.0, top, 1920.0 - split_x() - 20.0 - 60.0, 1080.0 - top - common::hint_band())
 }
 
 /// The row after `at` (before it when not `forward`) whose flag is set, round the ends; from the
@@ -233,7 +236,9 @@ fn new_comment_key(ev: &ScreenEvent<RdHost>) -> Option<bool> {
 impl PostScreen {
     pub fn new(entry: EntryId, id: String, comment: Option<String>) -> Self {
         let top = top_h();
-        let mut left = Flow::new(entry, G_POST, POST_BASE, Rect::new(60.0, top, split_x() - 60.0 - 30.0, 1080.0 - top));
+        // The key hints' band is under the columns.
+        let h = 1080.0 - top - common::hint_band();
+        let mut left = Flow::new(entry, G_POST, POST_BASE, Rect::new(60.0, top, split_x() - 60.0 - 30.0, h));
         left.row_gap = 20.0;
         left.pad_top = 6.0;
         left.margin = 30.0;
@@ -315,7 +320,7 @@ impl PostScreen {
         if self.new_count() > 0 {
             v.push(Bar::New);
         }
-        v.extend([Bar::Sub, Bar::User, Bar::Links, Bar::Refresh]);
+        v.extend([Bar::Sub, Bar::User, Bar::Links, Bar::Refresh, Bar::Home]);
         v
     }
 
@@ -505,6 +510,7 @@ impl PostScreen {
             Bar::User => (it.map_or(String::new(), |i| format!("u/{}", i.post.author)), Icon::User, false),
             Bar::Links => ("Links".into(), Icon::Leave, false),
             Bar::Refresh => (String::new(), Icon::Repeat, false),
+            Bar::Home => (String::new(), Icon::Home, false),
         }
     }
 
@@ -523,6 +529,8 @@ impl PostScreen {
             Bar::New => self.jump_new(true, cx, fx),
             Bar::Links => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Links(self.id.clone(), String::new()))))),
             Bar::Refresh => fx.push(Fx::App(RdFx::LoadThread { id: self.key.clone(), sort: None, reload: true })),
+            // The start page as it was left, under the pages opened since.
+            Bar::Home => fx.push(Fx::Nav(NavOp::PopToArg(RdArg::Home))),
             Bar::Up | Bar::Down | Bar::Save | Bar::Reply | Bar::Sub | Bar::User => {
                 let Some(it) = self.item(cx) else { return };
                 let name = it.post.name.clone();
@@ -1240,7 +1248,7 @@ impl PostScreen {
                 }
                 if let Media::Gallery(g) = &it.media {
                     if g.len() > 1 {
-                        common::badge(p, m, inner.x + 14.0, inner.y + 14.0, &format!("1 / {}", g.len()), common::BADGE_BG, ui::WHITE, ui::sz(18));
+                        common::badge(p, m, inner.x + 14.0, inner.y + 14.0, &format!("1 / {}", g.len()), common::BADGE_BG, ui::WHITE, ui::sz(20));
                     }
                 }
             }
@@ -1334,7 +1342,7 @@ impl PostScreen {
                     [1.0, 1.0, 1.0, 0.9]
                 };
                 hx += ui::text_raw(p, author, hx, y, ms, author_col, ui::ALIGN_LEFT, true) + 10.0;
-                let bs = (ms as f32 * 0.82) as i32;
+                let bs = (ms as f32 * 0.9) as i32;
                 if *new {
                     hx += common::badge(p, m, hx, y + 2.0, tr("NEW"), ui::accent(), ui::WHITE, bs) + 8.0;
                 }
@@ -1474,6 +1482,11 @@ impl Screen<RdHost> for PostScreen {
         self.right.draw_more_marks(p);
         if self.live.on {
             self.draw_live(f);
+        }
+        match focus {
+            Some(e) if self.right.index(e).is_some() => common::key_hints(f.painter, f.measure, cx, 1080.0, common::COMMENT_HINTS),
+            Some(e) if self.left.index(e).is_some() => common::key_hints(f.painter, f.measure, cx, 1080.0, common::POST_HINTS),
+            _ => {}
         }
         self.draw_bar(f);
         if let Some(b) = &self.choice {

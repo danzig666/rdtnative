@@ -66,6 +66,82 @@ pub fn sign_in_first(c: Color, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>
     true
 }
 
+impl Color {
+    /// The button's own colour, for the key hints.
+    fn ink(self) -> [f32; 4] {
+        match self {
+            Color::Red => [0.93, 0.22, 0.2, 1.0],
+            Color::Green => [0.18, 0.76, 0.32, 1.0],
+            Color::Yellow => [0.98, 0.8, 0.15, 1.0],
+            Color::Blue => [0.2, 0.47, 0.98, 1.0],
+        }
+    }
+}
+
+/// One key hint: a colour button (none for a plain item such as "Hold OK: more") and what it does.
+pub type Hint = (Option<Color>, &'static str);
+
+// What the keys do on each screen, in the remote's order (red, green, yellow, blue), for the
+// footer line. Kept together so a change of a key's job is one edit here.
+pub const FEED_HINTS: &[Hint] = &[(Some(Color::Red), "Downvote"), (Some(Color::Green), "Upvote"), (Some(Color::Yellow), "Save"), (Some(Color::Blue), "Comments"), (None, "Hold OK: more")];
+pub const POST_HINTS: &[Hint] = &[(Some(Color::Red), "Downvote"), (Some(Color::Green), "Upvote"), (Some(Color::Yellow), "Save"), (Some(Color::Blue), "Comments"), (None, "Hold OK: more")];
+pub const COMMENT_HINTS: &[Hint] = &[
+    (Some(Color::Red), "Downvote"),
+    (Some(Color::Green), "Upvote"),
+    (Some(Color::Yellow), "Save post"),
+    (Some(Color::Blue), "Post \u{2194} comments"),
+    (None, "\u{2190} parent"),
+    (None, "\u{2192} next thread"),
+    (None, "Hold OK: more"),
+];
+pub const VIEWER_HINTS: &[Hint] = &[(Some(Color::Blue), "Comments"), (None, "OK zooms"), (None, "\u{2191}\u{2193} caption")];
+
+/// The key hints are on (Settings › Remote and navigation › Key hints); set from the settings.
+pub static KEY_HINTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Height of the key hints' band at the bottom of a page (0 when they are off): lists end above it.
+pub fn hint_band() -> f32 {
+    if KEY_HINTS.load(std::sync::atomic::Ordering::Relaxed) {
+        ui::ls(48.0).max(44.0)
+    } else {
+        0.0
+    }
+}
+
+/// The key hints line ending at `bottom`: coloured dots in the remote's order with what each
+/// button does, then the plain items, on a band of the page colour. Colour items are left out
+/// when the colour buttons are off.
+pub fn key_hints(p: Painter, m: &dyn plx_machine::machine::Measure, cx: &Cx<'_, RdHost>, bottom: f32, hints: &[Hint]) {
+    let h = hint_band();
+    if h <= 0.0 {
+        return;
+    }
+    let colors = cx.views.store.prefs.on("color_keys");
+    let items: Vec<(Option<Color>, &str)> = hints.iter().filter(|(c, _)| c.is_none() || colors).map(|(c, l)| (*c, crate::i18n::tr(l))).collect();
+    if items.is_empty() {
+        return;
+    }
+    let bg = ui::bg_rgb();
+    let (solid, clear) = ([bg.0, bg.1, bg.2, 0.94], [bg.0, bg.1, bg.2, 0.0]);
+    let fade = 20.0;
+    p.rect(Rect::new(0.0, bottom - h - fade, 1920.0, fade), 0.0, clear, solid, 0.0);
+    p.rect(Rect::new(0.0, bottom - h, 1920.0, h), 0.0, solid, solid, 0.0);
+    let size = ui::sz(22);
+    let dot = (size as f32 * 0.72).round();
+    let gap = size as f32 * 1.6;
+    let width = |c: &Option<Color>, l: &str| ui::text_width(m, l, size, false) + if c.is_some() { dot + 10.0 } else { 0.0 };
+    let total: f32 = items.iter().map(|(c, l)| width(c, l)).sum::<f32>() + gap * (items.len() - 1) as f32;
+    let mut x = ((1920.0 - total) / 2.0).max(40.0);
+    let ty = bottom - h + (h - size as f32 * 1.3) / 2.0;
+    for (c, l) in &items {
+        if let Some(c) = c {
+            ui::fill(p, Rect::new(x, bottom - h + (h - dot) / 2.0, dot, dot), dot / 2.0, c.ink());
+            x += dot + 10.0;
+        }
+        x += ui::text_raw(p, l, x, ty, size, ui::DIM, ui::ALIGN_LEFT, false) + gap;
+    }
+}
+
 /// A smooth wheel step (the pointer edge glide): rows, > 0 toward the top.
 pub fn wheel_dy(ev: &ScreenEvent<RdHost>) -> Option<f32> {
     match ev {
@@ -95,7 +171,7 @@ pub fn logo(p: Painter, x: f32, y: f32) {
 pub fn toast(p: Painter, m: &dyn plx_machine::machine::Measure, cx: &Cx<'_, RdHost>) {
     let Some((msg, until)) = &cx.views.store.toast else { return };
     let now = cx.views.now_ms;
-    let shown = now.wrapping_sub(until.wrapping_sub(3500)) as f32;
+    let shown = now.wrapping_sub(until.wrapping_sub(cx.views.store.toast_len)) as f32;
     let left = until.wrapping_sub(now) as f32;
     let a = ui::ease_out(shown / 220.0).min(ui::ease_out(left / 320.0)).clamp(0.0, 1.0);
     if a < 1.0 {

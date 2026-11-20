@@ -1,18 +1,20 @@
-//! Full-screen media. Pictures fill the screen; OK zooms in (and again, further) and the arrows
-//! then pan; Left/Right step through a gallery with its counter, caption and a strip of
-//! thumbnails; Up/Down show or hide the caption. Videos, GIFs and YouTube links show their poster
-//! with a QR code to watch them on a phone (the TV's player comes later). `LinkScreen` shows any
-//! other web link as a QR code; OK opens it in the TV's browser.
+//! Full-screen media. Pictures fill the screen; OK zooms in (and again, further), the arrows
+//! then pan and BACK zooms out; Left/Right step through a gallery with its counter, caption and a
+//! strip of thumbnails; Up/Down show or hide the caption; Blue opens the post's comments. Videos,
+//! GIFs and YouTube links show their poster with a QR code to watch them on a phone, and a post
+//! with nothing the TV can show a QR code of the post. `LinkScreen` shows any other web link as a
+//! QR code; OK opens it in the TV's browser.
 
-use super::common::{self, State};
-use crate::host::{RdFx, RdHost, RdMsg};
+use super::common::{self, Color, State};
+use crate::host::{RdArg, RdFx, RdHost, RdMsg};
+use crate::i18n::tr;
 use crate::images::{self, Fit};
 use crate::store::PostItem;
 use crate::ui;
-use plx_machine::machine::{Cx, Edge, Effects, EntryId, FocusKey, GroupId, Handled, InputEvent, InputKind, Key, Machine, ScreenEvent};
+use plx_machine::machine::{Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent, InputKind, Key, Machine, NavOp, ScreenEvent};
 use plx_ui::frame::Budget;
 use plx_ui::qr::QrCode;
-use plx_ui::screen::{AxisMask, At, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Placed, RenderStrategy, Screen, Seat, Step};
+use plx_ui::screen::{AxisMask, At, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Placed, RenderStrategy, Screen, ScreenArg, Seat, Step};
 use plx_ui::{Painter, Rect};
 use rd_core::media::{Item, Media, Pic};
 use std::borrow::Cow;
@@ -67,6 +69,10 @@ pub struct ViewerScreen {
     info: bool,
     revealed: bool,
     qr: Option<(String, QrCode)>,
+    /// The page under the viewer is this post's page: Blue goes back to it instead of opening it again.
+    over_post: bool,
+    /// BACK went down to zoom out: its up edge is ours too.
+    back_taken: bool,
     state: State,
 }
 
@@ -74,7 +80,25 @@ const QR_FRAME: Rect = Rect::new(1380.0, 300.0, 400.0, 400.0);
 
 impl ViewerScreen {
     pub fn new(entry: EntryId, id: String, index: usize) -> Self {
-        ViewerScreen { entry, state: State(format!("viewer {id}")), id, index, zoom: 1.0, pan: (0.0, 0.0), info: true, revealed: false, qr: None }
+        ViewerScreen {
+            entry,
+            state: State(format!("viewer {id}")),
+            id,
+            index,
+            zoom: 1.0,
+            pan: (0.0, 0.0),
+            info: true,
+            revealed: false,
+            qr: None,
+            over_post: false,
+            back_taken: false,
+        }
+    }
+
+    /// The post's comments: back to its page, or its page in place of the viewer.
+    fn comments(&self, fx: &mut Effects<'_, RdHost>) {
+        let op = if self.over_post { NavOp::Pop } else { NavOp::Replace(RdArg::PostComments { id: self.id.clone() }) };
+        fx.push(Fx::Nav(op));
     }
 
     fn item<'a>(&self, cx: &Cx<'a, RdHost>) -> Option<&'a PostItem> {
@@ -103,6 +127,22 @@ impl Machine<RdHost> for ViewerScreen {
     type Ev = ScreenEvent<RdHost>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) -> Handled {
         let n = self.item(cx).map_or(0, |it| pages(it, cx.views.store.prefs.get("video_stream")).len());
+        if common::color_key(ev) == Some(Color::Blue) && cx.views.store.prefs.on("color_keys") {
+            self.comments(fx);
+            return Handled::Yes;
+        }
+        // BACK on a zoomed picture zooms out first; the next BACK leaves.
+        if common::back_any(ev) && (self.back_taken || self.zoom > 1.01) {
+            if common::back_down(ev) {
+                self.zoom = 1.0;
+                self.pan = (0.0, 0.0);
+                self.back_taken = true;
+                fx.invalidate(plx_machine::present::Provenance::Input);
+            } else if matches!(ev, ScreenEvent::Input(InputEvent { kind: InputKind::Key { edge: Edge::Up, .. }, .. })) {
+                self.back_taken = false;
+            }
+            return Handled::Yes;
+        }
         match ev {
             ScreenEvent::Mount => {
                 if self.item(cx).is_some_and(|it| matches!(it.media, Media::Imgur(_))) {
@@ -258,8 +298,12 @@ impl Screen<RdHost> for ViewerScreen {
         None
     }
     fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, RdHost>) {
+        let post_ids = [RdArg::Post { id: String::new(), comment: None }.id(), RdArg::PostComments { id: String::new() }.id()];
+        self.over_post = cx.views.beneath.is_some_and(|b| post_ids.contains(&b));
         let want = self.item(cx).and_then(|it| match pages(it, cx.views.store.prefs.get("video_stream")).get(self.index) {
             Some(Page::Clip { url, .. }) | Some(Page::Link(url, _)) => Some(url.clone()),
+            // Nothing the TV can show: the post itself, for a phone.
+            Some(Page::Nothing) => Some(format!("https://www.reddit.com{}", it.post.permalink)),
             _ => None,
         });
         match want {
@@ -353,7 +397,8 @@ impl Screen<RdHost> for ViewerScreen {
                 if cx.views.store.imgur_pending.contains(&self.id) {
                     ui::spinner(p, cx.views.now_ms, 960.0, 540.0);
                 } else {
-                    common::message(p, f.measure, Rect::new(0.0, 300.0, 1920.0, 400.0), "Nothing to show", "This post has no picture or video the TV can show.");
+                    common::message(p, f.measure, Rect::new(80.0, 300.0, 1200.0, 400.0), "Nothing to show", tr("This post has no picture or video the TV can show. Scan the code to open the post on a phone."));
+                    self.draw_qr(p);
                 }
             }
         }
@@ -397,6 +442,10 @@ impl Screen<RdHost> for ViewerScreen {
                 }
                 bottom = y - 40.0;
             }
+            if matches!(pg.get(self.index), Some(Page::Pic(..))) && !blurred {
+                common::key_hints(p, f.measure, cx, bottom, common::VIEWER_HINTS);
+                bottom -= common::hint_band();
+            }
             if let Some(c) = caption {
                 let lines = ui::wrap_lines(f.measure, &c, 1500.0, ts, false, 3);
                 let h = lines.len() as f32 * ts as f32 * 1.4 + 30.0;
@@ -416,7 +465,7 @@ impl Screen<RdHost> for ViewerScreen {
             }
         }
         if self.zoom > 1.01 {
-            common::badge(p, f.measure, 40.0, 1020.0, &format!("{:.1}\u{d7}  \u{b7}  arrows move  \u{b7}  OK zooms", self.zoom), common::BADGE_BG, ui::WHITE, ui::sz(18));
+            common::badge(p, f.measure, 40.0, 1020.0, &format!("{:.1}\u{d7}  \u{b7}  {}  \u{b7}  {}  \u{b7}  {}", self.zoom, tr("arrows move"), tr("OK zooms"), tr("BACK zooms out")), common::BADGE_BG, ui::WHITE, ui::sz(20));
         }
         for e in [PREV, CENTER, NEXT] {
             ui::stop(f, FocusKey { entry: self.entry, elem: e }, zone(e), screen);

@@ -138,16 +138,16 @@ pub const OPTS: &[Opt] = &[
     Opt {
         key: "start_page",
         label: "Start page",
-        help: "The feed shown when the app starts.",
-        values: &[("front", "Home"), ("popular", "Popular"), ("all", "All"), ("favorites", "Favourites")],
+        help: "The feed shown when the app starts. Last feed: the one you looked at last.",
+        values: &[("front", "Home"), ("popular", "Popular"), ("all", "All"), ("favorites", "Favourites"), ("last", "Last feed")],
         default: "front",
     },
     Opt {
         key: "default_sort",
         label: "Default sort",
-        help: "How feeds are sorted when opened.",
-        values: &[("hot", "Hot"), ("best", "Best"), ("new", "New"), ("top", "Top"), ("rising", "Rising")],
-        default: "hot",
+        help: "How feeds are sorted when opened. Reddit's default: Best for your Home, Hot elsewhere.",
+        values: &[("auto", "Reddit's default"), ("hot", "Hot"), ("best", "Best"), ("new", "New"), ("top", "Top"), ("rising", "Rising")],
+        default: "auto",
     },
     Opt {
         key: "default_time",
@@ -228,6 +228,7 @@ pub const OPTS: &[Opt] = &[
         values: &[("0", "Off"), ("5", "5 minutes"), ("10", "10 minutes"), ("20", "20 minutes"), ("30", "30 minutes")],
         default: "0",
     },
+    Opt { key: "key_hints", label: "Key hints", help: "A line at the bottom of the feed, a post and pictures says what the colour buttons and OK do.", values: ON_OFF, default: "on" },
 ];
 
 pub fn opt(key: &str) -> Option<&'static Opt> {
@@ -259,7 +260,7 @@ pub fn pages() -> [Page; 5] {
             icon: K::List,
             keys: &["start_page", "default_sort", "default_time", "remember_sort", "comment_sort", "collapse_depth", "collapse_mod", "live_refresh"],
         },
-        Page { title: "Remote and navigation", icon: K::Gauge, keys: &["edge_scroll", "wheel_rows", "smooth_scroll", "left_sidebar", "back_exit", "color_keys"] },
+        Page { title: "Remote and navigation", icon: K::Gauge, keys: &["edge_scroll", "wheel_rows", "smooth_scroll", "left_sidebar", "back_exit", "color_keys", "key_hints"] },
         // Settings shows the idle screen's subreddit (typed, not an option) under "idle_after".
         Page { title: "Slideshow and idle screen", icon: K::Play, keys: &["slide_secs", "slide_video", "idle_after"] },
     ]
@@ -297,6 +298,10 @@ pub struct Prefs {
     /// The subreddit the idle screen shows (`None`: [`DEFAULT_IDLE_SUB`]).
     #[serde(default)]
     pub idle_sub: Option<String>,
+    /// The feed the start page showed last ("front", "popular", "all", "favorites", "saved",
+    /// "mine" or "r/<name>"), for the start page "Last feed".
+    #[serde(default)]
+    pub last_feed: Option<String>,
 }
 
 impl Prefs {

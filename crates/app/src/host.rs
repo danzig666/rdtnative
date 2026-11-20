@@ -3,7 +3,7 @@
 //! preparation). Same shape as ytnative's `host.rs`, with Reddit's state.
 
 use crate::screens;
-use crate::store::{self, FeedKey, FeedState, Field, Incoming, Message, PhoneView, PostItem, SignInView, Store, SubAbout, ThreadState, TypePhoneView};
+use crate::store::{self, FeedKey, FeedState, Field, HiddenPost, Incoming, Message, PhoneView, PostItem, SignInView, Store, SubAbout, ThreadState, TypePhoneView};
 use plx_machine::machine::{
     Addr, Canon, Chrome, Cx, Effects, EntryId, Handled, Host, InputOwner, InstanceId, LogicalState, MachineId, RequestId, ScreenId,
     TimerId,
@@ -263,7 +263,14 @@ pub enum RdFx {
     OpenBrowser(String),
     /// Open a reddit.com share link (resolved in the background, then opened).
     OpenShare(String),
+    /// A toast that stays up this many ms.
+    ToastFor(String, u32),
+    /// Put the post hidden last back (Yellow, while its toast offers it).
+    UndoHide,
 }
+
+/// How long Yellow can undo a hide.
+const HIDE_UNDO_MS: u32 = 5000;
 
 pub enum RdMsg {
     /// The store changed (a page arrived, the phone sent the settings).
@@ -274,6 +281,8 @@ pub enum RdMsg {
 pub struct Views<'a> {
     pub store: &'a Store,
     pub now_ms: u32,
+    /// The kind of page under this one (set for a page's prepare and draw; `None` at the root).
+    pub beneath: Option<ScreenId>,
 }
 
 #[derive(Default)]
@@ -291,14 +300,32 @@ impl Host for RdHost {
     type Views<'a> = Views<'a>;
     type Init = Init;
     type Memory = ();
+    fn views_over<'a>(views: Self::Views<'a>, beneath: Option<ScreenId>) -> Self::Views<'a> {
+        Views { beneath, ..views }
+    }
 }
 
-struct Mount;
+#[derive(Default)]
+struct Mount {
+    /// The posts mounted pages show (a post, its pictures, its menus): kept when the store
+    /// drops posts no feed lists.
+    open: Vec<(InstanceId, String)>,
+}
+
+/// The post a page shows, if any.
+fn post_of(arg: &RdArg) -> Option<&str> {
+    match arg {
+        RdArg::Post { id, .. } | RdArg::PostComments { id } | RdArg::Viewer { id, .. } => Some(id),
+        // Comment menus carry a thread key ("post" or "post/comment").
+        RdArg::Menu(MenuKind::Post(id) | MenuKind::Comment(id, _) | MenuKind::Links(id, _)) => Some(store::split_thread_key(id).0),
+        _ => None,
+    }
+}
 
 impl Mounter<RdHost> for Mount {
     fn mount(
         &mut self,
-        _id: InstanceId,
+        inst: InstanceId,
         arg: &RdArg,
         _ret: &ReturnState<u32, ()>,
         cx: &Cx<'_, RdHost>,
@@ -308,6 +335,9 @@ impl Mounter<RdHost> for Mount {
             InputOwner::Entry(e) => e,
             _ => EntryId(0),
         };
+        if let Some(id) = post_of(arg) {
+            self.open.push((inst, id.to_string()));
+        }
         use screens::*;
         match arg {
             RdArg::Home => Box::new(feed::FeedScreen::home(entry, cx)),
@@ -348,7 +378,7 @@ impl Mounter<RdHost> for Mount {
 
 /// Results workers post back to the main thread.
 enum Work {
-    Feed { epoch: u64, key: FeedKey, more: bool, result: Result<(Vec<Post>, Option<String>), String> },
+    Feed { epoch: u64, key: FeedKey, more: bool, result: Result<(Vec<Post>, Option<String>), rd_core::RdError> },
     /// A thread (by key) arrived: a preview's `partial` one, or a whole one to `merge` over the
     /// copy on screen.
     Thread { epoch: u64, id: String, sort: CommentSort, partial: bool, merge: bool, result: Result<(Post, Vec<Node>), String> },
@@ -422,7 +452,7 @@ pub struct AppRig {
 impl AppRig {
     pub fn new() -> Self {
         let mut rig = AppRig {
-            mounter: Mount,
+            mounter: Mount::default(),
             store: Store::new(),
             now_ms: 0,
             measure: plx_gfx::text::TtfMeasure,
@@ -472,6 +502,37 @@ impl AppRig {
             std::sync::atomic::Ordering::Relaxed,
         );
         crate::WHEEL_ROWS.store(p.num("wheel_rows").clamp(1, 3) as u8, std::sync::atomic::Ordering::Relaxed);
+        screens::common::KEY_HINTS.store(p.on("key_hints"), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The app came back from the background: the unread count is fetched again, and screens
+    /// see `resume_gen` move and refresh what went stale.
+    pub fn on_foreground(&mut self) {
+        self.store.resume_gen = self.store.resume_gen.wrapping_add(1);
+        self.refresh_me();
+        self.store.bump();
+        plx_machine::present::wake_from_worker();
+    }
+
+    /// Writes what is kept on a timer now (the read posts): the app is leaving or may be closed.
+    pub fn flush(&mut self) {
+        if self.read_dirty {
+            self.read_dirty = false;
+            store::store_read(&self.store.read);
+        }
+    }
+
+    /// Pages the dispatcher unmounted: their posts may be dropped from the store again.
+    pub fn unmounted(&mut self, gone: &[InstanceId]) {
+        self.mounter.open.retain(|(i, _)| !gone.contains(i));
+    }
+
+    /// Drops posts and threads nothing shows once the store is large.
+    fn evict(&mut self) {
+        if self.store.posts.len() > store::POSTS_MAX {
+            let open: HashSet<String> = self.mounter.open.iter().map(|(_, id)| id.clone()).collect();
+            self.store.evict(&open);
+        }
     }
 
     fn next_addr(&mut self, to: MachineId) -> Addr {
@@ -541,6 +602,9 @@ impl AppRig {
             self.store.toast = None;
             plx_machine::present::wake_from_worker();
         }
+        if self.store.hidden.as_ref().is_some_and(|h| now_ms.wrapping_sub(h.until_ms) < u32::MAX / 2) {
+            self.store.hidden = None;
+        }
         self.poll_phone();
         self.poll_signin_phone();
         self.poll_type_phone();
@@ -602,11 +666,16 @@ impl AppRig {
                 let st = self.store.feeds.entry(key).or_default();
                 st.loading = false;
                 st.gen = st.gen.wrapping_add(1);
+                let had = !st.ids.is_empty();
+                let mut failed = None;
                 match result {
                     Ok((posts, after)) => {
                         st.error = None;
+                        st.auth_failed = false;
+                        st.retry = None;
                         if !more {
                             st.ids.clear();
+                            st.fetched_at = rd_core::now_secs();
                         }
                         // Reddit's stand-in for a withheld NSFW subreddit is not a post to show.
                         let sent = posts.len();
@@ -637,9 +706,25 @@ impl AppRig {
                             self.store.posts.insert(id, item);
                         }
                     }
-                    Err(e) => st.error = Some(e),
+                    Err(e) => {
+                        let text = crate::errors::plain(&e);
+                        st.auth_failed = matches!(e, rd_core::RdError::InvalidGrant | rd_core::RdError::Unauthorized);
+                        st.retry = match e {
+                            rd_core::RdError::RateLimited { reset_secs } => Some((reset_secs, more)),
+                            _ => None,
+                        };
+                        // With posts on screen the error is not drawn where the user looks.
+                        if had {
+                            failed = Some(format!("{}: {text}", crate::i18n::tr(if more { "Couldn't load more posts" } else { "Couldn't refresh" })));
+                        }
+                        st.error = Some(text);
+                    }
+                }
+                if let Some(t) = failed {
+                    self.store.toast(t, now);
                 }
                 self.resolve_visible_imgur();
+                self.evict();
             }
             Work::Thread { epoch, id, sort, partial, merge, result } => {
                 if epoch != self.epoch {
@@ -1168,11 +1253,7 @@ impl AppRig {
         self.spawn(from, "feed", move || {
             let (path, q) = key.feed.request(key.sort, key.time, after.as_deref(), 50);
             let q: Vec<(&str, &str)> = q.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-            let result = s
-                .get(&path, &q, Priority::Page)
-                .and_then(|r| model::parse_posts(&r.json))
-                .map(|l| (l.items, l.after))
-                .map_err(|e| e.to_string());
+            let result = s.get(&path, &q, Priority::Page).and_then(|r| model::parse_posts(&r.json)).map(|l| (l.items, l.after));
             if let Err(e) = &result {
                 crate::log(&format!("feed {path}: {e}"));
             }
@@ -1260,7 +1341,11 @@ impl AppRig {
                 .get(&path, &q, priority)
                 .and_then(|r| comments::parse_thread(&r.json))
                 .map(|t| (t.post, t.comments))
-                .map_err(|e| e.to_string());
+                .map_err(|e| {
+                    // The details go to the log; the page says it plainly.
+                    crate::log(&format!("{path}: {e}"));
+                    crate::errors::plain(&e)
+                });
             Work::Thread { epoch, id: key, sort, partial, merge, result }
         });
     }
@@ -1564,7 +1649,10 @@ impl AppRig {
         self.spawn(from, "action", move || {
             let (path, fields) = req;
             let f: Vec<(&str, &str)> = fields.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-            let error = s.post(path, &f).err().map(|e| e.to_string());
+            let error = s.post(path, &f).err().map(|e| {
+                crate::log(&format!("{path}: {e}"));
+                crate::errors::plain(&e)
+            });
             Work::Action { undo, error, ok_toast }
         });
     }
@@ -2258,7 +2346,7 @@ fn merge(old: Option<&Saved>, cfg: &ApiConfig) -> Saved {
 
 impl Rig<RdHost> for AppRig {
     fn split(&mut self) -> Split<'_, RdHost> {
-        Split { mounter: &mut self.mounter, views: Views { store: &self.store, now_ms: self.now_ms }, measure: &self.measure }
+        Split { mounter: &mut self.mounter, views: Views { store: &self.store, now_ms: self.now_ms, beneath: None }, measure: &self.measure }
     }
     fn deliver(&mut self, _to: MachineId, _msg: &RdMsg, _p: &CxParts<u32>, _fx: &mut Effects<'_, RdHost>) -> Handled {
         Handled::No
@@ -2337,14 +2425,20 @@ impl Rig<RdHost> for AppRig {
                 if self.need_sign_in() {
                     return;
                 }
-                for f in self.store.feeds.values_mut() {
-                    if let Some(i) = f.ids.iter().position(|x| *x == id) {
-                        f.ids.remove(i);
-                        f.gen = f.gen.wrapping_add(1);
-                    }
-                }
-                self.action(from, listing::hide(&format!("t3_{id}"), true), None, Some("Hidden".into()));
+                let places = self.store.hide_post(&id);
+                let (undo_id, undo_places) = (id.clone(), places.clone());
+                let undo: Box<dyn FnOnce(&mut Store) + Send> = Box::new(move |s: &mut Store| s.unhide(&undo_id, &undo_places));
+                self.action(from, listing::hide(&format!("t3_{id}"), true), Some(undo), None);
+                self.store.hidden = Some(HiddenPost { id, places, until_ms: now.wrapping_add(HIDE_UNDO_MS) });
+                self.store.toast_for("Hidden \u{b7} Yellow: undo", now, HIDE_UNDO_MS);
             }
+            RdFx::UndoHide => {
+                if let Some(h) = self.store.hidden.take() {
+                    self.store.unhide(&h.id, &h.places);
+                    self.action(from, listing::hide(&format!("t3_{}", h.id), false), None, Some("Shown again".into()));
+                }
+            }
+            RdFx::ToastFor(m, ms) => self.store.toast_for(m, now, ms),
             RdFx::Subscribe { sub, on } => {
                 if self.need_sign_in() {
                     return;
