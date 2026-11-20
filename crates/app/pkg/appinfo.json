@@ -1,6 +1,6 @@
 {
   "id": "io.github.danzig666.rdtnative",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "vendor": "danzig666",
   "type": "native",
   "main": "rdtnative",
