@@ -58,6 +58,11 @@ pub fn find<'a>(nodes: &'a [Node], name: &str) -> Option<&'a Comment> {
     None
 }
 
+/// "About r/x": the subreddit's info page.
+fn about_row(sub: &str) -> Row {
+    Row::new(crate::i18n::tr("About r/{}").replace("{}", sub)).icon(Icon::News).raw()
+}
+
 pub struct MenuScreen {
     list: VList,
     kind: MenuKind,
@@ -110,6 +115,7 @@ impl MenuScreen {
                         rows.push((Row::new("Hide").icon(Icon::ScreenOff), Act::Hide(id.clone())));
                     }
                     rows.push((Row::new(format!("Go to r/{}", p.subreddit)).icon(Icon::Subs).raw(), Act::Push(RdArg::Feed(Feed::Sub(p.subreddit.clone())))));
+                    rows.push((about_row(&p.subreddit), Act::Push(RdArg::SubInfo { sub: p.subreddit.clone(), from_feed: false })));
                     rows.push((Row::new(format!("Posts by u/{}", p.author)).icon(Icon::User).raw(), Act::Push(RdArg::Feed(Feed::User(p.author.clone(), UserTab::Submitted)))));
                     let fav = st.prefs.is_favorite(&p.subreddit);
                     rows.push((
@@ -147,6 +153,7 @@ impl MenuScreen {
                     let joined = st.about.get(&sub.to_ascii_lowercase()).is_some_and(|a| a.subscribed);
                     rows.push((Row::new(if joined { "Leave" } else { "Join" }).icon(Icon::Check), Act::Subscribe(sub.clone(), !joined)));
                 }
+                rows.push((about_row(sub), Act::Push(RdArg::SubInfo { sub: sub.clone(), from_feed: false })));
                 rows.push((Row::new(format!("Search in r/{sub}")).icon(Icon::Search).raw(), Act::Push(RdArg::Type(Typing::Search { sub: Some(sub.clone()) }))));
                 rows.push((Row::new("Hide its posts from Home, Popular and All").icon(Icon::Shield), Act::FilterSub(sub.clone())));
                 if let Some(a) = st.about.get(&sub.to_ascii_lowercase()) {
@@ -196,7 +203,7 @@ impl MenuScreen {
                     let label = if t.is_empty() || t == u { u.clone() } else { format!("{t}  \u{b7}  {}", rd_core::media::host(&u)) };
                     let act = match rd_core::listing::parse_reddit_link(&u) {
                         Some(rd_core::listing::RedditLink::Sub(s)) => Act::Push(RdArg::Feed(Feed::Sub(s))),
-                        Some(rd_core::listing::RedditLink::User(n)) => Act::Push(RdArg::Feed(Feed::User(n, UserTab::Submitted))),
+                        Some(rd_core::listing::RedditLink::User(n)) => Act::Push(RdArg::Profile(n)),
                         Some(rd_core::listing::RedditLink::Post(id, c)) => Act::Push(RdArg::Post { id, comment: c }),
                         Some(rd_core::listing::RedditLink::Share(s)) => Act::Share(s),
                         None => Act::Link(u.clone()),

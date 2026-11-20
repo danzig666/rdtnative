@@ -47,6 +47,8 @@ enum BarItem {
     Search,
     Favorite,
     Join,
+    /// The subreddit's info page.
+    About,
     Refresh,
     Menu,
 }
@@ -56,6 +58,7 @@ enum NavItem {
     Search,
     Feed(Feed),
     Subs,
+    CustomFeeds,
     Inbox,
     Settings,
     Account,
@@ -349,6 +352,7 @@ impl FeedScreen {
             if st.signed_in() {
                 v.push(BarItem::Join);
             }
+            v.push(BarItem::About);
             v.push(BarItem::Menu);
         }
         v.push(BarItem::Refresh);
@@ -384,6 +388,7 @@ impl FeedScreen {
                 let on = self.key.feed.sub().and_then(|s| st.about.get(&s.to_ascii_lowercase())).is_some_and(|a| a.subscribed);
                 (if on { "Joined" } else { "Join" }.into(), Some(Icon::Check), on)
             }
+            BarItem::About => ("About".into(), Some(Icon::News), false),
             BarItem::Refresh => ("Refresh".into(), Some(Icon::Repeat), false),
             BarItem::Menu => ("More".into(), Some(Icon::Info), false),
         }
@@ -393,6 +398,7 @@ impl FeedScreen {
         let st = cx.views.store;
         let mut v = vec![NavItem::Search, NavItem::Feed(Feed::Front), NavItem::Feed(Feed::Popular), NavItem::Feed(Feed::All), NavItem::Subs];
         if let Some(u) = st.username() {
+            v.push(NavItem::CustomFeeds);
             v.push(NavItem::Feed(Feed::User(u.to_string(), UserTab::Saved)));
             v.push(NavItem::Feed(Feed::User(u.to_string(), UserTab::Submitted)));
             v.push(NavItem::Inbox);
@@ -424,6 +430,7 @@ impl FeedScreen {
             NavItem::Feed(Feed::User(_, _)) => Row::new("My posts").icon(Icon::User).active(active),
             NavItem::Feed(f) => Row::new(f.title()).icon(Icon::Subs).active(active).raw(),
             NavItem::Subs => Row::new("Subreddits").icon(Icon::Users),
+            NavItem::CustomFeeds => Row::new("Custom feeds").icon(Icon::Folder),
             NavItem::Inbox => {
                 let r = Row::new("Inbox").icon(Icon::Bell);
                 if st.unread > 0 { r.value(st.unread.to_string()) } else { r }
@@ -570,6 +577,13 @@ impl FeedScreen {
                     fx.push(Fx::App(RdFx::Subscribe { sub: sub.to_string(), on: !on }));
                 }
             }
+            BarItem::About => {
+                if let Some(sub) = self.key.feed.sub() {
+                    // Search results in r/x are not r/x's feed: its "Open r/x" opens the feed.
+                    let from_feed = matches!(self.key.feed, Feed::Sub(_));
+                    fx.push(Fx::Nav(NavOp::Push(RdArg::SubInfo { sub: sub.to_string(), from_feed })));
+                }
+            }
             BarItem::Refresh => {
                 self.flow.to_top();
                 fx.push(Fx::App(RdFx::LoadFeed { key: self.key.clone(), reload: true }));
@@ -592,9 +606,16 @@ impl FeedScreen {
                 self.focus_req.set(Some(POST_BASE));
             }
             NavItem::Subs => fx.push(Fx::Nav(NavOp::Push(RdArg::Subs))),
+            NavItem::CustomFeeds => fx.push(Fx::Nav(NavOp::Push(RdArg::CustomFeeds))),
             NavItem::Inbox => fx.push(Fx::Nav(NavOp::Push(RdArg::Inbox))),
             NavItem::Settings => fx.push(Fx::Nav(NavOp::Push(RdArg::Settings))),
-            NavItem::Account => fx.push(Fx::Nav(NavOp::Push(if cx.views.store.accounts.is_empty() { RdArg::SignIn } else { RdArg::Accounts }))),
+            // Signed in: the user's own profile (their name is the row's label). Otherwise the
+            // Accounts page when any account is stored, or Sign in.
+            NavItem::Account => fx.push(Fx::Nav(NavOp::Push(match cx.views.store.username() {
+                Some(u) => RdArg::Profile(u.to_string()),
+                None if !cx.views.store.accounts.is_empty() => RdArg::Accounts,
+                None => RdArg::SignIn,
+            }))),
             NavItem::SwitchAccount => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Accounts)))),
         }
     }

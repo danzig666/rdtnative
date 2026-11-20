@@ -584,3 +584,46 @@ Sent to the TV.	Elküldve a tévére.	An den Fernseher gesendet.	Enviado al tele
 The TV sends the reply now and shows when Reddit has it. You can close this page.	A tévé most elküldi a választ, és jelzi, ha a Reddit megkapta. Ezt az oldalt bezárhatod.	Der Fernseher sendet die Antwort jetzt und zeigt an, wenn Reddit sie hat. Du kannst diese Seite schließen.	El televisor envía ahora la respuesta y avisa cuando Reddit la tenga. Puedes cerrar esta página.	Le téléviseur envoie la réponse maintenant et indique quand Reddit l'a reçue. Vous pouvez fermer cette page.	Телевизор сейчас отправит ответ и сообщит, когда Reddit его получит. Эту страницу можно закрыть.
 Send to TV	Küldés a tévére	An den Fernseher senden	Enviar al televisor	Envoyer au téléviseur	Отправить на телевизор
 You can close this page. The link no longer works.	Ezt az oldalt bezárhatod. A hivatkozás már nem működik.	Du kannst diese Seite schließen. Der Link funktioniert nicht mehr.	Puedes cerrar esta página. El enlace ya no funciona.	Vous pouvez fermer cette page. Le lien ne fonctionne plus.	Эту страницу можно закрыть. Ссылка больше не работает.
+Custom feeds	Egyéni hírfolyamok	Eigene Feeds	Feeds personalizados	Flux personnalisés	Пользовательские ленты
+1 subreddit	1 subreddit	1 Subreddit	1 subreddit	1 subreddit	1 сабреддит
+{} subreddits	{} subreddit	{} Subreddits	{} subreddits	{} subreddits	сабреддитов: {}
+OK on “Custom feeds” tries again.	Az OK az „Egyéni hírfolyamok” gombon újrapróbálja.	OK auf „Eigene Feeds“ versucht es erneut.	OK en «Feeds personalizados» lo vuelve a intentar.	OK sur « Flux personnalisés » réessaie.	OK на «Пользовательские ленты» — повторить попытку.
+Couldn't load your custom feeds	Nem sikerült betölteni az egyéni hírfolyamaidat	Deine eigenen Feeds konnten nicht geladen werden	No se pudieron cargar tus feeds personalizados	Impossible de charger vos flux personnalisés	Не удалось загрузить ваши пользовательские ленты
+No custom feeds yet	Még nincs egyéni hírfolyamod	Noch keine eigenen Feeds	Aún no hay feeds personalizados	Pas encore de flux personnalisés	Пользовательских лент пока нет
+Make one on reddit.com (several subreddits in one feed), then press OK on “Custom feeds”: it shows up here.	Hozz létre egyet a reddit.com-on (több subreddit egy hírfolyamban), majd nyomd meg az OK-t az „Egyéni hírfolyamok” gombon: itt jelenik meg.	Erstelle einen auf reddit.com (mehrere Subreddits in einem Feed) und drücke dann OK auf „Eigene Feeds“: Er erscheint hier.	Crea uno en reddit.com (varios subreddits en un solo feed) y pulsa OK en «Feeds personalizados»: aparecerá aquí.	Créez-en un sur reddit.com (plusieurs subreddits dans un seul flux), puis appuyez sur OK sur « Flux personnalisés » : il apparaîtra ici.	Создайте её на reddit.com (несколько сабреддитов в одной ленте), затем нажмите OK на «Пользовательские ленты»: она появится здесь.
+About	Névjegy	Info	Acerca de	À propos	О сообществе
+About r/{}	Az r/{} névjegye	Info zu r/{}	Acerca de r/{}	À propos de r/{}	О сообществе r/{}
+{} does not exist, or Reddit removed it.	{} nem létezik, vagy a Reddit eltávolította.	{} existiert nicht oder wurde von Reddit entfernt.	{} no existe o Reddit lo eliminó.	{} n'existe pas ou Reddit l'a supprimé.	{} не существует или удалено Reddit.
+Couldn't refresh: {}	Nem sikerült frissíteni: {}	Aktualisieren fehlgeschlagen: {}	No se pudo actualizar: {}	Échec de l'actualisation : {}	Не удалось обновить: {}
+Join	Csatlakozás	Beitreten	Unirse	Rejoindre	Вступить
+Leave	Kilépés	Verlassen	Abandonar	Quitter	Покинуть
+Open r/{}	r/{} megnyitása	r/{} öffnen	Abrir r/{}	Ouvrir r/{}	Открыть r/{}
+Posts only	Csak bejegyzések	Nur Beiträge	Solo publicaciones	Publications uniquement	Только посты
+Comments only	Csak hozzászólások	Nur Kommentare	Solo comentarios	Commentaires uniquement	Только комментарии
+{} members	{} tag	{} Mitglieder	{} miembros	{} membres	участников: {}
+{} online	{} online	{} online	{} en línea	{} en ligne	в сети: {}
+Created {}	Létrehozva: {}	Erstellt am {}	Creado el {}	Créé le {}	Создано {}
+Rules	Szabályok	Regeln	Normas	Règles	Правила
+About this community	A közösségről	Über diese Community	Acerca de esta comunidad	À propos de cette communauté	О сообществе
+No rules listed	Nincsenek szabályok megadva	Keine Regeln angegeben	No hay normas	Aucune règle indiquée	Правила не указаны
+This subreddit has no description.	Ennek a subredditnek nincs leírása.	Dieser Subreddit hat keine Beschreibung.	Este subreddit no tiene descripción.	Ce subreddit n'a pas de description.	У этого сабреддита нет описания.
+OK on Refresh tries again; BACK goes back.	Az OK a Frissítés gombon újrapróbálja; a VISSZA visszalép.	OK auf „Aktualisieren“ versucht es erneut; ZURÜCK geht zurück.	OK en «Actualizar» lo vuelve a intentar; ATRÁS vuelve.	OK sur « Actualiser » réessaie ; RETOUR revient en arrière.	OK на «Обновить» — повторить; НАЗАД — вернуться.
+Couldn't load r/{}	Nem sikerült betölteni: r/{}	r/{} konnte nicht geladen werden	No se pudo cargar r/{}	Impossible de charger r/{}	Не удалось загрузить r/{}
+Overview	Áttekintés	Übersicht	Resumen	Aperçu	Обзор
+Posts	Bejegyzések	Beiträge	Publicaciones	Publications	Посты
+You	Te	Du	Tú	Vous	Вы
+Suspended	Felfüggesztve	Gesperrt	Suspendida	Suspendu	Заблокирован
+{} post karma	{} bejegyzéskarma	{} Beitragskarma	{} de karma por publicaciones	{} de karma de publications	карма за посты: {}
+{} comment karma	{} hozzászóláskarma	{} Kommentarkarma	{} de karma por comentarios	{} de karma de commentaires	карма за комментарии: {}
+Cake day: {}	Tortanap: {}	Kuchentag: {}	Día del pastel: {}	Jour du gâteau : {}	День торта: {}
+{} points	{} pont	{} Punkte	{} puntos	{} points	очков: {}
+This account is suspended	Ez a fiók fel van függesztve	Dieses Konto ist gesperrt	Esta cuenta está suspendida	Ce compte est suspendu	Эта учётная запись заблокирована
+Reddit shows nothing of it.	A Reddit semmit sem mutat belőle.	Reddit zeigt nichts davon.	Reddit no muestra nada de ella.	Reddit n'en montre rien.	Reddit ничего из неё не показывает.
+Couldn't open u/{}	Nem sikerült megnyitni: u/{}	u/{} konnte nicht geöffnet werden	No se pudo abrir u/{}	Impossible d'ouvrir u/{}	Не удалось открыть u/{}
+Everything here is filtered out	Itt minden ki van szűrve	Hier ist alles ausgefiltert	Todo aquí está filtrado	Tout est filtré ici	Здесь всё отфильтровано
+Your NSFW setting or word filters hide all of it.	Az NSFW-beállításod vagy a szószűrőid mindent elrejtenek.	Deine NSFW-Einstellung oder Wortfilter blenden alles aus.	Tu ajuste de NSFW o tus filtros de palabras lo ocultan todo.	Votre réglage NSFW ou vos filtres de mots masquent tout.	Ваша настройка NSFW или фильтры слов скрывают всё.
+No posts yet	Még nincsenek bejegyzések	Noch keine Beiträge	Aún no hay publicaciones	Pas encore de publications	Постов пока нет
+No comments yet	Még nincsenek hozzászólások	Noch keine Kommentare	Aún no hay comentarios	Pas encore de commentaires	Комментариев пока нет
+No posts or comments yet	Még nincsenek bejegyzések vagy hozzászólások	Noch keine Beiträge oder Kommentare	Aún no hay publicaciones ni comentarios	Pas encore de publications ni de commentaires	Постов и комментариев пока нет
+Down tries again	A Le gomb újrapróbálja	Nach unten versucht es erneut	Abajo lo vuelve a intentar	Bas réessaie	Вниз — повторить
+1 point	1 pont	1 Punkt	1 punto	1 point	1 очко

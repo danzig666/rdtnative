@@ -275,6 +275,77 @@ pub struct SubList {
     pub gen: u32,
 }
 
+/// The signed-in user's custom feeds.
+#[derive(Clone, Debug, Default)]
+pub struct MultiList {
+    pub items: Vec<rd_core::model::Multi>,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub gen: u32,
+}
+
+/// A subreddit's info page: its about and its rules.
+#[derive(Clone, Debug, Default)]
+pub struct SubPage {
+    pub info: Option<rd_core::model::SubInfo>,
+    pub rules: Vec<rd_core::model::Rule>,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub gen: u32,
+}
+
+/// A user's profile header.
+#[derive(Clone, Debug, Default)]
+pub struct Profile {
+    pub info: Option<rd_core::model::UserInfo>,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+/// One entry of a user's listing: a post (kept in `Store::posts` with every other post, so a
+/// vote shows everywhere) or a comment.
+#[derive(Clone, Debug)]
+pub enum UserItem {
+    Post(String),
+    Comment(Box<rd_core::comments::UserComment>),
+}
+
+impl UserItem {
+    fn key(&self) -> &str {
+        match self {
+            UserItem::Post(id) => id,
+            UserItem::Comment(c) => &c.comment.name,
+        }
+    }
+}
+
+/// One tab of a user's listing, keyed like a feed (`Feed::User`).
+#[derive(Clone, Debug, Default)]
+pub struct UserPage {
+    pub items: Vec<UserItem>,
+    pub after: Option<String>,
+    pub loading: bool,
+    pub error: Option<String>,
+    /// Reddit has no more pages.
+    pub done: bool,
+    pub gen: u32,
+}
+
+impl UserPage {
+    /// Takes a page that arrived: the first one replaces the list, a next one is added without
+    /// the entries already shown (pages shift while the user reads).
+    pub fn take(&mut self, items: Vec<UserItem>, after: Option<String>, more: bool) {
+        if !more {
+            self.items.clear();
+        }
+        self.done = after.is_none() || items.is_empty();
+        self.after = after;
+        let mut seen: HashSet<String> = self.items.iter().map(|i| i.key().to_string()).collect();
+        self.items.extend(items.into_iter().filter(|i| seen.insert(i.key().to_string())));
+        self.error = None;
+    }
+}
+
 /// The sign-in flow while it runs.
 #[derive(Clone, Debug, Default)]
 pub struct SignInView {
@@ -318,6 +389,11 @@ pub struct Store {
     pub subs_mine: SubList,
     pub subs_popular: SubList,
     pub subs_search: (String, SubList),
+    pub multis: MultiList,
+    /// Subreddit info pages and user profiles by lower-cased name, and the users' listings.
+    pub sub_pages: HashMap<String, SubPage>,
+    pub profiles: HashMap<String, Profile>,
+    pub user_pages: HashMap<FeedKey, UserPage>,
     pub inbox: SubList,
     pub messages: Vec<Message>,
     pub unread: i64,
@@ -364,6 +440,10 @@ impl Store {
             subs_mine: SubList::default(),
             subs_popular: SubList::default(),
             subs_search: (String::new(), SubList::default()),
+            multis: MultiList::default(),
+            sub_pages: HashMap::new(),
+            profiles: HashMap::new(),
+            user_pages: HashMap::new(),
             inbox: SubList::default(),
             messages: Vec::new(),
             unread: 0,
@@ -479,6 +559,28 @@ mod tests {
         let d = Draft::from_saved(Some(&Saved::from_config(&cfg)));
         assert_eq!(d, Draft { client_id: "abcdefghijklmn".into(), redirect_uri: String::new(), user_agent: String::new() });
         assert_eq!(d.validate().unwrap(), cfg);
+    }
+
+    #[test]
+    fn user_pages_add_pages_without_repeats() {
+        let comment = |name: &str| {
+            let v = serde_json::json!({"kind":"Listing","data":{"children":[{"kind":"t1","data":{"name": name, "link_id": "t3_p"}}]}});
+            match rd_core::comments::parse_things(&v).unwrap().items.remove(0) {
+                rd_core::comments::Thing::Comment(c) => UserItem::Comment(Box::new(c)),
+                _ => unreachable!(),
+            }
+        };
+        let keys = |p: &UserPage| p.items.iter().map(|i| i.key().to_string()).collect::<Vec<_>>();
+        let mut p = UserPage { error: Some("old".into()), ..Default::default() };
+        p.take(vec![UserItem::Post("a".into()), comment("t1_b")], Some("t1_b".into()), false);
+        assert_eq!((keys(&p), p.done, p.error.as_deref()), (vec!["a".to_string(), "t1_b".to_string()], false, None));
+        // The next page repeats an entry that moved down meanwhile.
+        p.take(vec![comment("t1_b"), UserItem::Post("c".into())], None, true);
+        assert_eq!(keys(&p), ["a", "t1_b", "c"]);
+        assert!(p.done);
+        // A reload starts over.
+        p.take(vec![UserItem::Post("d".into())], Some("t3_d".into()), false);
+        assert_eq!((keys(&p), p.done), (vec!["d".to_string()], false));
     }
 
     #[test]

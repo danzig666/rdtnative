@@ -1,0 +1,7 @@
+[
+ {"kind":"LabeledMulti","data":{"name":"tech","display_name":"Tech news","path":"/user/alice/m/tech/","owner":"alice","can_edit":true,"visibility":"private",
+  "subreddits":[{"name":"rust"},{"name":"programming","data":{"display_name":"programming","subscribers":6000000}},{"name":"linux"}],
+  "icon_url":"https://www.redditstatic.com/custom_feed_icons/abc.png","description_md":"Things I read","over_18":false,"created_utc":1600000000.0}},
+ {"kind":"LabeledMulti","data":{"name":"pics_feed","display_name":"","path":"/user/bob/m/pics_feed","subreddits":[],"icon_url":"","over_18":true,"visibility":"public"}},
+ {"kind":"t5","data":{"display_name":"stray"}}
+]

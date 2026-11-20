@@ -117,6 +117,13 @@ pub enum RdArg {
     Accounts,
     /// One inbox message in full (by fullname).
     Message(String),
+    /// A subreddit's info page: numbers, rules, sidebar. `from_feed`: opened from that
+    /// subreddit's own feed, which "Open r/x" goes back to.
+    SubInfo { sub: String, from_feed: bool },
+    /// A user's profile: karma and age over their posts and comments.
+    Profile(String),
+    /// Subreddits, opened on the signed-in user's custom feeds.
+    CustomFeeds,
 }
 
 impl ScreenArg for RdArg {
@@ -144,6 +151,9 @@ impl ScreenArg for RdArg {
             RdArg::PostComments { .. } => 30,
             RdArg::Accounts => 45,
             RdArg::Message(_) => 46,
+            RdArg::SubInfo { .. } => 40,
+            RdArg::Profile(_) => 41,
+            RdArg::CustomFeeds => 42,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -195,6 +205,15 @@ pub enum RdFx {
     /// Resolve an Imgur page of a post through Imgur's API.
     ResolveImgur(String),
     LoadAbout(String),
+    /// The signed-in user's custom feeds.
+    LoadMultis,
+    /// A subreddit's about and rules for its info page (again when `reload`).
+    LoadSubInfo { sub: String, reload: bool },
+    /// A user's profile (again when `reload`).
+    LoadProfile { name: String, reload: bool },
+    /// A tab of a user's listing (again when `reload`), or its next page.
+    LoadUserItems { key: FeedKey, reload: bool },
+    MoreUserItems(FeedKey),
     LoadSubs { mine: bool },
     SearchSubs(String),
     /// 1 up, 0 clear, -1 down.
@@ -307,6 +326,9 @@ impl Mounter<RdHost> for Mount {
             RdArg::PostComments { id } => Box::new(post::PostScreen::new(entry, id.clone(), None).to_comments()),
             RdArg::Accounts => Box::new(settings::SettingsScreen::accounts(entry)),
             RdArg::Message(name) => Box::new(subs::MessageScreen::new(entry, name.clone())),
+            RdArg::SubInfo { sub, from_feed } => Box::new(subinfo::SubInfoScreen::new(entry, sub.clone(), *from_feed)),
+            RdArg::Profile(name) => Box::new(profile::ProfileScreen::new(entry, name.clone())),
+            RdArg::CustomFeeds => Box::new(subs::SubsScreen::custom_feeds(entry)),
         }
     }
 }
@@ -320,6 +342,10 @@ enum Work {
     More { epoch: u64, post: String, more_id: String, result: Result<(Vec<Node>, Vec<String>), String> },
     Imgur { id: String, media: Option<Media> },
     About { sub: String, result: Result<SubAbout, String> },
+    Multis { epoch: u64, result: Result<Vec<model::Multi>, String> },
+    SubInfo { epoch: u64, sub: String, result: Result<(model::SubInfo, Vec<model::Rule>), String> },
+    Profile { epoch: u64, name: String, result: Result<model::UserInfo, String> },
+    UserItems { epoch: u64, key: FeedKey, more: bool, result: Result<(Vec<comments::Thing>, Option<String>), String> },
     Subs { mine: bool, query: Option<String>, result: Result<Vec<Subreddit>, String> },
     /// An action went through, or failed with this message.
     Action { undo: Option<Box<dyn FnOnce(&mut Store) + Send>>, error: Option<String>, ok_toast: Option<String> },
@@ -480,6 +506,10 @@ impl AppRig {
         self.store.threads.clear();
         self.store.about.clear();
         self.store.subs_mine = Default::default();
+        self.store.multis = Default::default();
+        self.store.sub_pages.clear();
+        self.store.profiles.clear();
+        self.store.user_pages.clear();
         self.store.bump();
     }
 
@@ -680,6 +710,101 @@ impl AppRig {
                 }
                 Err(e) => crate::log(&format!("about r/{sub}: {e}")),
             },
+            Work::Multis { epoch, result } => {
+                if epoch != self.epoch {
+                    return;
+                }
+                let list = &mut self.store.multis;
+                list.loading = false;
+                list.gen = list.gen.wrapping_add(1);
+                match result {
+                    Ok(mut items) => {
+                        items.sort_by_key(|m| m.display_name.to_lowercase());
+                        list.items = items;
+                        list.error = None;
+                    }
+                    Err(e) => {
+                        let shown = !list.items.is_empty();
+                        list.error = Some(e.clone());
+                        if shown {
+                            self.store.toast(crate::i18n::tr("Couldn't refresh: {}").replace("{}", &e), now);
+                        }
+                    }
+                }
+            }
+            Work::SubInfo { epoch, sub, result } => {
+                if epoch != self.epoch {
+                    return;
+                }
+                let key = sub.to_ascii_lowercase();
+                let page = self.store.sub_pages.entry(key.clone()).or_default();
+                page.loading = false;
+                page.gen = page.gen.wrapping_add(1);
+                match result {
+                    Ok((info, rules)) => {
+                        // The feed's header and Join button read the same numbers.
+                        self.store.about.insert(key, SubAbout { sub: info.sub.clone(), subscribed: info.subscribed, active: info.active });
+                        page.info = Some(info);
+                        page.rules = rules;
+                        page.error = None;
+                    }
+                    Err(e) => {
+                        // A page already shown stays; only a first load shows the error in it.
+                        let shown = page.info.is_some();
+                        page.error = Some(e.clone());
+                        if shown {
+                            self.store.toast(crate::i18n::tr("Couldn't refresh: {}").replace("{}", &e), now);
+                        }
+                    }
+                }
+            }
+            Work::Profile { epoch, name, result } => {
+                if epoch != self.epoch {
+                    return;
+                }
+                let p = self.store.profiles.entry(name.to_ascii_lowercase()).or_default();
+                p.loading = false;
+                match result {
+                    Ok(info) => {
+                        p.info = Some(info);
+                        p.error = None;
+                    }
+                    Err(e) => {
+                        let shown = p.info.is_some();
+                        p.error = Some(e.clone());
+                        if shown {
+                            self.store.toast(crate::i18n::tr("Couldn't refresh: {}").replace("{}", &e), now);
+                        }
+                    }
+                }
+            }
+            Work::UserItems { epoch, key, more, result } => {
+                if epoch != self.epoch {
+                    return;
+                }
+                // Posts join every other post (a vote shows everywhere); the page lists them by ID.
+                let result = result.map(|(things, after)| {
+                    let items: Vec<store::UserItem> = things
+                        .into_iter()
+                        .map(|t| match t {
+                            comments::Thing::Post(p) => {
+                                let id = p.id.clone();
+                                self.keep_post(p);
+                                store::UserItem::Post(id)
+                            }
+                            comments::Thing::Comment(c) => store::UserItem::Comment(Box::new(c)),
+                        })
+                        .collect();
+                    (items, after)
+                });
+                let page = self.store.user_pages.entry(key).or_default();
+                page.loading = false;
+                page.gen = page.gen.wrapping_add(1);
+                match result {
+                    Ok((items, after)) => page.take(items, after, more),
+                    Err(e) => page.error = Some(e),
+                }
+            }
             Work::Subs { mine, query, result } => {
                 let list = match (&query, mine) {
                     (Some(q), _) => {
@@ -1255,6 +1380,107 @@ impl AppRig {
                 .map_err(|e| e.to_string());
             Work::About { sub, result }
         });
+    }
+
+    fn load_multis(&mut self, from: MachineId) {
+        let Some(s) = self.session() else { return };
+        if self.store.multis.loading || !s.is_signed_in() {
+            return;
+        }
+        self.store.multis.loading = true;
+        self.store.multis.error = None;
+        let epoch = self.epoch;
+        self.spawn(from, "multis", move || {
+            let result = s.get("/api/multi/mine", &[], Priority::Page).and_then(|r| model::parse_multis(&r.json)).map_err(|e| e.to_string());
+            if let Err(e) = &result {
+                crate::log(&format!("custom feeds: {e}"));
+            }
+            Work::Multis { epoch, result }
+        });
+    }
+
+    fn load_sub_info(&mut self, from: MachineId, sub: String, reload: bool) {
+        let Some(s) = self.session() else { return };
+        let page = self.store.sub_pages.entry(sub.to_ascii_lowercase()).or_default();
+        if page.loading || (page.info.is_some() && !reload) {
+            return;
+        }
+        page.loading = true;
+        page.error = None;
+        let epoch = self.epoch;
+        self.spawn(from, "subinfo", move || {
+            let result = s
+                .get(&format!("/r/{sub}/about"), &[], Priority::Page)
+                .and_then(|r| model::parse_sub_info(&r.json))
+                .map(|info| {
+                    // A subreddit whose rules do not load still has its page.
+                    let rules = match s.get(&format!("/r/{sub}/about/rules"), &[], Priority::Page) {
+                        Ok(r) => model::parse_rules(&r.json),
+                        Err(e) => {
+                            crate::log(&format!("rules r/{sub}: {e}"));
+                            Vec::new()
+                        }
+                    };
+                    (info, rules)
+                })
+                .map_err(|e| {
+                    crate::log(&format!("about r/{sub}: {e}"));
+                    missing_place(e, &format!("r/{sub}"))
+                });
+            Work::SubInfo { epoch, sub, result }
+        });
+    }
+
+    fn load_profile(&mut self, from: MachineId, name: String, reload: bool) {
+        let Some(s) = self.session() else { return };
+        let p = self.store.profiles.entry(name.to_ascii_lowercase()).or_default();
+        if p.loading || (p.info.is_some() && !reload) {
+            return;
+        }
+        p.loading = true;
+        p.error = None;
+        let epoch = self.epoch;
+        self.spawn(from, "profile", move || {
+            let result = s.get(&format!("/user/{name}/about"), &[], Priority::Page).and_then(|r| model::parse_user(&r.json)).map_err(|e| {
+                crate::log(&format!("about u/{name}: {e}"));
+                missing_place(e, &format!("u/{name}"))
+            });
+            Work::Profile { epoch, name, result }
+        });
+    }
+
+    fn load_user_items(&mut self, from: MachineId, key: FeedKey, more: bool) {
+        let Some(s) = self.session() else { return };
+        let st = self.store.user_pages.entry(key.clone()).or_default();
+        if st.loading || (more && (st.done || st.after.is_none())) {
+            return;
+        }
+        st.loading = true;
+        if !more {
+            st.error = None;
+        }
+        let after = if more { st.after.clone() } else { None };
+        let epoch = self.epoch;
+        self.spawn(from, "user", move || {
+            let (path, q) = key.feed.request(key.sort, key.time, after.as_deref(), 50);
+            let q: Vec<(&str, &str)> = q.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            let result = s.get(&path, &q, Priority::Page).and_then(|r| comments::parse_things(&r.json)).map(|l| (l.items, l.after)).map_err(|e| e.to_string());
+            if let Err(e) = &result {
+                crate::log(&format!("user {path}: {e}"));
+            }
+            Work::UserItems { epoch, key, more, result }
+        });
+    }
+
+    /// Keeps a post that arrived outside a feed; one resolved before (Imgur) keeps its media.
+    fn keep_post(&mut self, p: Post) {
+        let mut item = PostItem::new(p);
+        if let (Some(old), Media::Imgur(_)) = (self.store.posts.get(&item.post.id), &item.media) {
+            if !matches!(old.media, Media::Imgur(_)) {
+                item.media = old.media.clone();
+            }
+        }
+        self.store.posts.insert(item.post.id.clone(), item);
     }
 
     fn load_subs(&mut self, from: MachineId, mine: bool) {
@@ -1840,6 +2066,15 @@ fn check_signin_state(text: &str, nonce: &str) -> Result<(), String> {
     }
 }
 
+/// The text for a subreddit or user that cannot be shown: Reddit answers one that does not exist
+/// with 404 (and a missing subreddit's about with search results instead of its page).
+fn missing_place(e: rd_core::RdError, place: &str) -> String {
+    match e {
+        rd_core::RdError::NotFound(_) | rd_core::RdError::Parse(_) => crate::i18n::tr("{} does not exist, or Reddit removed it.").replace("{}", place),
+        e => e.to_string(),
+    }
+}
+
 /// Follows a share link's redirects (on www.reddit.com, without the API) to the post it shares.
 fn resolve_share(url: &str) -> Option<rd_core::listing::RedditLink> {
     let http = reqwest::blocking::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(15)).build().ok()?;
@@ -2062,6 +2297,16 @@ impl Rig<RdHost> for AppRig {
             }
             RdFx::ResolveImgur(id) => self.resolve_imgur(from, &id),
             RdFx::LoadAbout(sub) => self.load_about(from, sub),
+            RdFx::LoadMultis => self.load_multis(from),
+            RdFx::LoadSubInfo { sub, reload } => self.load_sub_info(from, sub, reload),
+            RdFx::LoadProfile { name, reload } => self.load_profile(from, name, reload),
+            RdFx::LoadUserItems { key, reload } => {
+                let have = self.store.user_pages.get(&key).is_some_and(|p| !p.items.is_empty() || p.loading);
+                if reload || !have {
+                    self.load_user_items(from, key, false);
+                }
+            }
+            RdFx::MoreUserItems(key) => self.load_user_items(from, key, true),
             RdFx::LoadSubs { mine } => self.load_subs(from, mine),
             RdFx::SearchSubs(q) => self.search_subs(from, q),
             RdFx::Vote { fullname, dir } => self.vote(from, fullname, dir),
@@ -2153,7 +2398,7 @@ impl Rig<RdHost> for AppRig {
                     use rd_core::listing::RedditLink;
                     Work::Navigate(resolve_share(&url).map(|l| match l {
                         RedditLink::Sub(s) => RdArg::Feed(Feed::Sub(s)),
-                        RedditLink::User(u) => RdArg::Feed(Feed::User(u, rd_core::listing::UserTab::Submitted)),
+                        RedditLink::User(u) => RdArg::Profile(u),
                         RedditLink::Post(id, c) => RdArg::Post { id, comment: c },
                         RedditLink::Share(_) => RdArg::Link(url.clone()),
                     }))
@@ -2269,6 +2514,17 @@ mod tests {
         assert!(insert_reply(&mut whole, reply("t3_1abc001"), true) && whole.len() == tree.len() + 1);
         assert!(!insert_reply(&mut one, reply("t3_1abc001"), false));
         assert!(insert_reply(&mut one, reply("t1_c2"), false) && find_comment(&mut one, "t1_r").is_some());
+    }
+
+    #[test]
+    fn missing_places_read_plainly() {
+        // (Another test switches the language for a moment: check the substance, not the words.)
+        let gone = missing_place(rd_core::RdError::NotFound("/r/nosuchsub/about".into()), "r/nosuchsub");
+        assert!(gone.contains("r/nosuchsub") && !gone.contains("/about"), "{gone}");
+        let search = missing_place(rd_core::RdError::Parse("expected a subreddit".into()), "r/x");
+        assert!(search.contains("r/x") && !search.contains("expected"), "{search}");
+        let other = missing_place(rd_core::RdError::RateLimited { reset_secs: 30 }, "u/bob");
+        assert_eq!(other, rd_core::RdError::RateLimited { reset_secs: 30 }.to_string());
     }
 
     #[test]

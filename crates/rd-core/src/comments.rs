@@ -1,5 +1,6 @@
 //! Comment trees: parse `/comments/<id>`, merge `/api/morechildren` results in place, and flatten
 //! the tree into display rows that honour collapsed threads (the list the TV's comment pane draws).
+//! Also the comments of a user's listing, each with the post it was made on.
 
 use crate::model::{b, i, opt_s, s, Post};
 use crate::RdError;
@@ -73,29 +74,7 @@ impl Node {
 fn parse_thing(t: &Value) -> Option<Node> {
     let d = &t["data"];
     match t["kind"].as_str()? {
-        "t1" => Some(Node::Comment(Comment {
-            id: s(d, "id"),
-            name: s(d, "name"),
-            parent_id: s(d, "parent_id"),
-            author: s(d, "author"),
-            body: crate::media::resolve_embeds(&s(d, "body"), &d["media_metadata"]),
-            score: i(d, "score"),
-            score_hidden: b(d, "score_hidden"),
-            created_utc: i(d, "created_utc"),
-            depth: i(d, "depth").max(0) as u32,
-            is_submitter: b(d, "is_submitter"),
-            distinguished: opt_s(d, "distinguished"),
-            stickied: b(d, "stickied"),
-            collapsed: b(d, "collapsed"),
-            likes: d["likes"].as_bool(),
-            saved: b(d, "saved"),
-            author_flair_text: crate::model::flair(d, "author_flair_richtext", "author_flair_text"),
-            // `replies` is "" when empty, otherwise a Listing.
-            replies: d["replies"]["data"]["children"]
-                .as_array()
-                .map(|c| c.iter().filter_map(parse_thing).collect())
-                .unwrap_or_default(),
-        })),
+        "t1" => Some(Node::Comment(parse_comment(d))),
         "more" => Some(Node::More(More {
             id: s(d, "id"),
             parent_id: s(d, "parent_id"),
@@ -107,6 +86,33 @@ fn parse_thing(t: &Value) -> Option<Node> {
                 .unwrap_or_default(),
         })),
         _ => None,
+    }
+}
+
+/// A t1's data.
+fn parse_comment(d: &Value) -> Comment {
+    Comment {
+        id: s(d, "id"),
+        name: s(d, "name"),
+        parent_id: s(d, "parent_id"),
+        author: s(d, "author"),
+        body: crate::media::resolve_embeds(&s(d, "body"), &d["media_metadata"]),
+        score: i(d, "score"),
+        score_hidden: b(d, "score_hidden"),
+        created_utc: i(d, "created_utc"),
+        depth: i(d, "depth").max(0) as u32,
+        is_submitter: b(d, "is_submitter"),
+        distinguished: opt_s(d, "distinguished"),
+        stickied: b(d, "stickied"),
+        collapsed: b(d, "collapsed"),
+        likes: d["likes"].as_bool(),
+        saved: b(d, "saved"),
+        author_flair_text: crate::model::flair(d, "author_flair_richtext", "author_flair_text"),
+        // `replies` is "" when empty, otherwise a Listing.
+        replies: d["replies"]["data"]["children"]
+            .as_array()
+            .map(|c| c.iter().filter_map(parse_thing).collect())
+            .unwrap_or_default(),
     }
 }
 
@@ -130,6 +136,50 @@ pub fn parse_thread(v: &Value) -> Result<Thread, RdError> {
         .map(|c| c.iter().filter_map(parse_thing).collect())
         .unwrap_or_default();
     Ok(Thread { post, comments })
+}
+
+/// A comment in a user's listing, with the post it was made on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserComment {
+    pub comment: Comment,
+    pub subreddit: String,
+    /// The post's fullname, `t3_<id>`.
+    pub link_id: String,
+    pub link_title: String,
+    pub link_author: String,
+    /// The post is marked NSFW.
+    pub over_18: bool,
+}
+
+impl UserComment {
+    /// The ID of the post it is on.
+    pub fn post_id(&self) -> &str {
+        self.link_id.strip_prefix("t3_").unwrap_or(&self.link_id)
+    }
+}
+
+/// One entry of a user's listing.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Thing {
+    Post(Post),
+    Comment(UserComment),
+}
+
+/// Parses a user listing (`/user/x/overview`, `/comments`, `/submitted`): posts and comments in
+/// order, other kinds left out.
+pub fn parse_things(v: &Value) -> Result<crate::model::Listing<Thing>, RdError> {
+    crate::model::parse_listing_with(v, |kind, d| match kind {
+        "t3" => Some(Thing::Post(Post::from_json(d))),
+        "t1" => Some(Thing::Comment(UserComment {
+            comment: parse_comment(d),
+            subreddit: s(d, "subreddit"),
+            link_id: s(d, "link_id"),
+            link_title: s(d, "link_title"),
+            link_author: s(d, "link_author"),
+            over_18: b(d, "over_18"),
+        })),
+        _ => None,
+    })
 }
 
 /// "Load more" without `/api/morechildren`, which Reddit has blocked ("blocked by network
@@ -489,6 +539,24 @@ mod tests {
         let rows = flatten(&t.comments, &HashSet::new());
         assert_eq!(names(&rows), ["c1", "  c2", "    c3", "  c5", "    c6", "  c7", "  more(1)", "c4", "more(40)"]);
         assert_eq!(focused_request("abc", "c1", "top").0, "/comments/abc/_/c1");
+    }
+
+    #[test]
+    fn parses_a_users_posts_and_comments() {
+        let l = parse_things(&fixture("user_overview.json")).unwrap();
+        assert_eq!(l.after.as_deref(), Some("t1_k3"));
+        assert_eq!(l.items.len(), 3, "the stray `more` is left out");
+        let Thing::Comment(c) = &l.items[0] else { panic!("a comment first") };
+        assert_eq!((c.comment.name.as_str(), c.comment.body.as_str(), c.comment.score), ("t1_k1", "Helix, and *happy* with it", 42));
+        assert_eq!((c.subreddit.as_str(), c.link_title.as_str(), c.link_author.as_str(), c.post_id()), ("rust", "Which editor do you use?", "carol", "p9"));
+        assert_eq!(c.comment.likes, Some(true));
+        assert!(c.comment.replies.is_empty() && !c.over_18);
+        let Thing::Post(p) = &l.items[1] else { panic!("then a post") };
+        assert_eq!((p.id.as_str(), p.title.as_str()), ("p7", "My cat"));
+        let Thing::Comment(deep) = &l.items[2] else { panic!() };
+        assert_eq!((deep.comment.parent_id.as_str(), deep.post_id()), ("t1_k0", "p8"));
+        assert!(deep.over_18);
+        assert!(parse_things(&serde_json::json!([])).is_err());
     }
 
     #[test]

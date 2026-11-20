@@ -94,6 +94,8 @@ impl Time {
 /// What a user page lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UserTab {
+    /// Posts and comments together, newest first.
+    Overview,
     Submitted,
     Comments,
     Saved,
@@ -104,6 +106,7 @@ pub enum UserTab {
 impl UserTab {
     pub fn key(self) -> &'static str {
         match self {
+            UserTab::Overview => "overview",
             UserTab::Submitted => "submitted",
             UserTab::Comments => "comments",
             UserTab::Saved => "saved",
@@ -128,6 +131,8 @@ pub enum Feed {
     Search { q: String, sub: Option<String> },
     /// A subreddit's posts by a domain ("youtube.com").
     Domain(String),
+    /// A custom feed (multireddit): `/user/{owner}/m/{name}`.
+    Custom { owner: String, name: String },
 }
 
 impl Feed {
@@ -140,7 +145,7 @@ impl Feed {
             Feed::Sub(s) => format!("r/{s}"),
             Feed::Multi(subs) => subs.iter().map(|s| format!("r/{s}")).collect::<Vec<_>>().join(" + "),
             Feed::User(u, t) => match t {
-                UserTab::Submitted => format!("u/{u}"),
+                UserTab::Overview | UserTab::Submitted => format!("u/{u}"),
                 UserTab::Comments => format!("u/{u} \u{b7} comments"),
                 UserTab::Saved => "Saved".into(),
                 UserTab::Upvoted => "Upvoted".into(),
@@ -149,6 +154,7 @@ impl Feed {
             Feed::Search { q, sub: None } => format!("\u{201c}{q}\u{201d}"),
             Feed::Search { q, sub: Some(s) } => format!("\u{201c}{q}\u{201d} in r/{s}"),
             Feed::Domain(d) => d.clone(),
+            Feed::Custom { name, .. } => format!("m/{name}"),
         }
     }
 
@@ -166,7 +172,7 @@ impl Feed {
         match self {
             Feed::Front if signed_in => vec![Sort::Best, Sort::Hot, Sort::New, Sort::Top, Sort::Rising, Sort::Controversial],
             Feed::Search { .. } => vec![Sort::Hot, Sort::New, Sort::Top],
-            Feed::User(_, UserTab::Submitted | UserTab::Comments) => vec![Sort::Hot, Sort::New, Sort::Top, Sort::Controversial],
+            Feed::User(_, UserTab::Overview | UserTab::Submitted | UserTab::Comments) => vec![Sort::Hot, Sort::New, Sort::Top, Sort::Controversial],
             Feed::User(..) => vec![],
             _ => vec![Sort::Hot, Sort::New, Sort::Top, Sort::Rising, Sort::Controversial],
         }
@@ -192,11 +198,16 @@ impl Feed {
             Feed::Sub(s) => sorted(&format!("/r/{s}")),
             Feed::Multi(subs) => sorted(&format!("/r/{}", subs.join("+"))),
             Feed::Domain(d) => sorted(&format!("/domain/{d}")),
+            Feed::Custom { owner, name } => sorted(&format!("/user/{owner}/m/{name}")),
             Feed::User(u, tab) => {
-                if matches!(tab, UserTab::Submitted | UserTab::Comments) {
+                if matches!(tab, UserTab::Overview | UserTab::Submitted | UserTab::Comments) {
                     q.push(("sort".into(), sort.key().into()));
                 }
-                q.push(("type".into(), "links".into()));
+                // Saved, upvoted and hidden mix in comments a feed of posts cannot show; the
+                // overview and comments tabs are read with comments.
+                if !matches!(tab, UserTab::Overview | UserTab::Comments) {
+                    q.push(("type".into(), "links".into()));
+                }
                 format!("/user/{u}/{}", tab.key())
             }
             Feed::Search { q: text, sub } => {
@@ -323,6 +334,21 @@ pub fn age(created_utc: i64, now: i64) -> String {
     }
 }
 
+/// The calendar date (year, month 1-12, day) of a UTC timestamp: a subreddit's creation, a cake
+/// day.
+pub fn utc_date(secs: i64) -> (i32, u32, u32) {
+    // Days to civil date (proleptic Gregorian), in 400-year eras starting in March.
+    let z = secs.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    ((yoe + era * 400 + i64::from(month <= 2)) as i32, month, day)
+}
+
 /// `1234567` → `1.2M`, `15234` → `15k`, `1234` → `1.2k`.
 pub fn short_count(n: i64) -> String {
     let a = n.unsigned_abs() as f64;
@@ -405,12 +431,34 @@ mod tests {
     }
 
     #[test]
+    fn custom_feed_and_user_overview_requests() {
+        let custom = Feed::Custom { owner: "alice".into(), name: "tech".into() };
+        let (p, qs) = custom.request(Sort::Top, Time::Month, Some("t3_y"), 50);
+        assert_eq!((p.as_str(), q(&qs, "t").as_deref(), q(&qs, "after").as_deref()), ("/user/alice/m/tech/top", Some("month"), Some("t3_y")));
+        assert_eq!(custom.title(), "m/tech");
+        assert_eq!(custom.sub(), None);
+        assert!(custom.sorts(true).contains(&Sort::Rising));
+        let (p, qs) = Feed::User("bob".into(), UserTab::Overview).request(Sort::New, Time::All, None, 25);
+        assert_eq!((p.as_str(), q(&qs, "sort").as_deref(), q(&qs, "type")), ("/user/bob/overview", Some("new"), None));
+        let (p, qs) = Feed::User("bob".into(), UserTab::Comments).request(Sort::Top, Time::Year, None, 25);
+        assert_eq!((p.as_str(), q(&qs, "type"), q(&qs, "t").as_deref()), ("/user/bob/comments", None, Some("year")));
+        let (_, qs) = Feed::User("bob".into(), UserTab::Submitted).request(Sort::Hot, Time::All, None, 25);
+        assert_eq!(q(&qs, "type").as_deref(), Some("links"));
+        assert_eq!(Feed::User("bob".into(), UserTab::Overview).sorts(false), [Sort::Hot, Sort::New, Sort::Top, Sort::Controversial]);
+    }
+
+    #[test]
     fn helpers() {
         assert_eq!(age(1000, 1030), "now");
         assert_eq!(age(0, 7200), "2h");
         assert_eq!(age(0, 86_400 * 3), "3d");
         assert_eq!(age(0, 86_400 * 400), "1y");
         assert_eq!(short_count(15234), "15k");
+        assert_eq!(utc_date(0), (1970, 1, 1));
+        assert_eq!(utc_date(1291139521), (2010, 11, 30));
+        assert_eq!(utc_date(951782400), (2000, 2, 29));
+        assert_eq!(utc_date(1400000000), (2014, 5, 13));
+        assert_eq!(utc_date(-86_400), (1969, 12, 31));
         assert_eq!(vote("t3_a", 5).1[1].1, "1");
         assert_eq!(thread_request("abc", CommentSort::Top, None).0, "/comments/abc");
         let (p, qs) = thread_request("abc", CommentSort::New, Some("def"));
