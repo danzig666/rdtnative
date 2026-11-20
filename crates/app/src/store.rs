@@ -34,7 +34,7 @@ pub fn load_saved() -> Option<Saved> {
     serde_json::from_str::<Saved>(&s).ok().filter(|s| !s.client_id.is_empty())
 }
 
-fn write_atomic(p: &std::path::Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
+pub(crate) fn write_atomic(p: &std::path::Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
     let tmp = p.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
     #[cfg(unix)]
@@ -156,6 +156,8 @@ pub struct PostItem {
     pub post: Post,
     pub media: Media,
     pub preview: String,
+    /// Comments added since the user last opened the post (0 when never opened).
+    pub new_comments: i64,
 }
 
 impl PostItem {
@@ -167,7 +169,7 @@ impl PostItem {
             let p = rd_core::markdown::plain(&post.selftext);
             p.chars().take(400).collect()
         };
-        PostItem { post, media, preview }
+        PostItem { post, media, preview, new_comments: 0 }
     }
     pub fn id(&self) -> &str {
         &self.post.id
@@ -207,6 +209,29 @@ pub struct ThreadState {
     /// "Load more" rows being fetched.
     pub loading_more: HashSet<String>,
     pub gen: u32,
+    /// When the comments last arrived (Unix seconds; 0 = never).
+    pub fetched_at: u64,
+    /// Only a preview's few top comments are here (or on their way): opening the post loads all.
+    pub partial: bool,
+    /// Comments a reload brought that the thread did not have before (new while it was open).
+    pub arrived: HashSet<String>,
+}
+
+/// A thread's key in [`Store::threads`]: the post ID, or `post/comment` for the thread of one
+/// comment (a comment link), kept apart from the post's whole thread.
+pub fn thread_key(post: &str, comment: Option<&str>) -> String {
+    match comment {
+        Some(c) => format!("{post}/{c}"),
+        None => post.to_string(),
+    }
+}
+
+/// A thread key's post ID and comment.
+pub fn split_thread_key(key: &str) -> (&str, Option<&str>) {
+    match key.split_once('/') {
+        Some((p, c)) => (p, Some(c)),
+        None => (key, None),
+    }
 }
 
 /// What a subreddit's header shows.
@@ -258,6 +283,8 @@ pub struct Store {
     pub toast: Option<(String, u32)>,
     pub prefs: Prefs,
     pub read: ReadPosts,
+    /// Posts opened before, with their comment counts then.
+    pub seen: crate::seen::SeenPosts,
     pub posts: HashMap<String, PostItem>,
     pub feeds: HashMap<FeedKey, FeedState>,
     pub threads: HashMap<String, ThreadState>,
@@ -293,6 +320,7 @@ impl Store {
             toast: None,
             prefs,
             read: load_read(),
+            seen: crate::seen::load(),
             posts: HashMap::new(),
             feeds: HashMap::new(),
             threads: HashMap::new(),
@@ -420,5 +448,12 @@ mod tests {
         for f in Field::ALL {
             assert_eq!(Field::from_key(f.key()), Some(f));
         }
+    }
+
+    #[test]
+    fn thread_keys_split_back() {
+        assert_eq!(thread_key("abc", None), "abc");
+        assert_eq!(split_thread_key(&thread_key("abc", Some("def"))), ("abc", Some("def")));
+        assert_eq!(split_thread_key("abc"), ("abc", None));
     }
 }

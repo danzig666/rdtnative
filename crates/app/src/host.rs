@@ -92,6 +92,8 @@ pub enum RdArg {
     Menu(MenuKind),
     /// Full-screen video: (stream URL, title, loops).
     Play { url: String, title: String, looping: bool },
+    /// A post opened for its comments: focus starts on the first comment.
+    PostComments { id: String },
 }
 
 impl ScreenArg for RdArg {
@@ -116,6 +118,7 @@ impl ScreenArg for RdArg {
             RdArg::Inbox => 14,
             RdArg::Menu(_) => 15,
             RdArg::Play { .. } => 16,
+            RdArg::PostComments { .. } => 30,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -148,11 +151,19 @@ pub enum RdFx {
     /// Load a feed (again when `reload`), or its next page.
     LoadFeed { key: FeedKey, reload: bool },
     MoreFeed(FeedKey),
+    /// Load a thread: `id` is its key (`store::thread_key`). A cached one older than a few
+    /// minutes, or only a preview's, loads again; a reload in the same sort keeps what is open.
     LoadThread { id: String, sort: Option<CommentSort>, reload: bool },
-    /// Fetch a "load more comments" row.
+    /// Live mode: fetch the thread again in the background and merge in what is new.
+    RefreshThread { id: String },
+    /// The feed's preview pane: a post's few top comments, at prefetch priority.
+    PrefetchThread { id: String },
+    /// Fetch a "load more comments" row (`post` is the thread key).
     MoreComments { post: String, more_id: String },
-    /// Open or close a comment thread.
+    /// Open or close a comment thread (`post` is the thread key).
     ToggleComment { post: String, name: String },
+    /// The user left a post whose comments were loaded at `at` (Unix seconds), with `comments`.
+    MarkSeen { id: String, at: i64, comments: i64 },
     /// Resolve an Imgur page of a post through Imgur's API.
     ResolveImgur(String),
     LoadAbout(String),
@@ -258,6 +269,7 @@ impl Mounter<RdHost> for Mount {
             RdArg::Inbox => Box::new(subs::InboxScreen::new(entry)),
             RdArg::Menu(k) => Box::new(menu::MenuScreen::new(entry, k.clone(), cx)),
             RdArg::Play { url, title, looping } => Box::new(player::PlayerScreen::new(entry, url.clone(), title.clone(), *looping)),
+            RdArg::PostComments { id } => Box::new(post::PostScreen::new(entry, id.clone(), None).to_comments()),
         }
     }
 }
@@ -265,7 +277,9 @@ impl Mounter<RdHost> for Mount {
 /// Results workers post back to the main thread.
 enum Work {
     Feed { epoch: u64, key: FeedKey, more: bool, result: Result<(Vec<Post>, Option<String>), String> },
-    Thread { epoch: u64, id: String, sort: CommentSort, result: Result<(Post, Vec<Node>), String> },
+    /// A thread (by key) arrived: a preview's `partial` one, or a whole one to `merge` over the
+    /// copy on screen.
+    Thread { epoch: u64, id: String, sort: CommentSort, partial: bool, merge: bool, result: Result<(Post, Vec<Node>), String> },
     More { epoch: u64, post: String, more_id: String, result: Result<(Vec<Node>, Vec<String>), String> },
     Imgur { id: String, media: Option<Media> },
     About { sub: String, result: Result<SubAbout, String> },
@@ -310,6 +324,8 @@ pub struct AppRig {
     listeners: Vec<MachineId>,
     read_dirty: bool,
     read_saved_ms: u32,
+    seen_dirty: bool,
+    seen_saved_ms: u32,
     player: crate::player::Player,
 }
 
@@ -335,6 +351,8 @@ impl AppRig {
             listeners: Vec::new(),
             read_dirty: false,
             read_saved_ms: 0,
+            seen_dirty: false,
+            seen_saved_ms: 0,
             player: crate::player::Player::new(),
         };
         rig.apply_prefs();
@@ -438,6 +456,11 @@ impl AppRig {
             self.read_saved_ms = now_ms;
             store::store_read(&self.store.read);
         }
+        if self.seen_dirty && now_ms.wrapping_sub(self.seen_saved_ms) > 10_000 {
+            self.seen_dirty = false;
+            self.seen_saved_ms = now_ms;
+            crate::seen::save(&self.store.seen);
+        }
         let mut out = std::mem::take(&mut self.pending);
         let done = std::mem::take(&mut *self.done.lock().unwrap());
         let any = !done.is_empty();
@@ -499,6 +522,7 @@ impl AppRig {
                             if let (Some(m), Media::Imgur(_)) = (keep, &item.media) {
                                 item.media = m;
                             }
+                            item.new_comments = self.store.seen.grown(&id, item.post.num_comments);
                             self.store.posts.insert(id, item);
                         }
                     }
@@ -506,19 +530,40 @@ impl AppRig {
                 }
                 self.resolve_visible_imgur();
             }
-            Work::Thread { epoch, id, sort, result } => {
+            Work::Thread { epoch, id, sort, partial, merge, result } => {
                 if epoch != self.epoch {
                     return;
                 }
                 let st = self.store.threads.entry(id.clone()).or_insert_with(|| new_thread(sort));
+                // A preview's light load that a full one overtook.
+                if partial && !st.partial {
+                    return;
+                }
                 st.loading = false;
                 st.gen = st.gen.wrapping_add(1);
                 match result {
                     Ok((post, tree)) => {
                         st.error = None;
                         st.sort = sort;
-                        st.tree = tree;
-                        apply_auto_collapse(st, &self.store.prefs);
+                        st.partial = partial;
+                        st.fetched_at = rd_core::now_secs();
+                        let auto = auto_collapsed(&tree, &self.store.prefs);
+                        if merge {
+                            let before = comments::comment_names(&st.tree);
+                            st.tree = comments::merge_fresh(std::mem::take(&mut st.tree), tree);
+                            st.arrived.extend(comments::comment_names(&st.tree).into_iter().filter(|n| !before.contains(n)));
+                            // What the user opened or closed stays so; deep replies and moderator
+                            // notes that just came start collapsed like the rest.
+                            st.toggled.extend(auto.into_iter().filter(|n| !before.contains(n)));
+                        } else {
+                            st.tree = tree;
+                            st.toggled = auto;
+                            // A comment's thread shows that comment, whatever starts collapsed.
+                            if let (_, Some(c)) = store::split_thread_key(&id) {
+                                open_path(&st.tree, &format!("t1_{c}"), &mut st.toggled);
+                            }
+                        }
+                        let id = store::split_thread_key(&id).0.to_string();
                         let old_media = self.store.posts.get(&id).map(|o| o.media.clone());
                         let mut item = PostItem::new(post);
                         if let (Some(m), Media::Imgur(_)) = (old_media, &item.media) {
@@ -526,13 +571,17 @@ impl AppRig {
                                 item.media = m;
                             }
                         }
+                        item.new_comments = self.store.seen.grown(&id, item.post.num_comments);
                         let imgur = matches!(item.media, Media::Imgur(_));
                         self.store.posts.insert(id.clone(), item);
                         if imgur {
                             self.resolve_imgur(MachineId::Nav, &id);
                         }
                     }
-                    Err(e) => st.error = Some(e),
+                    Err(e) => {
+                        crate::log(&format!("thread {id}: {e}"));
+                        st.error = Some(e);
+                    }
                 }
             }
             Work::More { epoch, post, more_id, result } => {
@@ -603,9 +652,14 @@ impl AppRig {
             }
             Work::Replied { post, result } => match result {
                 Ok(node) => {
-                    if let (Some(st), Some(node)) = (self.store.threads.get_mut(&post), node) {
-                        insert_reply(&mut st.tree, node);
-                        st.gen = st.gen.wrapping_add(1);
+                    // Into the post's whole thread and any comment's thread open on it.
+                    if let Some(node) = node {
+                        let post = store::split_thread_key(&post).0;
+                        for (k, st) in self.store.threads.iter_mut().filter(|(k, _)| store::split_thread_key(k).0 == post) {
+                            if insert_reply(&mut st.tree, node.clone(), k == post) {
+                                st.gen = st.gen.wrapping_add(1);
+                            }
+                        }
                     }
                     self.store.toast("Reply sent", now);
                 }
@@ -815,27 +869,75 @@ impl AppRig {
         });
     }
 
-    fn load_thread(&mut self, from: MachineId, id: String, sort: Option<CommentSort>, reload: bool) {
-        let Some(s) = self.session() else { return };
-        let default_sort = CommentSort::from_key(self.store.prefs.get("comment_sort")).unwrap_or(CommentSort::Confidence);
-        let st = self.store.threads.entry(id.clone()).or_insert_with(|| new_thread(default_sort));
+    fn default_comment_sort(&self) -> CommentSort {
+        CommentSort::from_key(self.store.prefs.get("comment_sort")).unwrap_or(CommentSort::Confidence)
+    }
+
+    /// Loads thread `key` unless it is here, whole, recent and in this sort. Loaded again in the
+    /// same sort, the fresh copy is merged over the old one (what was opened stays open).
+    fn load_thread(&mut self, from: MachineId, key: String, sort: Option<CommentSort>, reload: bool) {
+        if self.session().is_none() {
+            return;
+        }
+        let default_sort = self.default_comment_sort();
+        let st = self.store.threads.entry(key.clone()).or_insert_with(|| new_thread(default_sort));
         let sort = sort.unwrap_or(st.sort);
-        if st.loading || (!reload && !st.tree.is_empty() && st.sort == sort) {
+        // A preview's light load on its way does not hold back the whole thread.
+        if st.loading && !st.partial {
+            return;
+        }
+        let whole = st.fetched_at > 0 && !st.partial;
+        let recent = rd_core::now_secs().saturating_sub(st.fetched_at) <= THREAD_FRESH_SECS;
+        if !reload && whole && recent && st.sort == sort {
+            return;
+        }
+        let merge = whole && st.sort == sort;
+        st.loading = true;
+        st.partial = false;
+        st.error = None;
+        st.sort = sort;
+        self.fetch_thread(from, key, sort, false, merge, Priority::Page);
+    }
+
+    /// Live mode's poll: thread `key` again, merged in (or a first try after a failed load); it
+    /// waits for room under the rate limit.
+    fn refresh_thread(&mut self, from: MachineId, key: String) {
+        let Some(st) = self.store.threads.get_mut(&key) else { return };
+        if st.loading || st.partial {
             return;
         }
         st.loading = true;
-        st.error = None;
-        st.sort = sort;
+        let (sort, merge) = (st.sort, st.fetched_at > 0);
+        self.fetch_thread(from, key, sort, false, merge, Priority::Prefetch);
+    }
+
+    /// The feed preview's few top comments of post `id`, when nothing of its thread is here.
+    fn prefetch_thread(&mut self, from: MachineId, id: String) {
+        if self.session().is_none() || self.store.threads.contains_key(&id) {
+            return;
+        }
+        let sort = self.default_comment_sort();
+        let mut st = new_thread(sort);
+        st.loading = true;
+        st.partial = true;
+        self.store.threads.insert(id.clone(), st);
+        self.fetch_thread(from, id, sort, true, false, Priority::Prefetch);
+    }
+
+    /// Fetches thread `key` in the background: the light preview listing when `partial`.
+    fn fetch_thread(&mut self, from: MachineId, key: String, sort: CommentSort, partial: bool, merge: bool, priority: Priority) {
+        let Some(s) = self.session() else { return };
         let epoch = self.epoch;
         self.spawn(from, "thread", move || {
-            let (path, q) = listing::thread_request(&id, sort, None);
+            let (post, focus) = store::split_thread_key(&key);
+            let (path, q) = if partial { listing::thread_preview_request(post, sort) } else { listing::thread_request(post, sort, focus) };
             let q: Vec<(&str, &str)> = q.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
             let result = s
-                .get(&path, &q, Priority::Page)
+                .get(&path, &q, priority)
                 .and_then(|r| comments::parse_thread(&r.json))
                 .map(|t| (t.post, t.comments))
                 .map_err(|e| e.to_string());
-            Work::Thread { epoch, id, sort, result }
+            Work::Thread { epoch, id: key, sort, partial, merge, result }
         });
     }
 
@@ -848,10 +950,11 @@ impl AppRig {
         }
         let sort = st.sort;
         let epoch = self.epoch;
+        let post_id = store::split_thread_key(&post).0.to_string();
         self.spawn(from, "more", move || {
             // Focused listings (Reddit blocks /api/morechildren since late October 2026).
             let focused = |id: &str| -> Result<Vec<Node>, String> {
-                let (path, q) = comments::focused_request(&post, id, sort.key());
+                let (path, q) = comments::focused_request(&post_id, id, sort.key());
                 let q: Vec<(&str, &str)> = q.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
                 s.get(&path, &q, Priority::Page).and_then(|r| comments::parse_thread(&r.json)).map(|t| t.comments).map_err(|e| e.to_string())
             };
@@ -1063,22 +1166,23 @@ impl AppRig {
                 }
             }));
         } else {
-            let mut found = None;
-            for (pid, st) in self.store.threads.iter_mut() {
+            // The comment in every thread it shows in (the post's and a comment link's).
+            let mut found = Vec::new();
+            for (key, st) in self.store.threads.iter_mut() {
                 if let Some(c) = find_comment(&mut st.tree, &fullname) {
-                    let before = (c.likes, c.score);
+                    found.push((key.clone(), (c.likes, c.score)));
                     c.score += score_delta(c.likes, want);
                     c.likes = want;
                     st.gen = st.gen.wrapping_add(1);
-                    found = Some((pid.clone(), before));
-                    break;
                 }
             }
-            let Some((pid, before)) = found else { return };
+            if found.is_empty() {
+                return;
+            }
             let name = fullname.clone();
             undo = Some(Box::new(move |s: &mut Store| {
-                if let Some(st) = s.threads.get_mut(&pid) {
-                    if let Some(c) = find_comment(&mut st.tree, &name) {
+                for (key, before) in found {
+                    if let Some(c) = s.threads.get_mut(&key).and_then(|st| find_comment(&mut st.tree, &name)) {
                         (c.likes, c.score) = before;
                     }
                 }
@@ -1092,11 +1196,11 @@ impl AppRig {
         if self.need_sign_in() {
             return;
         }
-        if let Some(p) = fullname.strip_prefix("t3_").and_then(|id| self.store.posts.get_mut(id)) {
-            p.post.saved = on;
-        }
+        set_saved(&mut self.store, &fullname, on);
         self.store.bump();
-        self.action(from, listing::save(&fullname, on), None, Some(if on { "Saved".into() } else { "Removed from saved".into() }));
+        let name = fullname.clone();
+        let undo: Box<dyn FnOnce(&mut Store) + Send> = Box::new(move |s: &mut Store| set_saved(s, &name, !on));
+        self.action(from, listing::save(&fullname, on), Some(undo), Some(if on { "Saved".into() } else { "Removed from saved".into() }));
     }
 
     fn refresh_me(&mut self) {
@@ -1490,12 +1594,27 @@ fn resolve_share(url: &str) -> Option<rd_core::listing::RedditLink> {
     None
 }
 
+/// How long a loaded thread is shown as it is before opening the post loads it again.
+const THREAD_FRESH_SECS: u64 = 180;
+
 fn new_thread(sort: CommentSort) -> ThreadState {
-    ThreadState { tree: Vec::new(), toggled: HashSet::new(), loading: false, error: None, sort, loading_more: HashSet::new(), gen: 0 }
+    ThreadState {
+        tree: Vec::new(),
+        toggled: HashSet::new(),
+        loading: false,
+        error: None,
+        sort,
+        loading_more: HashSet::new(),
+        gen: 0,
+        fetched_at: 0,
+        partial: false,
+        arrived: HashSet::new(),
+    }
 }
 
-/// Starts deep replies and moderator notes collapsed, as the settings ask.
-fn apply_auto_collapse(st: &mut ThreadState, prefs: &crate::prefs::Prefs) {
+/// The comments of `tree` that start collapsed as the settings ask (deep replies, moderator
+/// notes), as toggles of Reddit's own flag.
+fn auto_collapsed(tree: &[Node], prefs: &crate::prefs::Prefs) -> HashSet<String> {
     let depth = prefs.num("collapse_depth") as u32;
     let mods = prefs.on("collapse_mod");
     fn walk(nodes: &[Node], depth: u32, max: u32, mods: bool, out: &mut HashSet<String>) {
@@ -1512,8 +1631,39 @@ fn apply_auto_collapse(st: &mut ThreadState, prefs: &crate::prefs::Prefs) {
         }
     }
     let mut set = HashSet::new();
-    walk(&st.tree, 0, depth, mods, &mut set);
-    st.toggled = set;
+    walk(tree, 0, depth, mods, &mut set);
+    set
+}
+
+/// Opens comment `name` and the comments above it (`toggled` flips Reddit's own collapsed flag).
+/// Whether it is in `nodes`.
+fn open_path(nodes: &[Node], name: &str, toggled: &mut HashSet<String>) -> bool {
+    for n in nodes {
+        if let Node::Comment(c) = n {
+            if c.name == name || open_path(&c.replies, name, toggled) {
+                if c.collapsed {
+                    toggled.insert(c.name.clone());
+                } else {
+                    toggled.remove(&c.name);
+                }
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Marks a post, or a comment in every thread it shows in, saved or not.
+fn set_saved(s: &mut Store, fullname: &str, on: bool) {
+    if let Some(p) = fullname.strip_prefix("t3_").and_then(|id| s.posts.get_mut(id)) {
+        p.post.saved = on;
+    }
+    for st in s.threads.values_mut() {
+        if let Some(c) = find_comment(&mut st.tree, fullname) {
+            c.saved = on;
+            st.gen = st.gen.wrapping_add(1);
+        }
+    }
 }
 
 fn score_delta(before: Option<bool>, after: Option<bool>) -> i64 {
@@ -1554,18 +1704,25 @@ fn find_more<'a>(nodes: &'a [Node], id: &str) -> Option<&'a rd_core::comments::M
     None
 }
 
-/// A fresh reply goes first under its parent (or first in the thread).
-fn insert_reply(tree: &mut Vec<Node>, node: Node) {
+/// A fresh reply goes first under its parent, or first in the thread when it answers the post
+/// and `whole` (the post's whole thread, not one comment's). Whether it went in.
+fn insert_reply(tree: &mut Vec<Node>, node: Node, whole: bool) -> bool {
     let parent = match &node {
         Node::Comment(c) => c.parent_id.clone(),
         Node::More(m) => m.parent_id.clone(),
     };
     if parent.starts_with("t3_") {
-        tree.insert(0, node);
-        return;
+        if whole {
+            tree.insert(0, node);
+        }
+        return whole;
     }
-    if let Some(c) = find_comment(tree, &parent) {
-        c.replies.insert(0, node);
+    match find_comment(tree, &parent) {
+        Some(c) => {
+            c.replies.insert(0, node);
+            true
+        }
+        None => false,
     }
 }
 
@@ -1613,6 +1770,18 @@ impl Rig<RdHost> for AppRig {
             }
             RdFx::MoreFeed(key) => self.load_feed(from, key, true),
             RdFx::LoadThread { id, sort, reload } => self.load_thread(from, id, sort, reload),
+            RdFx::RefreshThread { id } => self.refresh_thread(from, id),
+            RdFx::PrefetchThread { id } => self.prefetch_thread(from, id),
+            RdFx::MarkSeen { id, at, comments } => {
+                self.store.seen.visit(&id, crate::seen::Visit { at, comments });
+                self.seen_dirty = true;
+                if let Some(p) = self.store.posts.get_mut(&id) {
+                    p.new_comments = 0;
+                }
+                for f in self.store.feeds.values_mut().filter(|f| f.ids.contains(&id)) {
+                    f.gen = f.gen.wrapping_add(1);
+                }
+            }
             RdFx::MoreComments { post, more_id } => self.more_comments(from, post, more_id),
             RdFx::ToggleComment { post, name } => {
                 if let Some(st) = self.store.threads.get_mut(&post) {
@@ -1798,6 +1967,27 @@ mod tests {
         let m = merge(Some(&old), &other);
         assert_eq!(m.refresh_token, None);
         assert_ne!(m.device_id, old.device_id);
+    }
+
+    #[test]
+    fn a_linked_comment_shows_and_replies_land_in_the_threads_that_hold_their_parent() {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../../rd-core/tests/fixtures/thread.json")).unwrap();
+        let tree = comments::parse_thread(&v).unwrap().comments;
+        // c1 starts collapsed by the settings: a link to c3, under it, opens it.
+        let mut toggled: HashSet<String> = ["t1_c1".to_string()].into();
+        assert!(open_path(&tree, "t1_c3", &mut toggled));
+        assert!(!toggled.contains("t1_c1"));
+        assert!(!open_path(&tree, "t1_zz", &mut toggled));
+        // c4 is collapsed by Reddit itself: its link flips it open.
+        assert!(open_path(&tree, "t1_c4", &mut toggled) && toggled.contains("t1_c4"));
+        let reply = |parent: &str| {
+            let things = serde_json::json!({"json": {"data": {"things": [{"kind": "t1", "data": {"id": "r", "name": "t1_r", "parent_id": parent}}]}}});
+            comments::parse_morechildren(&things).unwrap().remove(0)
+        };
+        let (mut whole, mut one) = (tree.clone(), tree.clone());
+        assert!(insert_reply(&mut whole, reply("t3_1abc001"), true) && whole.len() == tree.len() + 1);
+        assert!(!insert_reply(&mut one, reply("t3_1abc001"), false));
+        assert!(insert_reply(&mut one, reply("t1_c2"), false) && find_comment(&mut one, "t1_r").is_some());
     }
 
     #[test]

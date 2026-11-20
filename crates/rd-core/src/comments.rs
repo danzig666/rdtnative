@@ -26,6 +26,8 @@ pub struct Comment {
     /// Reddit's own default (e.g. below the score threshold).
     pub collapsed: bool,
     pub likes: Option<bool>,
+    /// In the signed-in user's saved items.
+    pub saved: bool,
     pub author_flair_text: Option<String>,
     pub replies: Vec<Node>,
 }
@@ -86,6 +88,7 @@ fn parse_thing(t: &Value) -> Option<Node> {
             stickied: b(d, "stickied"),
             collapsed: b(d, "collapsed"),
             likes: d["likes"].as_bool(),
+            saved: b(d, "saved"),
             author_flair_text: crate::model::flair(d, "author_flair_richtext", "author_flair_text"),
             // `replies` is "" when empty, otherwise a Listing.
             replies: d["replies"]["data"]["children"]
@@ -317,6 +320,96 @@ pub fn count(nodes: &[Node]) -> usize {
         .sum()
 }
 
+/// Names (`t1_…`) of every comment in a tree.
+pub fn comment_names(nodes: &[Node]) -> HashSet<String> {
+    fn walk(nodes: &[Node], out: &mut HashSet<String>) {
+        for n in nodes {
+            if let Node::Comment(c) = n {
+                out.insert(c.name.clone());
+                walk(&c.replies, out);
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    walk(nodes, &mut out);
+    out
+}
+
+/// A thread loaded again, laid over the copy on screen so nothing the user opened is lost: at
+/// each level the fresh comments in Reddit's order (new scores, new replies), then the comments
+/// only the old copy has (pages fetched with "load more", older ones past the fresh listing's
+/// limit), then the fresh "load more" rows, without the comments the merged tree already holds.
+pub fn merge_fresh(old: Vec<Node>, fresh: Vec<Node>) -> Vec<Node> {
+    fn level(old: Vec<Node>, fresh: Vec<Node>) -> Vec<Node> {
+        let mut kept: Vec<Comment> = old
+            .into_iter()
+            .filter_map(|n| match n {
+                Node::Comment(c) => Some(c),
+                Node::More(_) => None,
+            })
+            .collect();
+        let mut out = Vec::new();
+        let mut more = Vec::new();
+        for n in fresh {
+            match n {
+                Node::Comment(mut c) => {
+                    if let Some(i) = kept.iter().position(|o| o.name == c.name) {
+                        let o = kept.remove(i);
+                        c.replies = level(o.replies, std::mem::take(&mut c.replies));
+                    }
+                    out.push(Node::Comment(c));
+                }
+                m @ Node::More(_) => more.push(m),
+            }
+        }
+        out.extend(kept.into_iter().map(Node::Comment));
+        out.extend(more);
+        out
+    }
+    fn ids(nodes: &[Node], out: &mut HashSet<String>) {
+        for n in nodes {
+            if let Node::Comment(c) = n {
+                out.insert(c.id.clone());
+                ids(&c.replies, out);
+            }
+        }
+    }
+    fn trim(nodes: &mut Vec<Node>, have: &HashSet<String>) {
+        nodes.retain_mut(|n| match n {
+            Node::Comment(c) => {
+                trim(&mut c.replies, have);
+                true
+            }
+            Node::More(m) if m.is_continue_thread() => true,
+            Node::More(m) => {
+                let before = m.children.len();
+                m.children.retain(|id| !have.contains(id));
+                m.count = (m.count - (before - m.children.len()) as i64).max(m.children.len() as i64);
+                !m.children.is_empty()
+            }
+        });
+    }
+    let mut merged = level(old, fresh);
+    let mut have = HashSet::new();
+    ids(&merged, &mut have);
+    trim(&mut merged, &have);
+    merged
+}
+
+/// Whether a post reads like a thread people follow as it happens (a match, game, live or
+/// discussion thread) and is young enough, under 12 hours, to still be one.
+pub fn is_live_thread(title: &str, flair: Option<&str>, created_utc: i64, now: i64) -> bool {
+    const PHRASES: [&str; 4] = ["match thread", "game thread", "live thread", "discussion thread"];
+    if now - created_utc >= 12 * 3600 {
+        return false;
+    }
+    let live = |s: &str| {
+        let s = s.to_lowercase();
+        PHRASES.iter().any(|p| s.contains(p)) || s.split(|c: char| !c.is_alphanumeric()).any(|w| w == "live")
+    };
+    live(title) || flair.is_some_and(live)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,5 +501,61 @@ mod tests {
         let q = morechildren_query("t3_x", &ids, "confidence");
         assert_eq!(q[0], ("api_type", "json"));
         assert!(parse_morechildren(&serde_json::json!({"json":{"errors":[["RATELIMIT"]]}})).is_err());
+    }
+
+    fn comment(id: &str, parent: &str, score: i64, replies: Vec<Node>) -> Node {
+        let mut c = match parse_thing(&serde_json::json!({"kind": "t1", "data": {"id": id, "name": format!("t1_{id}"), "parent_id": parent}})) {
+            Some(Node::Comment(c)) => c,
+            _ => panic!(),
+        };
+        c.score = score;
+        c.replies = replies;
+        Node::Comment(c)
+    }
+
+    #[test]
+    fn a_fresh_copy_keeps_what_was_loaded_and_adds_whats_new() {
+        // On screen: c1 with c2 under it (c5 came from "load more"), then c4.
+        let old = vec![
+            comment("c1", "t3_p", 10, vec![comment("c2", "t1_c1", 1, vec![]), comment("c5", "t1_c1", 1, vec![])]),
+            comment("c4", "t3_p", 3, vec![]),
+        ];
+        // Fresh: a new top comment first, c1 with a new score and a new reply, c5 back in a
+        // "load more" row (with one comment never fetched), c4 past the listing's limit.
+        let more = Node::More(More { id: "m".into(), parent_id: "t1_c1".into(), count: 2, depth: 1, children: vec!["c5".into(), "c9".into()] });
+        let fresh = vec![comment("c7", "t3_p", 1, vec![]), comment("c1", "t3_p", 12, vec![comment("c2", "t1_c1", 1, vec![]), comment("c6", "t1_c1", 1, vec![]), more])];
+        let before = comment_names(&old);
+        let merged = merge_fresh(old, fresh);
+        let rows = flatten(&merged, &HashSet::new());
+        assert_eq!(names(&rows), ["c7", "c1", "  c2", "  c6", "  c5", "  more(1)", "c4"]);
+        let Row::Comment { c, .. } = &rows[1] else { panic!() };
+        assert_eq!(c.score, 12);
+        let added: Vec<String> = comment_names(&merged).difference(&before).cloned().collect();
+        assert_eq!(added.len(), 2);
+        assert!(added.contains(&"t1_c7".to_string()) && added.contains(&"t1_c6".to_string()));
+        // A "load more" row left with nothing to fetch goes; "continue this thread" stays.
+        let cont = Node::More(More { id: "k".into(), parent_id: "t1_c2".into(), count: 0, depth: 2, children: vec![] });
+        let gone = Node::More(More { id: "g".into(), parent_id: "t3_p".into(), count: 1, depth: 0, children: vec!["c4".into()] });
+        let merged = merge_fresh(vec![comment("c4", "t3_p", 1, vec![cont.clone()])], vec![gone, comment("c4", "t3_p", 1, vec![cont])]);
+        assert_eq!(names(&flatten(&merged, &HashSet::new())), ["c4", "  more(0)"]);
+    }
+
+    #[test]
+    fn live_threads_by_title_or_flair_while_young() {
+        let now = 1_000_000;
+        assert!(is_live_thread("Match Thread: Arsenal vs Spurs", None, now - 600, now));
+        assert!(is_live_thread("Post Game Thread: Lakers win", None, now - 600, now));
+        assert!(is_live_thread("Election results", Some("LIVE"), now - 600, now));
+        assert!(is_live_thread("[Live] Launch coverage", None, now - 600, now));
+        assert!(!is_live_thread("I delivered pizza alive", None, now - 600, now));
+        assert!(!is_live_thread("Match Thread: yesterday", None, now - 13 * 3600, now));
+    }
+
+    #[test]
+    fn comments_carry_their_saved_state() {
+        let Some(Node::Comment(c)) = parse_thing(&serde_json::json!({"kind": "t1", "data": {"id": "x", "saved": true}})) else { panic!() };
+        assert!(c.saved);
+        let t = parse_thread(&fixture("thread.json")).unwrap();
+        assert!(t.comments.iter().all(|n| !matches!(n, Node::Comment(c) if c.saved)));
     }
 }
