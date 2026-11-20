@@ -51,8 +51,9 @@ const T_PREVIEW: plx_machine::machine::TimerId = plx_machine::machine::TimerId(4
 fn retry_timer(entry: EntryId) -> plx_machine::machine::TimerId {
     plx_machine::machine::TimerId(0x8000_0000 | entry.0)
 }
-/// The second BACK on the side menu leaves the app within this window (the toast lasts as long).
-const EXIT_WINDOW_MS: u32 = 2000;
+/// The second BACK on the side menu leaves the app within this window (ytnative's double press);
+/// after it a single BACK closes the menu, so it is kept short.
+const EXIT_WINDOW_MS: u32 = 700;
 /// Width of the list in the two-pane layout.
 const SPLIT_W: f32 = 800.0;
 
@@ -881,7 +882,9 @@ impl Machine<RdHost> for FeedScreen {
             }
             return Handled::Yes;
         }
-        // BACK: closes the side menu; on the start page it opens it, and (twice) leaves the app.
+        // BACK on the start page opens the side menu. On the side menu, as in ytnative: BACK twice
+        // in quick succession leaves the app; a single BACK closes the menu once the window for
+        // the second press has passed (T_BACK).
         if common::back_any(ev) && self.root {
             let down = common::back_down(ev);
             if self.on_nav(cx) && self.nav_open.get() {
@@ -896,7 +899,6 @@ impl Machine<RdHost> for FeedScreen {
                     self.back_at = now;
                     fx.push(Fx::CancelTimer(T_BACK));
                     fx.push(Fx::Timer { id: T_BACK, after_ms: EXIT_WINDOW_MS });
-                    fx.push(Fx::App(RdFx::ToastFor("Press BACK again to leave".into(), EXIT_WINDOW_MS)));
                     return Handled::Yes;
                 }
                 return if self.exit_armed { Handled::No } else { Handled::Yes };
@@ -1009,8 +1011,15 @@ impl Machine<RdHost> for FeedScreen {
                     }
                 }
             }
-            // The window for leaving is over; the side menu stays open.
-            ScreenEvent::Timer(T_BACK) => self.back_at = 0,
+            // A single BACK on the side menu: the window for a second press is over, so it closes.
+            ScreenEvent::Timer(T_BACK) => {
+                if self.back_at != 0 && self.on_nav(cx) && self.nav_open.get() {
+                    self.nav_open.set(false);
+                    self.focus_req.set(Some(self.content_last.get()));
+                    fx.invalidate(plx_machine::present::Provenance::Input);
+                }
+                self.back_at = 0;
+            }
             ScreenEvent::Async(_, RdMsg::Changed) => {
                 // Settings may have changed the layout.
                 if layout_of(cx) != self.layout {

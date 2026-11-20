@@ -35,16 +35,17 @@ pub enum Color {
     Blue,
 }
 
-/// A colour button pressed (LG codes 403-406; F1-F4 or 1-4 in the simulator).
+/// A colour button pressed. The TV's own remote sends LG's codes 486-489 (measured in ytnative);
+/// 403-406 are the web codes other remotes and the dev remote send; F1-F4 or 1-4 in the simulator.
 pub fn color_key(ev: &ScreenEvent<RdHost>) -> Option<Color> {
     let ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Other, sym, wcode, edge: Edge::Down, .. }, .. }) = ev else {
         return None;
     };
     let by_code = match wcode {
-        403 => Some(Color::Red),
-        404 => Some(Color::Green),
-        405 => Some(Color::Yellow),
-        406 => Some(Color::Blue),
+        403 | 486 => Some(Color::Red),
+        404 | 487 => Some(Color::Green),
+        405 | 488 => Some(Color::Yellow),
+        406 | 489 => Some(Color::Blue),
         _ => None,
     };
     by_code.or(match *sym {

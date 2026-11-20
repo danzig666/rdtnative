@@ -264,8 +264,6 @@ pub enum RdFx {
     OpenBrowser(String),
     /// Open a reddit.com share link (resolved in the background, then opened).
     OpenShare(String),
-    /// A toast that stays up this many ms.
-    ToastFor(String, u32),
     /// Put the post hidden last back (Yellow, while its toast offers it).
     UndoHide,
 }
@@ -2507,7 +2505,6 @@ impl Rig<RdHost> for AppRig {
                     self.action(from, listing::hide(&format!("t3_{}", h.id), false), None, Some("Shown again".into()));
                 }
             }
-            RdFx::ToastFor(m, ms) => self.store.toast_for(m, now, ms),
             RdFx::Subscribe { sub, on } => {
                 if self.need_sign_in() {
                     return;
