@@ -182,6 +182,8 @@ pub enum RdFx {
     StopVideo,
     PauseVideo,
     SeekVideo(i64),
+    /// Speed, quality, loop, replay, the play and pause keys.
+    VideoControl(crate::player::Control),
     /// Play a YouTube video in ytnative (or LG's YouTube app).
     OpenYouTube(String),
     /// Open a web address in the TV's browser.
@@ -427,6 +429,10 @@ impl AppRig {
         self.poll_signin_phone();
         if self.player.active() {
             self.player.tick();
+            let notice = self.player.status.lock().unwrap().notice.take();
+            if let Some(m) = notice {
+                self.store.toast(m, now_ms);
+            }
             let st = self.player.status.lock().unwrap().clone();
             if st.position_ms != self.store.play.position_ms || st.phase != self.store.play.phase {
                 plx_machine::present::wake_from_worker();
@@ -1688,6 +1694,7 @@ impl Rig<RdHost> for AppRig {
             RdFx::SignOut => self.sign_out(),
             RdFx::LoadInbox => self.load_inbox(from),
             RdFx::Play { url, looping } => {
+                self.player.set_quality_cap(crate::player::quality_cap(self.store.prefs.get("video_quality")));
                 self.player.start(url, looping);
                 self.store.play = self.player.status.lock().unwrap().clone();
             }
@@ -1697,6 +1704,7 @@ impl Rig<RdHost> for AppRig {
             }
             RdFx::PauseVideo => self.player.toggle_pause(),
             RdFx::SeekVideo(d) => self.player.seek_by(d),
+            RdFx::VideoControl(c) => self.player.control(c),
             RdFx::OpenShare(url) => {
                 self.store.toast("Opening the shared link\u{2026}", now);
                 self.spawn(from, "share", move || {

@@ -5,6 +5,13 @@
 //! Threading: the exported window is created and destroyed on the main thread (SDL); every luna
 //! call runs on a worker; media events update `Status`, which the player screen reads each frame.
 //!
+//! Speed, loop and a quality cap change while a video plays. The media service has no size or
+//! bitrate limit, so a capped HLS video plays from a copy of its master playlist reduced to the
+//! cap, written to a local file. When the TV takes the pipeline away after the video played
+//! (another app or the screensaver wanted the decoder), the video is loaded again where it was on
+//! the viewer's next play, seek or replay: started while the decoder is still taken, it would only
+//! be taken again.
+//!
 //! The Windows simulator has no media pipeline: its player runs a clock so the screen and its
 //! controls can be tried.
 
@@ -21,6 +28,19 @@ pub enum Phase {
     Failed(String),
 }
 
+/// Playback speed, 1.0 = normal (its own type so that a default `Status` plays at normal speed).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rate(pub f32);
+
+impl Default for Rate {
+    fn default() -> Self {
+        Rate(1.0)
+    }
+}
+
+/// The speeds the player offers.
+pub const SPEEDS: [f32; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+
 #[derive(Clone, Debug, Default)]
 pub struct Status {
     pub phase: Phase,
@@ -34,6 +54,32 @@ pub struct Status {
     /// Set when the stream failed before playing and other addresses are left (one per line):
     /// the main thread starts them on its next tick.
     pub retry: Option<String>,
+    pub rate: Rate,
+    /// HLS: the heights the stream offers, highest first (the quality choice).
+    pub heights: Vec<u32>,
+    /// The highest quality this video plays at (an HLS height); 0 = Auto (the TV chooses).
+    pub max_height: u32,
+    /// The TV took the pipeline away after the video played: the position it is loaded again at
+    /// on the viewer's next play, seek or replay.
+    pub reload: Option<u64>,
+    /// A message for the viewer (a speed the TV refused), shown once as a toast.
+    pub notice: Option<String>,
+}
+
+/// What the viewer asks of the playing video, beside pause and seek.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Control {
+    /// The remote's play key: resumes, or starts again once the video ended.
+    Play,
+    /// The remote's pause key.
+    Pause,
+    /// Playback speed, 1.0 = normal.
+    Rate(f32),
+    /// This video's highest quality (an HLS height; 0 = Auto): it loads again where it is.
+    Quality(u32),
+    Loop(bool),
+    /// From the start.
+    Replay,
 }
 
 #[cfg(not(any(windows, feature = "sim")))]
@@ -41,6 +87,11 @@ mod tv {
     use super::*;
     use crate::ls2::Luna;
     use std::ffi::{c_char, c_int, CStr, CString};
+
+    /// The reduced master playlist a capped HLS video plays from.
+    const LOCAL_M3U8: &str = "/tmp/rdtnative/play.m3u8";
+    const RATE_REFUSED: &str = "The TV refused this speed: playing at normal speed";
+    const TAKEN_AWAY: &str = "The TV stopped the video: OK continues where it was";
 
     #[repr(C)]
     struct SdlRect {
@@ -63,17 +114,27 @@ mod tv {
         serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
     }
 
+    fn media_json(mid: &str) -> String {
+        format!(r#"{{"mediaId":{}}}"#, json_str(mid))
+    }
+
+    fn rate_json(mid: &str, rate: f32) -> String {
+        format!(r#"{{"mediaId":{},"playRate":{rate},"audioOutput":true}}"#, json_str(mid))
+    }
+
     pub struct Player {
         pub status: Arc<Mutex<Status>>,
         window: Option<CString>,
         media_id: Arc<Mutex<Option<String>>>,
         luna: Option<&'static Luna>,
         gen: Arc<std::sync::atomic::AtomicU64>,
+        /// The quality cap loads play at (an HLS height; 0 = Auto).
+        cap: u32,
     }
 
     impl Player {
         pub fn new() -> Self {
-            Player { status: Default::default(), window: None, media_id: Default::default(), luna: None, gen: Default::default() }
+            Player { status: Default::default(), window: None, media_id: Default::default(), luna: None, gen: Default::default(), cap: 0 }
         }
 
         pub fn active(&self) -> bool {
@@ -95,12 +156,29 @@ mod tv {
             self.status.lock().unwrap().phase = Phase::Failed(why.to_string());
         }
 
+        /// The quality the next videos play at (the Video quality setting): an HLS height, 0 = Auto.
+        pub fn set_quality_cap(&mut self, h: u32) {
+            self.cap = h;
+        }
+
         /// Main thread. Plays `url` full screen.
         pub fn start(&mut self, url: String, looping: bool) {
+            self.load(url, looping, 0, 1.0);
+        }
+
+        /// Main thread. Plays `url` (addresses, one per line) full screen from `start_ms`, at speed
+        /// `rate` and the current quality cap.
+        fn load(&mut self, url: String, looping: bool, start_ms: u64, rate: f32) {
+            // A reload of the same stream keeps its quality choice on screen while it loads.
+            let heights = {
+                let s = self.status.lock().unwrap();
+                if s.url == url { s.heights.clone() } else { Vec::new() }
+            };
             self.stop();
             let my_gen = self.gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             let gen = self.gen.clone();
-            *self.status.lock().unwrap() = Status { phase: Phase::Loading, url: url.clone(), looping, ..Default::default() };
+            *self.status.lock().unwrap() =
+                Status { phase: Phase::Loading, url: url.clone(), looping, position_ms: start_ms, rate: Rate(rate), heights, max_height: self.cap, ..Default::default() };
             let Some(create) = sdl_sym::<CreateFn>("SDL_webOSCreateExportedWindow") else {
                 self.fail("this TV has no video window for native apps (webOS 4 is not supported yet)");
                 return;
@@ -122,7 +200,7 @@ mod tv {
                 self.fail("media bus unavailable");
                 return;
             };
-            let (status, media_id) = (self.status.clone(), self.media_id.clone());
+            let (status, media_id, cap) = (self.status.clone(), self.media_id.clone(), self.cap);
             let spawned = plx_base::task::spawn("play", move || {
                 let live = || gen.load(std::sync::atomic::Ordering::SeqCst) == my_gen;
                 let all = candidates(&url);
@@ -135,15 +213,19 @@ mod tv {
                     return;
                 }
                 status.lock().unwrap().url = url.clone();
+                let uri = hls_source(&url, cap, &status, &live);
+                if !live() {
+                    return;
+                }
                 let app_id = plx_base::paths::app_id();
                 let load = format!(
                     r#"{{"uri":{},"type":"media","payload":{{"option":{{"appId":{},"windowId":{}}}}}}}"#,
-                    json_str(&url),
+                    json_str(&uri),
                     json_str(app_id),
                     json_str(&window_id)
                 );
                 let r = luna.call("luna://com.webos.media/load", &load);
-                crate::log(&format!("player: load {url} -> {r}"));
+                crate::log(&format!("player: load {uri} -> {r}"));
                 let v: serde_json::Value = serde_json::from_str(&r).unwrap_or_default();
                 let Some(mid) = v["mediaId"].as_str().map(str::to_string) else {
                     if live() {
@@ -160,31 +242,143 @@ mod tv {
                 let (st, current, me) = (status.clone(), media_id.clone(), mid.clone());
                 luna.subscribe("luna://com.webos.media/subscribe", &format!(r#"{{"mediaId":{},"subscribe":true}}"#, json_str(&mid)), move |msg| {
                     if current.lock().unwrap().as_deref() == Some(me.as_str()) {
-                        on_event(&st, msg, luna, &me, &rest);
+                        on_event(&st, &current, msg, luna, &me, &rest);
                     }
                 });
                 luna.call("luna://com.webos.media/notifyForeground", &format!(r#"{{"connectionId":{}}}"#, json_str(&mid)));
                 let r = luna.call("luna://com.webos.media/play", &format!(r#"{{"mediaId":{}}}"#, json_str(&mid)));
                 crate::log(&format!("player: play -> {r}"));
                 plx_machine::present::wake_from_worker();
+                let rate = status.lock().unwrap().rate.0;
+                if start_ms <= 2000 && rate == 1.0 {
+                    return;
+                }
+                // A seek (or a speed) sent right after play is answered and ignored (ytnative saw a
+                // resumed video start from 0:00): wait until the pipeline plays.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                while live() && status.lock().unwrap().phase == Phase::Loading && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                if !live() || matches!(status.lock().unwrap().phase, Phase::Failed(_)) {
+                    return;
+                }
+                if start_ms > 2000 {
+                    let seek = |why: &str| {
+                        let r = luna.call("luna://com.webos.media/seek", &format!(r#"{{"mediaId":{},"position":{start_ms}}}"#, json_str(&mid)));
+                        crate::log(&format!("player: start at {start_ms} ms ({why}) -> {r}"));
+                    };
+                    seek("playing");
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    if live() && status.lock().unwrap().position_ms + 5_000 < start_ms {
+                        seek("again");
+                    }
+                }
+                let rate = status.lock().unwrap().rate.0;
+                if live() && rate != 1.0 {
+                    apply_rate(luna, &mid, rate, &status, &media_id);
+                }
             });
             if spawned.is_none() {
                 self.fail("could not start the player thread");
             }
         }
 
+        /// After the TV took the pipeline away: loads the video again at `at` (else where it was).
+        /// False while the pipeline is there.
+        fn reload_lost(&mut self, at: Option<u64>) -> bool {
+            let (url, looping, rate, from) = {
+                let s = self.status.lock().unwrap();
+                let Some(from) = s.reload else { return false };
+                (s.url.clone(), s.looping, s.rate.0, from)
+            };
+            let at = at.unwrap_or(from);
+            crate::log(&format!("player: loading the video again at {at} ms"));
+            self.load(url, looping, at, rate);
+            true
+        }
+
         pub fn toggle_pause(&mut self) {
+            if self.reload_lost(None) {
+                return;
+            }
             let Some(luna) = self.luna else { return };
             let Some(mid) = self.media_id.lock().unwrap().clone() else { return };
-            let phase = self.status.lock().unwrap().phase.clone();
-            let method = if matches!(phase, Phase::Paused | Phase::Ended) { "play" } else { "pause" };
-            let payload = format!(r#"{{"mediaId":{}}}"#, json_str(&mid));
+            let (phase, rate) = {
+                let s = self.status.lock().unwrap();
+                (s.phase.clone(), s.rate.0)
+            };
+            let (status, current) = (self.status.clone(), self.media_id.clone());
             let _ = plx_base::task::spawn("media", move || {
-                luna.call(&format!("luna://com.webos.media/{method}"), &payload);
+                if matches!(phase, Phase::Paused | Phase::Ended) {
+                    resume(luna, &mid, rate, &status, &current);
+                } else {
+                    luna.call("luna://com.webos.media/pause", &media_json(&mid));
+                }
             });
         }
 
+        /// From the start: seek to 0, then play.
+        pub fn replay(&mut self) {
+            if self.reload_lost(Some(0)) {
+                return;
+            }
+            let Some(luna) = self.luna else { return };
+            let Some(mid) = self.media_id.lock().unwrap().clone() else { return };
+            let rate = {
+                let mut s = self.status.lock().unwrap();
+                s.position_ms = 0;
+                s.rate.0
+            };
+            let (status, current) = (self.status.clone(), self.media_id.clone());
+            let _ = plx_base::task::spawn("media", move || {
+                luna.call("luna://com.webos.media/seek", &format!(r#"{{"mediaId":{},"position":0}}"#, json_str(&mid)));
+                resume(luna, &mid, rate, &status, &current);
+            });
+        }
+
+        /// Playback speed (0.25..4) through uMediaServer's setPlayRate. A reload of this video
+        /// keeps it, and every resume asks for it again.
+        pub fn set_rate(&mut self, rate: f32) {
+            let rate = rate.clamp(0.25, 4.0);
+            let lost = {
+                let mut s = self.status.lock().unwrap();
+                s.rate = Rate(rate);
+                s.reload.is_some()
+            };
+            let Some(luna) = self.luna else { return };
+            // Still loading, or taken away: the load asks for it once the video plays.
+            let Some(mid) = self.media_id.lock().unwrap().clone().filter(|_| !lost) else { return };
+            let (status, current) = (self.status.clone(), self.media_id.clone());
+            let _ = plx_base::task::spawn("media", move || apply_rate(luna, &mid, rate, &status, &current));
+        }
+
+        /// This video's highest quality (an HLS height; 0 = Auto): it loads again where it is.
+        pub fn set_quality(&mut self, h: u32) {
+            self.cap = h;
+            let (url, looping, at, rate, phase) = {
+                let s = self.status.lock().unwrap();
+                (s.url.clone(), s.looping, s.reload.unwrap_or(s.position_ms), s.rate.0, s.phase.clone())
+            };
+            if url.is_empty() || matches!(phase, Phase::Idle | Phase::Failed(_)) {
+                return;
+            }
+            crate::log(&format!("player: quality {h}p, again at {at} ms"));
+            self.load(url, looping, at, rate);
+        }
+
         pub fn seek_by(&mut self, delta_ms: i64) {
+            let lost = {
+                let s = self.status.lock().unwrap();
+                let dur = s.duration_ms as i64;
+                s.reload.map(|at| {
+                    let to = (at as i64 + delta_ms).max(0);
+                    (if dur > 0 { to.min((dur - 500).max(0)) } else { to }) as u64
+                })
+            };
+            if let Some(to) = lost {
+                self.reload_lost(Some(to));
+                return;
+            }
             let Some(luna) = self.luna else { return };
             let Some(mid) = self.media_id.lock().unwrap().clone() else { return };
             let to = {
@@ -230,7 +424,76 @@ mod tv {
         }
     }
 
-    fn on_event(status: &Mutex<Status>, msg: &str, luna: &'static Luna, mid: &str, rest: &Mutex<Option<String>>) {
+    /// HLS: the master's heights become the quality choice, and under a cap the TV plays a copy
+    /// reduced to it from a local file. Anything else, or a master that cannot be read, plays
+    /// from `url` itself.
+    fn hls_source(url: &str, cap: u32, status: &Mutex<Status>, live: &dyn Fn() -> bool) -> String {
+        if !rd_core::hls::is_hls(url) {
+            return url.to_string();
+        }
+        let master = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(6))
+            .build()
+            .and_then(|http| http.get(url).send())
+            .and_then(|r| r.error_for_status())
+            .and_then(|r| r.text());
+        let master = match master {
+            Ok(m) => m,
+            Err(e) => {
+                crate::log(&format!("player: HLS master: {e}"));
+                return url.to_string();
+            }
+        };
+        let heights = rd_core::hls::heights(&master);
+        crate::log(&format!("player: HLS heights {heights:?}"));
+        if !live() {
+            return url.to_string();
+        }
+        status.lock().unwrap().heights = heights;
+        if cap == 0 {
+            return url.to_string();
+        }
+        let path = std::path::Path::new(LOCAL_M3U8);
+        let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(path, rd_core::hls::filter(&master, url, cap)));
+        match written {
+            Ok(()) => {
+                crate::log(&format!("player: HLS up to {cap}p from {LOCAL_M3U8}"));
+                format!("file://{LOCAL_M3U8}")
+            }
+            Err(e) => {
+                crate::log(&format!("player: {LOCAL_M3U8}: {e}"));
+                url.to_string()
+            }
+        }
+    }
+
+    /// Worker. Plays `mid` (again), then asks for the speed again when it is not normal: a
+    /// pipeline may drop it on resume.
+    fn resume(luna: &'static Luna, mid: &str, rate: f32, status: &Mutex<Status>, current: &Mutex<Option<String>>) {
+        luna.call("luna://com.webos.media/play", &media_json(mid));
+        if rate != 1.0 {
+            apply_rate(luna, mid, rate, status, current);
+        }
+    }
+
+    /// Worker. Asks pipeline `mid` for speed `rate`. When the TV refuses it, the video goes back
+    /// to normal speed and the viewer is told.
+    fn apply_rate(luna: &'static Luna, mid: &str, rate: f32, status: &Mutex<Status>, current: &Mutex<Option<String>>) {
+        let r = luna.call("luna://com.webos.media/setPlayRate", &rate_json(mid, rate));
+        crate::log(&format!("player: setPlayRate {rate} -> {r}"));
+        if replied_ok(&r) || rate == 1.0 || current.lock().unwrap().as_deref() != Some(mid) {
+            return;
+        }
+        let r = luna.call("luna://com.webos.media/setPlayRate", &rate_json(mid, 1.0));
+        crate::log(&format!("player: setPlayRate 1 -> {r}"));
+        let mut s = status.lock().unwrap();
+        s.rate = Rate(1.0);
+        s.notice = Some(RATE_REFUSED.into());
+        drop(s);
+        plx_machine::present::wake_from_worker();
+    }
+
+    fn on_event(status: &Arc<Mutex<Status>>, current: &Arc<Mutex<Option<String>>>, msg: &str, luna: &'static Luna, mid: &str, rest: &Mutex<Option<String>>) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(msg) else { return };
         let mut s = status.lock().unwrap();
         if let Some(t) = v["currentTime"]["currentTime"].as_u64() {
@@ -244,10 +507,10 @@ mod tv {
                 // GIFs loop: back to the start.
                 s.position_ms = 0;
                 let p = format!(r#"{{"mediaId":{},"position":0}}"#, json_str(mid));
-                let q = format!(r#"{{"mediaId":{}}}"#, json_str(mid));
+                let (rate, status, current, mid) = (s.rate.0, status.clone(), current.clone(), mid.to_string());
                 let _ = plx_base::task::spawn("media", move || {
                     luna.call("luna://com.webos.media/seek", &p);
-                    luna.call("luna://com.webos.media/play", &q);
+                    resume(luna, &mid, rate, &status, &current);
                 });
             } else {
                 s.phase = Phase::Ended;
@@ -267,10 +530,20 @@ mod tv {
                     return;
                 }
             }
-            if s.retry.is_some() {
+            if s.retry.is_some() || s.reload.is_some() {
                 return;
             }
-            s.phase = Phase::Failed(e["errorText"].as_str().unwrap_or("playback error").to_string());
+            match after_loss(&s.phase) {
+                Some(phase) => {
+                    // Another app or the screensaver took the decoder: kept here, loaded again
+                    // when the viewer goes on. A reload that fails before it plays fails for good.
+                    crate::log(&format!("player: the TV took the video away at {} ms", s.position_ms));
+                    s.phase = phase;
+                    s.reload = Some(s.position_ms);
+                    s.notice = Some(TAKEN_AWAY.into());
+                }
+                None => s.phase = Phase::Failed(e["errorText"].as_str().unwrap_or("playback error").to_string()),
+            }
         } else {
             return;
         }
@@ -284,25 +557,40 @@ mod tv {
 mod sim {
     use super::*;
 
+    /// The heights the simulator pretends an HLS stream offers.
+    const LADDER: [u32; 3] = [720, 480, 360];
+
     pub struct Player {
         pub status: Arc<Mutex<Status>>,
         started: Option<std::time::Instant>,
         base_ms: u64,
         active: bool,
+        cap: u32,
     }
 
     impl Player {
         pub fn new() -> Self {
-            Player { status: Default::default(), started: None, base_ms: 0, active: false }
+            Player { status: Default::default(), started: None, base_ms: 0, active: false, cap: 0 }
         }
         pub fn active(&self) -> bool {
             self.active
         }
+        pub fn set_quality_cap(&mut self, h: u32) {
+            self.cap = h;
+        }
         pub fn start(&mut self, url: String, looping: bool) {
-            *self.status.lock().unwrap() = Status { phase: Phase::Playing, url: candidates(&url).first().map_or_else(String::new, |u| u.to_string()), looping, duration_ms: 60_000, width: 1280, height: 720, ..Default::default() };
+            let url = candidates(&url).first().map_or_else(String::new, |u| u.to_string());
+            let heights = if rd_core::hls::is_hls(&url) { LADDER.to_vec() } else { Vec::new() };
+            *self.status.lock().unwrap() = Status { phase: Phase::Playing, url, looping, duration_ms: 60_000, heights, ..Default::default() };
+            self.set_quality(self.cap);
             self.started = Some(std::time::Instant::now());
             self.base_ms = 0;
             self.active = true;
+        }
+        /// The clock's position now.
+        fn clock(&self, s: &Status) -> u64 {
+            let ran = self.started.map_or(0, |t| (t.elapsed().as_millis() as f32 * s.rate.0) as u64);
+            (self.base_ms + ran).min(s.duration_ms)
         }
         pub fn toggle_pause(&mut self) {
             let mut s = self.status.lock().unwrap();
@@ -314,6 +602,29 @@ mod sim {
                 s.phase = Phase::Playing;
                 self.started = Some(std::time::Instant::now());
             }
+        }
+        pub fn replay(&mut self) {
+            let mut s = self.status.lock().unwrap();
+            s.position_ms = 0;
+            s.phase = Phase::Playing;
+            self.base_ms = 0;
+            self.started = Some(std::time::Instant::now());
+        }
+        pub fn set_rate(&mut self, rate: f32) {
+            let mut s = self.status.lock().unwrap();
+            self.base_ms = self.clock(&s);
+            if self.started.is_some() {
+                self.started = Some(std::time::Instant::now());
+            }
+            s.rate = Rate(rate.clamp(0.25, 4.0));
+        }
+        /// Plays the highest rung within the cap, as a filtered HLS master would.
+        pub fn set_quality(&mut self, h: u32) {
+            self.cap = h;
+            let mut s = self.status.lock().unwrap();
+            s.max_height = h;
+            s.height = LADDER.into_iter().find(|l| h == 0 || *l <= h).unwrap_or(LADDER[0]);
+            s.width = s.height * 16 / 9;
         }
         pub fn seek_by(&mut self, delta_ms: i64) {
             let mut s = self.status.lock().unwrap();
@@ -330,9 +641,9 @@ mod sim {
             self.status.lock().unwrap().phase = Phase::Idle;
         }
         pub fn tick(&mut self) {
-            if let Some(t) = self.started {
+            if self.started.is_some() {
                 let mut s = self.status.lock().unwrap();
-                s.position_ms = (self.base_ms + t.elapsed().as_millis() as u64).min(s.duration_ms);
+                s.position_ms = self.clock(&s);
                 if s.position_ms >= s.duration_ms {
                     if s.looping {
                         self.base_ms = 0;
@@ -351,6 +662,65 @@ mod sim {
 pub use sim::Player;
 #[cfg(not(any(windows, feature = "sim")))]
 pub use tv::Player;
+
+impl Player {
+    /// What the viewer asked for (see [`Control`]).
+    pub fn control(&mut self, c: Control) {
+        match c {
+            Control::Play => self.play(),
+            Control::Pause => self.pause(),
+            Control::Rate(r) => self.set_rate(r),
+            Control::Quality(h) => self.set_quality(h),
+            Control::Loop(on) => self.set_looping(on),
+            Control::Replay => self.replay(),
+        }
+    }
+
+    /// Resumes a paused video, starts an ended one again.
+    pub fn play(&mut self) {
+        let phase = self.status.lock().unwrap().phase.clone();
+        match phase {
+            Phase::Paused => self.toggle_pause(),
+            Phase::Ended => self.replay(),
+            _ => {}
+        }
+    }
+
+    pub fn pause(&mut self) {
+        let playing = self.status.lock().unwrap().phase == Phase::Playing;
+        if playing {
+            self.toggle_pause();
+        }
+    }
+
+    /// Loops or plays once. Read at every end of the stream, so it changes while the video plays.
+    pub fn set_looping(&mut self, on: bool) {
+        self.status.lock().unwrap().looping = on;
+    }
+}
+
+/// The quality cap a "Video quality" setting value stands for: its height, 0 for Auto.
+pub fn quality_cap(pref: &str) -> u32 {
+    pref.parse().unwrap_or(0)
+}
+
+/// What an error event leaves a video in `phase` showing: when it had played, the TV took the
+/// pipeline away (another app or the screensaver wanted the decoder) and the video waits to be
+/// loaded again; `None` when it never played (a real failure).
+#[cfg(any(test, not(any(windows, feature = "sim"))))]
+fn after_loss(phase: &Phase) -> Option<Phase> {
+    match phase {
+        Phase::Playing | Phase::Paused => Some(Phase::Paused),
+        Phase::Ended => Some(Phase::Ended),
+        _ => None,
+    }
+}
+
+/// Whether a luna reply says the call went through.
+#[cfg(any(test, not(any(windows, feature = "sim"))))]
+fn replied_ok(reply: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(reply).is_ok_and(|v| v["returnValue"].as_bool() == Some(true))
+}
 
 /// The stream to play for a Reddit video, by the "Video stream" setting: HLS (video and sound; the
 /// default, as Reddit's other clients play it), DASH, or the plain MP4 (no sound on v.redd.it).
@@ -391,6 +761,8 @@ fn first_served(urls: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn stream_preference() {
         let v = rd_core::media::Video { hls: Some("h".into()), dash: Some("d".into()), mp4: Some("m".into()), w: 0, h: 0, duration: 0, gif: false, poster: None };
@@ -402,6 +774,59 @@ mod tests {
         let only = rd_core::media::Video { hls: None, dash: None, ..v };
         assert_eq!(super::pick_url(&only, "dash").as_deref(), Some("m"));
         assert!(super::pick_url(&rd_core::media::Video { mp4: None, ..only }, "").is_none());
+    }
+
+    #[test]
+    fn a_default_status_plays_at_normal_speed() {
+        assert_eq!(Status::default().rate, Rate(1.0));
+        assert!(SPEEDS.contains(&1.0));
+        assert_eq!(quality_cap("auto"), 0);
+        assert_eq!(quality_cap("720"), 720);
+    }
+
+    #[test]
+    fn errors_after_playing_wait_for_a_reload() {
+        assert_eq!(after_loss(&Phase::Playing), Some(Phase::Paused));
+        assert_eq!(after_loss(&Phase::Paused), Some(Phase::Paused));
+        assert_eq!(after_loss(&Phase::Ended), Some(Phase::Ended));
+        // A load (or a reload) that fails before it plays is a failure.
+        assert_eq!(after_loss(&Phase::Loading), None);
+        assert_eq!(after_loss(&Phase::Idle), None);
+    }
+
+    #[test]
+    fn luna_replies() {
+        assert!(replied_ok(r#"{"returnValue":true,"errorCode":0}"#));
+        assert!(replied_ok("{\n  \"returnValue\": true\n}"));
+        assert!(!replied_ok(r#"{"returnValue":false,"errorText":"not supported"}"#));
+        assert!(!replied_ok("<timeout>"));
+    }
+
+    #[cfg(any(windows, feature = "sim"))]
+    #[test]
+    fn simulator_controls() {
+        let mut p = Player::new();
+        p.set_quality_cap(480);
+        p.start("https://v.redd.it/x/HLSPlaylist.m3u8\nhttps://v.redd.it/x/DASH_720.mp4".into(), false);
+        let status = p.status.clone();
+        let st = || status.lock().unwrap().clone();
+        assert_eq!((st().heights, st().max_height, st().height), (vec![720, 480, 360], 480, 480));
+        p.control(Control::Quality(0));
+        assert_eq!((st().max_height, st().height), (0, 720));
+        p.control(Control::Rate(2.0));
+        assert_eq!(st().rate, Rate(2.0));
+        p.control(Control::Loop(true));
+        assert!(st().looping);
+        p.control(Control::Pause);
+        assert_eq!(st().phase, Phase::Paused);
+        p.control(Control::Play);
+        assert_eq!(st().phase, Phase::Playing);
+        p.seek_by(70_000);
+        p.tick();
+        assert_eq!(st().position_ms, 60_000);
+        p.status.lock().unwrap().phase = Phase::Ended;
+        p.control(Control::Play);
+        assert_eq!((st().phase, st().position_ms), (Phase::Playing, 0));
     }
 }
 

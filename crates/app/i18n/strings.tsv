@@ -498,3 +498,24 @@ No video is playing	Nem megy videó	Es läuft kein Video	No se está reproducien
 Sign-in and settings	Bejelentkezés és beállítások	Anmeldung und Einstellungen	Sesión y ajustes	Connexion et paramètres	Вход и настройки
 Kept across restarts	Újraindítás után is megmarad	Bleiben nach einem Neustart erhalten	Se conservan al reiniciar	Conservés après un redémarrage	Сохраняются после перезапуска
 Lost at every restart (no writable folder)	Minden újraindításkor elvész (nincs írható mappa)	Gehen bei jedem Neustart verloren (kein beschreibbarer Ordner)	Se pierden en cada reinicio (sin carpeta con permiso de escritura)	Perdus à chaque redémarrage (aucun dossier accessible en écriture)	Теряются при каждом перезапуске (нет папки для записи)
+Video quality	Videóminőség	Videoqualität	Calidad de vídeo	Qualité vidéo	Качество видео
+The highest quality Reddit videos play at (HLS). Lower uses less data on a slow network; Auto lets the TV choose. Down in the player changes it for one video.	A Reddit-videók legjobb lejátszott minősége (HLS). Az alacsonyabb kevesebb adatot használ lassú hálózaton; az Automatikus a tévére bízza a választást. A lejátszóban a Le gomb egy videóra változtatja meg.	Die höchste Qualität, in der Reddit-Videos laufen (HLS). Niedriger braucht in einem langsamen Netz weniger Daten; Automatisch lässt den Fernseher wählen. Nach unten im Player ändert sie für ein Video.	La calidad máxima de los vídeos de Reddit (HLS). Una menor usa menos datos en una red lenta; Automática deja elegir al televisor. Abajo en el reproductor la cambia para un vídeo.	La qualité maximale de lecture des vidéos Reddit (HLS). Plus basse, elle consomme moins de données sur un réseau lent ; Automatique laisse le téléviseur choisir. Bas dans le lecteur la change pour une vidéo.	Наибольшее качество, в котором идут видео Reddit (HLS). Ниже — меньше данных в медленной сети; «Авто» оставляет выбор телевизору. Вниз в плеере меняет его для одного видео.
+Auto	Automatikus	Automatisch	Automática	Automatique	Авто
+Loop on	Ismétlés: be	Wiederholen: an	Bucle: sí	Boucle : oui	Повтор: вкл.
+Loop off	Ismétlés: ki	Wiederholen: aus	Bucle: no	Boucle : non	Повтор: выкл.
+Replay	Újrajátszás	Erneut abspielen	Volver a ver	Revoir	Заново
+The TV refused this speed: playing at normal speed	A tévé nem fogadta el ezt a sebességet: normál sebességgel megy tovább	Der Fernseher lehnt diese Geschwindigkeit ab: Wiedergabe in normaler Geschwindigkeit	El televisor rechazó esta velocidad: se reproduce a velocidad normal	Le téléviseur refuse cette vitesse : lecture à vitesse normale	Телевизор не принял эту скорость: воспроизведение с обычной скоростью
+The TV stopped the video: OK continues where it was	A tévé leállította a videót: az OK ott folytatja, ahol tartott	Der Fernseher hat das Video angehalten: OK setzt es an derselben Stelle fort	El televisor detuvo el vídeo: OK lo continúa donde estaba	Le téléviseur a arrêté la vidéo : OK la reprend là où elle était	Телевизор остановил видео: OK продолжит с того же места
+OK pause	OK szünet	OK Pause	OK pausa	OK pause	OK пауза
+OK play	OK lejátszás	OK Wiedergabe	OK reproducir	OK lecture	OK воспроизвести
+OK replay	OK újrajátszás	OK erneut abspielen	OK volver a ver	OK revoir	OK заново
+←/→ 10 s	←/→ 10 mp	←/→ 10 s	←/→ 10 s	←/→ 10 s	←/→ 10 с
+◀◀/▶▶ 30 s	◀◀/▶▶ 30 mp	◀◀/▶▶ 30 s	◀◀/▶▶ 30 s	◀◀/▶▶ 30 s	◀◀/▶▶ 30 с
+↓ speed, quality, loop	↓ sebesség, minőség, ismétlés	↓ Tempo, Qualität, Wiederholen	↓ velocidad, calidad, bucle	↓ vitesse, qualité, boucle	↓ скорость, качество, повтор
+↓ speed, loop	↓ sebesség, ismétlés	↓ Tempo, Wiederholen	↓ velocidad, bucle	↓ vitesse, boucle	↓ скорость, повтор
+BACK closes	BACK bezárás	BACK schließt	BACK cierra	BACK ferme	BACK закрывает
+←/→ choose	←/→ választás	←/→ auswählen	←/→ elegir	←/→ choisir	←/→ выбрать
+OK select	OK kiválasztás	OK übernehmen	OK seleccionar	OK valider	OK выбрать
+↑ closes	↑ bezárás	↑ schließt	↑ cierra	↑ ferme	↑ закрывает
+↑/↓ choose	↑/↓ választás	↑/↓ auswählen	↑/↓ elegir	↑/↓ choisir	↑/↓ выбрать
+BACK cancels	BACK mégse	BACK bricht ab	BACK cancela	BACK annule	BACK отмена
