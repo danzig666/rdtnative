@@ -95,6 +95,8 @@ impl MenuScreen {
                         };
                         rows.push((Row::new(label).icon(Icon::Film), act));
                     }
+                    // A QR code of the post, to read it on a phone (OK there opens the TV's browser).
+                    rows.push((Row::new("Send to phone").icon(Icon::Phone), Act::Link(format!("https://www.reddit.com{}", p.permalink))));
                     rows.push((Row::new(if p.likes == Some(true) { "Remove upvote" } else { "Upvote" }).icon(Icon::ThumbUp), Act::Vote(p.name.clone(), if p.likes == Some(true) { 0 } else { 1 })));
                     rows.push((Row::new(if p.likes == Some(false) { "Remove downvote" } else { "Downvote" }).icon(Icon::ThumbDown), Act::Vote(p.name.clone(), if p.likes == Some(false) { 0 } else { -1 })));
                     rows.push((Row::new(if p.saved { "Remove from saved" } else { "Save" }).icon(Icon::Star), Act::Save(p.name.clone(), !p.saved)));
@@ -111,7 +113,6 @@ impl MenuScreen {
                     ));
                     rows.push((Row::new(format!("Hide all posts from r/{}", p.subreddit)).icon(Icon::Shield).raw(), Act::FilterSub(p.subreddit.clone())));
                     rows.push((Row::new("Links in this post").icon(Icon::Leave), Act::Push(RdArg::Menu(MenuKind::Links(id.clone(), String::new())))));
-                    rows.push((Row::new("Share (QR code)").icon(Icon::Phone), Act::Link(format!("https://www.reddit.com{}", p.permalink))));
                 }
             }
             MenuKind::Comment(post, name) => {
@@ -123,12 +124,12 @@ impl MenuScreen {
                         rows.push((Row::new("Reply").icon(Icon::Chat), Act::Reply(c.name.clone(), post.clone())));
                         rows.push((Row::new("Save").icon(Icon::Star), Act::Save(c.name.clone(), true)));
                     }
+                    if let Some(p) = st.post(post) {
+                        rows.push((Row::new("Send to phone").icon(Icon::Phone), Act::Link(format!("https://www.reddit.com{}{}/", p.post.permalink, c.id))));
+                    }
                     rows.push((Row::new("Collapse or expand").icon(Icon::List), Act::Toggle(post.clone(), c.name.clone())));
                     rows.push((Row::new(format!("Posts by u/{}", c.author)).icon(Icon::User).raw(), Act::Push(RdArg::Feed(Feed::User(c.author.clone(), UserTab::Submitted)))));
                     rows.push((Row::new("Links in this comment").icon(Icon::Leave), Act::Push(RdArg::Menu(MenuKind::Links(post.clone(), c.name.clone())))));
-                    if let Some(p) = st.post(post) {
-                        rows.push((Row::new("Share (QR code)").icon(Icon::Phone), Act::Link(format!("https://www.reddit.com{}{}/", p.post.permalink, c.id))));
-                    }
                 }
             }
             MenuKind::Sub(sub) => {
