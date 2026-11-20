@@ -175,6 +175,14 @@ pub struct Incoming {
     pub done: bool,
 }
 
+/// An unsent reply, and the account that wrote it (lower-cased; `None`: written signed out): on a
+/// TV shared by several accounts, another account never sees it or sends it.
+#[derive(Clone, Debug)]
+pub struct ReplyDraft {
+    pub owner: Option<String>,
+    pub text: String,
+}
+
 /// A post as the screens use it: the post, its resolved media and a one-line text preview.
 #[derive(Clone, Debug)]
 pub struct PostItem {
@@ -472,7 +480,7 @@ pub struct Store {
     pub api_saves: u32,
     pub signins: u32,
     /// Unsent replies by parent fullname: kept when the keyboard closes or the send fails.
-    pub drafts: HashMap<String, String>,
+    pub drafts: HashMap<String, ReplyDraft>,
     pub type_phone: Option<TypePhoneView>,
     pub incoming: Incoming,
     /// How long the current toast stays up (ms).
@@ -552,6 +560,24 @@ impl Store {
     pub fn toast_for(&mut self, msg: impl Into<String>, now_ms: u32, ms: u32) {
         self.toast = Some((msg.into(), now_ms.wrapping_add(ms)));
         self.toast_len = ms;
+    }
+
+    /// The unsent reply to `parent` the account in use may see: its own, or one written signed out
+    /// (the sign-in it asked for then carries it on).
+    pub fn draft_for(&self, parent: &str) -> Option<&str> {
+        let me = self.username().map(str::to_ascii_lowercase);
+        self.drafts.get(parent).filter(|d| d.owner.is_none() || d.owner == me).map(|d| d.text.as_str())
+    }
+
+    /// Keeps the reply to `parent` as the account in use's; an empty one drops the draft, unless
+    /// it is another account's.
+    pub fn set_draft(&mut self, parent: String, text: String) {
+        let me = self.username().map(str::to_ascii_lowercase);
+        if !text.trim().is_empty() {
+            self.drafts.insert(parent, ReplyDraft { owner: me, text });
+        } else if self.drafts.get(&parent).is_some_and(|d| d.owner.is_none() || d.owner == me) {
+            self.drafts.remove(&parent);
+        }
     }
 
     /// The error for `f` from the last save attempt, if any.
@@ -864,5 +890,28 @@ mod tests {
         assert_eq!(thread_key("abc", None), "abc");
         assert_eq!(split_thread_key(&thread_key("abc", Some("def"))), ("abc", Some("def")));
         assert_eq!(split_thread_key("abc"), ("abc", None));
+    }
+
+    #[test]
+    fn reply_drafts_belong_to_the_account_that_wrote_them() {
+        let mut s = blank();
+        s.saved = None;
+        s.set_draft("t1_x".into(), "signed out".into());
+        let mut alice = Saved::from_config(&ApiConfig::from_fields("abcdefghijklmn", "", "").unwrap());
+        alice.refresh_token = Some("rt".into());
+        alice.username = Some("Alice".into());
+        let bob = Saved { username: Some("bob".into()), ..alice.clone() };
+        // Written signed out: the account then signed in carries it on.
+        s.saved = Some(alice.clone());
+        assert_eq!(s.draft_for("t1_x"), Some("signed out"));
+        s.set_draft("t1_x".into(), "from alice".into());
+        s.saved = Some(bob);
+        assert_eq!(s.draft_for("t1_x"), None);
+        // Bob leaving an empty keyboard does not drop Alice's text.
+        s.set_draft("t1_x".into(), String::new());
+        s.saved = Some(alice);
+        assert_eq!(s.draft_for("t1_x"), Some("from alice"));
+        s.set_draft("t1_x".into(), " ".into());
+        assert_eq!(s.draft_for("t1_x"), None);
     }
 }

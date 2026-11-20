@@ -447,7 +447,11 @@ impl KeyboardScreen {
             None
         };
         if let Some(c) = typed {
-            self.typing = true;
+            // The remote's number keys arrive as digits too, and its OK is Enter's key: a digit
+            // alone does not make OK mean Done (it would send the text half written).
+            if !c.is_ascii_digit() {
+                self.typing = true;
+            }
             self.press(K::Ch(c), now, fx);
             return Some(Handled::Yes);
         }
@@ -665,6 +669,37 @@ impl Focusable<RdHost> for KeyboardScreen {
 }
 
 /// The colour buttons' line: a dot in each button's colour and what it does here.
+/// The last `fit` lines of `text` (each paragraph on lines of its own), built from the end so a
+/// paragraph of any length ends with its last line, and the cursor, in view: only its tail of
+/// about `per_line` characters (at most a line holds) per line wanted is wrapped, by
+/// `wrap(s, max)` into at most `max` lines.
+fn tail_lines(text: &str, fit: usize, per_line: usize, wrap: impl Fn(&str, usize) -> Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for para in text.split('\n').rev() {
+        let want = fit.saturating_sub(out.len());
+        if want == 0 {
+            break;
+        }
+        let n = para.chars().count();
+        let keep = (want + 1) * per_line.max(1);
+        let tail = match para.char_indices().nth(n.saturating_sub(keep)).filter(|_| n > keep) {
+            // From the next word on: the first line does not start inside a word.
+            Some((at, _)) => {
+                let t = &para[at..];
+                t.find(' ').map_or(t, |i| &t[i + 1..])
+            }
+            None => para,
+        };
+        let mut lines = wrap(tail, tail.len() + 1);
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        let skip = lines.len().saturating_sub(want);
+        out.splice(0..0, lines.into_iter().skip(skip));
+    }
+    out
+}
+
 fn color_hints(p: Painter, x: f32, y: f32) {
     const HINTS: [([f32; 4], &str); 4] = [
         ([0.9, 0.25, 0.25, 1.0], "Delete"),
@@ -758,18 +793,13 @@ impl Screen<RdHost> for KeyboardScreen {
         } else if multi {
             let size = ui::sz(30);
             let line_h = size as f32 * 1.42;
-            let mut lines: Vec<String> = Vec::new();
-            for para in format!("{}|", self.text).split('\n') {
-                let w = ui::wrap_lines(f.measure, para, room, size, false, 50);
-                if w.is_empty() {
-                    lines.push(String::new());
-                }
-                lines.extend(w);
-            }
             let fit = ((field.h - 18.0) / line_h).floor().max(1.0) as usize;
-            let start = lines.len().saturating_sub(fit);
-            for (i, l) in lines[start..].iter().enumerate() {
-                ui::text_raw(p, l, field.x + 36.0, field.y + 18.0 + i as f32 * line_h, size, ui::WHITE, ui::ALIGN_LEFT, false);
+            // Characters a line holds at most (narrow letters): a paragraph's tail that long per
+            // line wanted is all that is wrapped.
+            let per_line = (room / (size as f32 * 0.3)).ceil() as usize;
+            let lines = tail_lines(&format!("{}|", self.text), fit, per_line, |s, max| ui::wrap_lines(f.measure, s, room, size, false, max));
+            for (i, l) in lines.iter().enumerate() {
+                ui::text_cut(p, f.measure, l, field.x + 36.0, field.y + 18.0 + i as f32 * line_h, room, size, ui::WHITE, ui::ALIGN_LEFT, false);
             }
         } else {
             ui::text_cut_start(p, f.measure, &format!("{}|", self.text), field.x + 36.0, one_y, room, one, ui::WHITE, false);
@@ -878,6 +908,32 @@ impl Screen<RdHost> for KeyboardScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_paragraph_still_shows_its_end() {
+        // Ten characters a line.
+        let wrap = |s: &str, max: usize| -> Vec<String> {
+            let mut lines: Vec<String> = Vec::new();
+            for w in s.split_whitespace() {
+                let fits = lines.last().is_some_and(|l| l.len() + 1 + w.len() <= 10);
+                if let (true, Some(l)) = (fits, lines.last_mut()) {
+                    l.push(' ');
+                    l.push_str(w);
+                } else if lines.len() < max {
+                    lines.push(w.to_string());
+                }
+            }
+            lines
+        };
+        let long = format!("{}end|", "word ".repeat(5000));
+        let lines = tail_lines(&long, 3, 10, wrap);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.last().is_some_and(|l| l.ends_with("end|")), "{lines:?}");
+        assert!(lines.iter().all(|l| l.len() <= 10), "{lines:?}");
+        // Paragraphs keep their own lines, empty ones too.
+        assert_eq!(tail_lines("one\n\ntwo|", 5, 10, wrap), ["one", "", "two|"]);
+        assert_eq!(tail_lines("one\n\ntwo|", 2, 10, wrap), ["", "two|"]);
+    }
 
     #[test]
     fn both_pages_keep_the_grid_and_cover_what_the_fields_need() {

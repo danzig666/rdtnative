@@ -465,7 +465,9 @@ fn form_decode(s: &str, lines: bool) -> String {
     }
     let s = String::from_utf8_lossy(&out);
     if lines {
-        s.replace("\r\n", "\n").replace('\r', "\n").chars().filter(|c| *c == '\n' || !c.is_control()).collect()
+        // A pasted tab parts words (a table, tab-separated values): it becomes a space rather
+        // than nothing (the TV's text has no tabs).
+        s.replace("\r\n", "\n").replace('\r', "\n").chars().map(|c| if c == '\t' { ' ' } else { c }).filter(|c| *c == '\n' || !c.is_control()).collect()
     } else {
         s.chars().filter(|c| !c.is_control()).collect()
     }
@@ -542,7 +544,7 @@ mod tests {
         assert_eq!(form_decode("p%C3%A1ss", false), "páss");
         // A multi-line field keeps its line breaks, as \n whatever the browser sent.
         assert_eq!(form_decode("a%0D%0Ab%0Dc%0Ad", true), "a\nb\nc\nd");
-        assert_eq!(form_decode("tab%09bell%07", true), "tabbell");
+        assert_eq!(form_decode("tab%09bell%07", true), "tab bell");
     }
 
     fn reply_form() -> Form {

@@ -355,7 +355,7 @@ impl Mounter<RdHost> for Mount {
                 let current = match t {
                     Typing::Api(f) => cx.views.store.draft.get(*f).to_string(),
                     Typing::ImgurId => cx.views.store.prefs.imgur_client_id.clone().unwrap_or_default(),
-                    Typing::Reply { parent, .. } => cx.views.store.drafts.get(parent).cloned().unwrap_or_default(),
+                    Typing::Reply { parent, .. } => cx.views.store.draft_for(parent).unwrap_or_default().to_string(),
                     Typing::IdleSub => cx.views.store.prefs.idle_sub.clone().unwrap_or_default(),
                     _ => String::new(),
                 };
@@ -2114,7 +2114,7 @@ impl AppRig {
 
     fn reply(&mut self, from: MachineId, parent: String, post: String, text: String) {
         // A draft until Reddit has it: whatever goes wrong, Reply on the same parent brings it back.
-        self.store.drafts.insert(parent.clone(), text.clone());
+        self.store.set_draft(parent.clone(), text.clone());
         if self.need_sign_in() {
             return;
         }
@@ -2519,13 +2519,7 @@ impl Rig<RdHost> for AppRig {
                 self.action(from, listing::subscribe(&sub, on), None, Some(if on { format!("Joined r/{sub}") } else { format!("Left r/{sub}") }));
             }
             RdFx::Reply { parent, post, text } => self.reply(from, parent, post, text),
-            RdFx::SetDraft { parent, text } => {
-                if text.trim().is_empty() {
-                    self.store.drafts.remove(&parent);
-                } else {
-                    self.store.drafts.insert(parent, text);
-                }
-            }
+            RdFx::SetDraft { parent, text } => self.store.set_draft(parent, text),
             RdFx::MarkRead(id) => {
                 if self.store.read.add(&id) {
                     self.read_dirty = true;
