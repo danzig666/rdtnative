@@ -395,7 +395,14 @@ impl Machine<RdHost> for ProfileScreen {
         }
         match ev {
             ScreenEvent::Mount => self.load(cx, fx, false),
-            ScreenEvent::Async(_, RdMsg::Changed) | ScreenEvent::Uncover => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
+            ScreenEvent::Uncover => {
+                // Signing in or out meanwhile dropped what this page showed: load it again.
+                if self.page(cx).is_none() || self.profile(cx).is_none() {
+                    self.load(cx, fx, false);
+                }
+                fx.invalidate(plx_machine::present::Provenance::Lifecycle);
+            }
+            ScreenEvent::Async(_, RdMsg::Changed) => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
             ScreenEvent::Tick(_) => {
                 if self.retry_more.take() {
                     fx.push(Fx::App(RdFx::MoreUserItems(self.key())));

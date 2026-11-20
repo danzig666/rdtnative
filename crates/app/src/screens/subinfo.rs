@@ -281,7 +281,14 @@ impl Machine<RdHost> for SubInfoScreen {
         }
         match ev {
             ScreenEvent::Mount => fx.push(Fx::App(RdFx::LoadSubInfo { sub: self.sub.clone(), reload: false })),
-            ScreenEvent::Async(_, RdMsg::Changed) | ScreenEvent::Uncover => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
+            ScreenEvent::Uncover => {
+                // Signing in or out meanwhile dropped what this page showed: load it again.
+                if self.page(cx).is_none() {
+                    fx.push(Fx::App(RdFx::LoadSubInfo { sub: self.sub.clone(), reload: false }));
+                }
+                fx.invalidate(plx_machine::present::Provenance::Lifecycle);
+            }
+            ScreenEvent::Async(_, RdMsg::Changed) => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
             ScreenEvent::FocusMoved { to, by, .. } => {
                 if let Some(i) = self.rules.index(to.elem) {
                     self.rules.on_focus(i, *by == By::Pointer);
