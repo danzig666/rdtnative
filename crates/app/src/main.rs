@@ -218,6 +218,7 @@ fn main() {
         let mut edge_v = edge::Glide::default();
         let (mut cursor_motion_at, mut cursor_hidden) = (0u32, true);
         let mut remote = remote::Remote::open();
+        let mut mods = input::Mods::default();
         let mut ev = [0u8; 128];
         let mut prev = 0u32;
         let mut running = true;
@@ -260,6 +261,7 @@ fn main() {
                     }
                     sdl::SDL_KEYDOWN | sdl::SDL_KEYUP => {
                         let (state, wcode, sym) = input::decode_key(&ev);
+                        let sym = mods.typed(sym, state);
                         // An arrow key puts the Magic Remote pointer away (as plx-native does).
                         if state & 0xff != 0 && !cursor_hidden && sym & (1 << 30) != 0 && (79..=82).contains(&(sym & 0xff)) {
                             hide_cursor();

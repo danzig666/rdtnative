@@ -38,7 +38,8 @@ enum Act {
     Close,
 }
 
-fn find<'a>(nodes: &'a [Node], name: &str) -> Option<&'a Comment> {
+/// The comment called `name` in a thread (the keyboard finds the comment a reply answers too).
+pub fn find<'a>(nodes: &'a [Node], name: &str) -> Option<&'a Comment> {
     for n in nodes {
         if let Node::Comment(c) = n {
             if c.name == name {
