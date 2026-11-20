@@ -88,13 +88,25 @@ pub const POST_HINTS: &[Hint] = &[(Some(Color::Red), "Downvote"), (Some(Color::G
 pub const COMMENT_HINTS: &[Hint] = &[
     (Some(Color::Red), "Downvote"),
     (Some(Color::Green), "Upvote"),
-    (Some(Color::Yellow), "Save post"),
+    (Some(Color::Yellow), "Save"),
     (Some(Color::Blue), "Post \u{2194} comments"),
     (None, "\u{2190} parent"),
     (None, "\u{2192} next thread"),
     (None, "Hold OK: more"),
 ];
 pub const VIEWER_HINTS: &[Hint] = &[(Some(Color::Blue), "Comments"), (None, "OK zooms"), (None, "\u{2191}\u{2193} caption")];
+/// A comment on a profile: Blue (as OK) opens it in its post.
+pub const PROFILE_COMMENT_HINTS: &[Hint] = &[(Some(Color::Blue), "Open")];
+/// On a post page with new comments: CH▲ / CH▼ (◀◀ / ▶▶) jump between them.
+pub const NEW_COMMENTS_HINT: Hint = (None, "CH\u{25B2}\u{25BC} new comments");
+
+/// `base` with `extra` right after its colour items (the first plain items to show).
+pub fn with_hint(base: &[Hint], extra: Hint) -> Vec<Hint> {
+    let mut v = base.to_vec();
+    let at = v.iter().position(|(c, _)| c.is_none()).unwrap_or(v.len());
+    v.insert(at, extra);
+    v
+}
 
 /// The key hints are on (Settings › Remote and navigation › Key hints); set from the settings.
 pub static KEY_HINTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -117,7 +129,7 @@ pub fn key_hints(p: Painter, m: &dyn plx_machine::machine::Measure, cx: &Cx<'_, 
         return;
     }
     let colors = cx.views.store.prefs.on("color_keys");
-    let items: Vec<(Option<Color>, &str)> = hints.iter().filter(|(c, _)| c.is_none() || colors).map(|(c, l)| (*c, crate::i18n::tr(l))).collect();
+    let mut items: Vec<(Option<Color>, &str)> = hints.iter().filter(|(c, _)| c.is_none() || colors).map(|(c, l)| (*c, crate::i18n::tr(l))).collect();
     if items.is_empty() {
         return;
     }
@@ -130,7 +142,12 @@ pub fn key_hints(p: Painter, m: &dyn plx_machine::machine::Measure, cx: &Cx<'_, 
     let dot = (size as f32 * 0.72).round();
     let gap = size as f32 * 1.6;
     let width = |c: &Option<Color>, l: &str| ui::text_width(m, l, size, false) + if c.is_some() { dot + 10.0 } else { 0.0 };
-    let total: f32 = items.iter().map(|(c, l)| width(c, l)).sum::<f32>() + gap * (items.len() - 1) as f32;
+    let line = |items: &[(Option<Color>, &str)]| items.iter().map(|(c, l)| width(c, l)).sum::<f32>() + gap * (items.len() - 1) as f32;
+    // Large text: the last items give way until the line fits.
+    while items.len() > 1 && line(&items) > 1840.0 {
+        items.pop();
+    }
+    let total = line(&items);
     let mut x = ((1920.0 - total) / 2.0).max(40.0);
     let ty = bottom - h + (h - size as f32 * 1.3) / 2.0;
     for (c, l) in &items {

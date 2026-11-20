@@ -76,7 +76,7 @@ fn thumb() -> (f32, f32) {
 }
 
 fn prefs_sig() -> u64 {
-    (ui::text_scale() * 100.0) as u64 | ((ui::content_scale() * 100.0) as u64) << 12 | (ui::font_code(false) as u64) << 24
+    (ui::text_scale() * 100.0) as u64 | ((ui::content_scale() * 100.0) as u64) << 12 | (ui::font_code(false) as u64) << 24 | (common::hint_band() as u64) << 32
 }
 
 /// "1 point", "12 points", "1.2k points".
@@ -183,7 +183,8 @@ impl ProfileScreen {
         }
         self.rect_sig = sig;
         let top = header_h();
-        self.flow.rect = Rect::new(LEFT, top, 1920.0 - 2.0 * LEFT, 1080.0 - top);
+        // The key hints' band is under the list.
+        self.flow.rect = Rect::new(LEFT, top, 1920.0 - 2.0 * LEFT, 1080.0 - top - common::hint_band());
         self.sig.set((u32::MAX, 0, 0));
     }
 
@@ -376,6 +377,8 @@ impl Machine<RdHost> for ProfileScreen {
         if let Some(c) = common::color_key(ev) {
             if cx.views.store.prefs.on("color_keys") {
                 match self.flow.focused(cx).and_then(|i| self.row(i)) {
+                    // Signed out, the vote and save buttons offer to sign in, as on a feed.
+                    Some(UserItem::Post(_)) if common::sign_in_first(c, cx, fx) => {}
                     Some(UserItem::Post(id)) => {
                         if let Some(it) = cx.views.store.posts.get(&id) {
                             let name = it.post.name.clone();
@@ -818,6 +821,11 @@ impl Screen<RdHost> for ProfileScreen {
             }
             if self.choice.is_none() {
                 self.flow.stops(f);
+            }
+            match focus.and_then(|i| rows.get(i)) {
+                Some(UserItem::Post(_)) => common::key_hints(p, f.measure, cx, 1080.0, common::FEED_HINTS),
+                Some(UserItem::Comment(_)) => common::key_hints(p, f.measure, cx, 1080.0, common::PROFILE_COMMENT_HINTS),
+                None => {}
             }
         }
         self.draw_header(f);

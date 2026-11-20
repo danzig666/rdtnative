@@ -186,17 +186,22 @@ impl SettingsScreen {
                 v.push((Row::new("Clear search history").icon(Icon::History).value(p.history.len().to_string()), Act::ClearHistory, "Forget the searches suggested on the search page."));
             }
             Mode::About => {
-                let lines: [(&str, &str); 12] = [
+                let lines: [(&str, &str); 17] = [
                     ("rdtnative", env!("CARGO_PKG_VERSION")),
                     ("OK", "Open \u{b7} hold for the menu"),
                     ("BACK", "Back \u{b7} opens the side menu on the start page"),
                     ("Arrows / wheel", "Move \u{b7} the wheel steps by item"),
                     ("Pointer at an edge", "Scrolls up or down"),
                     ("Green / Red", "Upvote / downvote"),
-                    ("Yellow", "Save"),
+                    ("Yellow", "Save \u{b7} on a comment: the comment \u{b7} right after Hide: undo"),
                     ("Blue", "Comments \u{b7} on a post: post \u{2194} comments"),
                     ("In comments: Left / Right", "Parent comment / next thread"),
-                    ("In pictures: OK", "Zoom in \u{b7} arrows move"),
+                    ("In comments: CH\u{25B2} / CH\u{25BC}", "Previous / next new comment (also \u{25C0}\u{25C0} / \u{25B6}\u{25B6})"),
+                    ("In pictures: OK", "Zoom in \u{b7} arrows move \u{b7} BACK zooms out"),
+                    ("In videos", "Down: speed, quality, loop \u{b7} \u{25C0}\u{25C0} / \u{25B6}\u{25B6} 30 s \u{b7} play, pause and stop keys"),
+                    ("Slideshow", "Left / Right: previous / next \u{b7} OK pauses \u{b7} Up: sound"),
+                    ("Keyboard", "Red deletes \u{b7} Green: Done \u{b7} Yellow: space \u{b7} Blue: type on phone"),
+                    ("Voice", "Say a search into the Magic Remote: it fills the keyboard or searches Reddit"),
                     ("Credits", "ytnative, plx-native (GPL-3.0), Inter, DejaVu, Roboto"),
                     ("Licence", "GNU GPL v3.0 \u{b7} not affiliated with Reddit or LG"),
                 ];

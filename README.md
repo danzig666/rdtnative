@@ -27,9 +27,12 @@ These are screenshots from the Windows simulator, which runs the same UI code as
 
 ### Features
 
-- **Feeds:** Home, Popular, All, any subreddit, favourites (one or all together), users, saved
-  posts, search. Sorts (Best, Hot, New, Top, Rising, Controversial) with time ranges, remembered per
-  subreddit. Endless paging.
+- **Feeds:** Home, Popular, All, any subreddit, favourites (one or all together), custom feeds,
+  users, saved posts, search. Sorts (Best, Hot, New, Top, Rising, Controversial) with time ranges,
+  remembered per subreddit. Endless paging; each feed keeps its place, and the start page can be
+  the last feed shown.
+- **Subreddits and users:** a subreddit's info page (members, rules, sidebar, join) and user
+  profiles (karma, cake day, posts and comments).
 - **Six layouts:** Two panes (a list with a live preview of the selected post and its top
   comments; the default), Cards (2-6 per row), List, Large, Compact and Dense (one line per post).
 - **Posts:** pictures, galleries with captions, v.redd.it videos and GIFs (played by the TV),
@@ -38,11 +41,17 @@ These are screenshots from the Windows simulator, which runs the same UI code as
   links.
 - **Comments:** threaded with coloured depth rails, collapse with OK, "load more" in place,
   "continue this thread", OP / moderator / pinned marks, flairs; Left goes to the parent, Right to
-  the next thread.
-- **Full screen:** pictures with zoom and pan, galleries with thumbnails, the video player.
-- **Signed in:** vote, save, hide, join and leave subreddits, reply,
-  inbox, your saved and submitted posts. Sign in by scanning a QR code; paste the code back on the
-  phone.
+  the next thread. Links to a comment open on it. Comments new since the last visit are marked
+  (CH▲ / CH▼ jump between them), and Live mode keeps match and game threads updating.
+- **Full screen:** pictures with zoom and pan, galleries with thumbnails, the video player with
+  speed, quality, loop, replay and the remote's media keys.
+- **Lean back:** a slideshow or a video channel of any feed, and an idle screen of pictures from a
+  subreddit; the TV stays awake while they play.
+- **Signed in:** vote, save posts and comments, hide (with undo), join and leave subreddits,
+  reply (drafts are kept), inbox with new-message alerts, your saved and submitted posts. Several
+  accounts with a switcher. Sign in by scanning a QR code; paste the code back on the phone.
+- **Typing:** the on-screen keyboard, a phone (scan a QR code and type or dictate there), a USB
+  keyboard, or LG voice search. Any post or comment can be sent to a phone as a QR code.
 - **Display:** text size (70-175 %, for any TV size and distance) with a separate size for post and
   comment text, five fonts, five themes (including OLED black), eight accent colours, picture
   quality, title lines, clock.
@@ -50,7 +59,7 @@ These are screenshots from the Windows simulator, which runs the same UI code as
   subreddits and words; pinned posts hidden; scores, flairs and sites on or off.
 - **Remote:** pointer hover and click, pointer edge scrolling (speed setting), wheel step,
   smooth scrolling, hold OK for menus, colour buttons (green/red vote, yellow saves, blue
-  comments), BACK opens the side menu, a USB keyboard types.
+  comments) with a key hints line, BACK opens the side menu (twice leaves).
 - **Setup:** Reddit API settings (client ID, any redirect URI scheme, user agent) and an Imgur
   client ID, typed with the remote or entered on a phone through a QR code.
 

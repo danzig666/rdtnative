@@ -1483,9 +1483,12 @@ impl Screen<RdHost> for PostScreen {
         if self.live.on {
             self.draw_live(f);
         }
+        // With new comments, CH▲ / CH▼ jump between them.
+        let new = self.new_count() > 0;
+        let hints = |base: &[common::Hint]| if new { common::with_hint(base, common::NEW_COMMENTS_HINT) } else { base.to_vec() };
         match focus {
-            Some(e) if self.right.index(e).is_some() => common::key_hints(f.painter, f.measure, cx, 1080.0, common::COMMENT_HINTS),
-            Some(e) if self.left.index(e).is_some() => common::key_hints(f.painter, f.measure, cx, 1080.0, common::POST_HINTS),
+            Some(e) if self.right.index(e).is_some() => common::key_hints(f.painter, f.measure, cx, 1080.0, &hints(common::COMMENT_HINTS)),
+            Some(e) if self.left.index(e).is_some() => common::key_hints(f.painter, f.measure, cx, 1080.0, &hints(common::POST_HINTS)),
             _ => {}
         }
         self.draw_bar(f);

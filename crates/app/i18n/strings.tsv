@@ -694,7 +694,6 @@ How feeds are sorted when opened. Reddit's default: Best for your Home, Hot else
 Downvote	Leszavazás	Abwerten	Votar en contra	Voter contre	Против
 Upvote	Felszavazás	Aufwerten	Votar a favor	Voter pour	За
 Hold OK: more	OK nyomva tartva: továbbiak	OK halten: mehr	Mantén OK: más	Maintenir OK : plus	Удерживать OK: ещё
-Save post	Bejegyzés mentése	Beitrag speichern	Guardar publicación	Enregistrer la publication	Сохранить пост
 Post ↔ comments	Bejegyzés ↔ hozzászólások	Beitrag ↔ Kommentare	Publicación ↔ comentarios	Publication ↔ commentaires	Пост ↔ комментарии
 ← parent	← szülő	← übergeordnet	← superior	← parent	← родительский
 → next thread	→ következő szál	→ nächster Strang	→ siguiente hilo	→ fil suivant	→ следующая ветка
@@ -718,3 +717,4 @@ Try other words, or another sort.	Próbálj más szavakat vagy más rendezést.	
 Couldn't load more · press Down to try again	Nem sikerült többet betölteni · a Le gomb újrapróbálja	Weitere konnten nicht geladen werden · Runter versucht es erneut	No se pudo cargar más · pulsa Abajo para reintentar	Impossible de charger la suite · Bas pour réessayer	Не удалось загрузить ещё · нажмите «Вниз», чтобы повторить
 Updated {} ago	Frissítve {} ezelőtt	Vor {} aktualisiert	Actualizado hace {}	Mis à jour il y a {}	Обновлено {} назад
 This post has no picture or video the TV can show. Scan the code to open the post on a phone.	Ennek a bejegyzésnek nincs olyan képe vagy videója, amelyet a TV meg tud jeleníteni. Olvasd be a kódot, hogy telefonon nyisd meg.	Dieser Beitrag hat kein Bild und kein Video, das der Fernseher zeigen kann. Scanne den Code, um ihn auf dem Handy zu öffnen.	Esta publicación no tiene imagen ni vídeo que el televisor pueda mostrar. Escanea el código para abrirla en el móvil.	Cette publication n'a ni image ni vidéo que le téléviseur puisse afficher. Scannez le code pour l'ouvrir sur un téléphone.	В этом посте нет картинки или видео, которые может показать телевизор. Отсканируйте код, чтобы открыть пост на телефоне.
+CH▲▼ new comments	CH▲▼ új hozzászólások	CH▲▼ neue Kommentare	CH▲▼ comentarios nuevos	CH▲▼ nouveaux commentaires	CH▲▼ новые комментарии
