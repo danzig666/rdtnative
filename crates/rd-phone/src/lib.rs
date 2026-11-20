@@ -22,7 +22,13 @@ mod page;
 mod qr;
 pub use qr::Qr;
 
+/// Headers and the form's other bytes; each field adds room for its longest value (see
+/// [`request_limit`]).
 const MAX_REQUEST: usize = 16 * 1024;
+
+/// The longest text a [`Kind::Multiline`] field takes unless `max_len` says otherwise (Reddit's
+/// comment limit).
+pub const MULTILINE_MAX_LEN: usize = 10_000;
 
 /// Submitted values by field key.
 pub type Values = BTreeMap<String, String>;
@@ -37,6 +43,9 @@ pub enum Kind {
     Url,
     /// Hidden while typing, with a "Show" box.
     Secret,
+    /// Several lines (a reply): a text box that keeps line breaks, with the phone's autocorrect
+    /// and dictation on.
+    Multiline,
 }
 
 #[derive(Debug, Clone)]
@@ -77,7 +86,11 @@ impl Field {
         self.help = v.into();
         self
     }
+    /// A multi-line field also gets [`MULTILINE_MAX_LEN`]; `max_len` after this changes it.
     pub fn kind(mut self, k: Kind) -> Field {
+        if k == Kind::Multiline {
+            self.max_len = MULTILINE_MAX_LEN;
+        }
         self.kind = k;
         self
     }
@@ -93,6 +106,8 @@ pub struct Form {
     pub title: String,
     /// Paragraphs above the fields.
     pub intro: Vec<String>,
+    /// A quoted text under the intro (the comment a reply answers), line breaks kept.
+    pub quote: String,
     /// Links shown under the intro (label, https URL).
     pub links: Vec<(String, String)>,
     pub fields: Vec<Field>,
@@ -120,6 +135,7 @@ impl Form {
         Form {
             title: title.into(),
             intro: Vec::new(),
+            quote: String::new(),
             links: Vec::new(),
             fields: Vec::new(),
             submit: "Send to TV".into(),
@@ -281,6 +297,7 @@ fn serve(
     opened: &AtomicBool,
 ) {
     let deadline = Instant::now() + form.lifetime;
+    let limit = request_limit(form);
     while !stop.load(Ordering::SeqCst) && Instant::now() < deadline {
         let mut sock = match listener.accept() {
             Ok((s, _)) => s,
@@ -293,7 +310,7 @@ fn serve(
         let _ = sock.set_nonblocking(false);
         let _ = sock.set_read_timeout(Some(Duration::from_secs(5)));
         let _ = sock.set_write_timeout(Some(Duration::from_secs(5)));
-        let Some(req) = read_request(&mut sock) else { continue };
+        let Some(req) = read_request(&mut sock, limit) else { continue };
         let (status, body) = match handle(&req, token, form, validate) {
             Reply::Page(html) => {
                 opened.store(true, Ordering::SeqCst);
@@ -321,7 +338,13 @@ fn serve(
     }
 }
 
-fn read_request(sock: &mut TcpStream) -> Option<Vec<u8>> {
+/// The biggest request a form takes: every field at its longest, each character percent-encoded
+/// (up to four UTF-8 bytes as `%XX`, 12 bytes), plus the headers.
+fn request_limit(form: &Form) -> usize {
+    MAX_REQUEST + form.fields.iter().map(|f| f.max_len * 12).sum::<usize>()
+}
+
+fn read_request(sock: &mut TcpStream, limit: usize) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 2048];
     loop {
@@ -330,7 +353,7 @@ fn read_request(sock: &mut TcpStream) -> Option<Vec<u8>> {
             break;
         }
         buf.extend_from_slice(&chunk[..n]);
-        if buf.len() > MAX_REQUEST {
+        if buf.len() > limit {
             return None;
         }
         if let Some(h) = find(&buf, b"\r\n\r\n") {
@@ -340,7 +363,7 @@ fn read_request(sock: &mut TcpStream) -> Option<Vec<u8>> {
                 .find_map(|l| l.strip_prefix("content-length:"))
                 .and_then(|v| v.trim().parse::<usize>().ok())
                 .unwrap_or(0);
-            if len > MAX_REQUEST {
+            if len > limit {
                 return None;
             }
             if buf.len() >= h + 4 + len {
@@ -393,7 +416,7 @@ fn handle(req: &[u8], token: &str, form: &Form, validate: &Validate) -> Reply {
                 let v = body
                     .split('&')
                     .find_map(|kv| kv.strip_prefix(&format!("{}=", f.key)))
-                    .map(form_decode)
+                    .map(|raw| form_decode(raw, f.kind == Kind::Multiline))
                     .unwrap_or_default();
                 let v = v.trim().to_string();
                 if v.chars().count() > f.max_len {
@@ -417,8 +440,9 @@ fn handle(req: &[u8], token: &str, form: &Form, validate: &Validate) -> Reply {
 }
 
 /// `application/x-www-form-urlencoded` value: `+` is a space, `%XX` a byte, UTF-8; control
-/// characters (line breaks from a sloppy paste) are dropped.
-fn form_decode(s: &str) -> String {
+/// characters (line breaks from a sloppy paste) are dropped, except the line breaks of a
+/// multi-line field (`lines`), which come as `\n` whatever the browser sent (`%0D%0A`).
+fn form_decode(s: &str, lines: bool) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -439,7 +463,12 @@ fn form_decode(s: &str) -> String {
         }
         i += 1;
     }
-    String::from_utf8_lossy(&out).chars().filter(|c| !c.is_control()).collect()
+    let s = String::from_utf8_lossy(&out);
+    if lines {
+        s.replace("\r\n", "\n").replace('\r', "\n").chars().filter(|c| *c == '\n' || !c.is_control()).collect()
+    } else {
+        s.chars().filter(|c| !c.is_control()).collect()
+    }
 }
 
 #[cfg(test)]
@@ -507,10 +536,52 @@ mod tests {
 
     #[test]
     fn form_values_are_decoded() {
-        assert_eq!(form_decode("a%2Bb+c%25"), "a+b c%");
-        assert_eq!(form_decode("bad%zz%4"), "bad%zz%4");
-        assert_eq!(form_decode("line%0Abreak"), "linebreak");
-        assert_eq!(form_decode("p%C3%A1ss"), "páss");
+        assert_eq!(form_decode("a%2Bb+c%25", false), "a+b c%");
+        assert_eq!(form_decode("bad%zz%4", false), "bad%zz%4");
+        assert_eq!(form_decode("line%0Abreak", false), "linebreak");
+        assert_eq!(form_decode("p%C3%A1ss", false), "páss");
+        // A multi-line field keeps its line breaks, as \n whatever the browser sent.
+        assert_eq!(form_decode("a%0D%0Ab%0Dc%0Ad", true), "a\nb\nc\nd");
+        assert_eq!(form_decode("tab%09bell%07", true), "tabbell");
+    }
+
+    fn reply_form() -> Form {
+        let mut f = Form::new("Reply");
+        f.quote = "First line\n<b>second</b>".into();
+        f.fields.push(Field::new("text", "Your reply").kind(Kind::Multiline).value("Draft </textarea> & more"));
+        f.fields.push(Field::new("one", "One line"));
+        f
+    }
+
+    #[test]
+    fn multiline_fields_keep_line_breaks_and_render_as_a_text_box() {
+        let f = reply_form();
+        assert_eq!(f.fields[0].max_len, MULTILINE_MAX_LEN);
+        assert_eq!(Field::new("x", "X").kind(Kind::Multiline).max_len(50).max_len, 50);
+        let r = handle(&req("POST", "/t", "text=+Hi%0D%0A%0D%0Athere+%0D%0A&one=a%0D%0Ab"), "t", &f, &|_| Ok(()));
+        let Reply::Done(v) = r else { panic!("{r:?}") };
+        assert_eq!(v["text"], "Hi\n\nthere");
+        assert_eq!(v["one"], "ab", "a one-line field still drops them");
+        let Reply::Page(html) = handle(&req("GET", "/t", ""), "t", &f, &|_| Ok(())) else { panic!() };
+        assert!(html.contains(r#"<textarea id="f0" name="text""#));
+        assert!(html.contains(r#"maxlength="10000""#));
+        assert!(html.contains(">Draft &lt;/textarea&gt; &amp; more</textarea>"), "the value is escaped text content");
+        assert!(html.contains(r#"<input id="f1" name="one" type="text""#));
+        assert!(html.contains("<blockquote>First line\n&lt;b&gt;second&lt;/b&gt;</blockquote>"));
+    }
+
+    #[test]
+    fn a_whole_comment_fits_in_one_request() {
+        let f = reply_form();
+        // 10 000 four-byte characters, each sent as 12 bytes.
+        let long = "%F0%9F%98%80".repeat(MULTILINE_MAX_LEN);
+        assert!(long.len() + 1024 <= request_limit(&f));
+        let p = PhoneForm::start_on(IpAddr::V4(Ipv4Addr::LOCALHOST), f, Box::new(|_: &Values| Ok(()))).unwrap();
+        let (addr, path) = p.url.strip_prefix("http://").unwrap().split_once('/').unwrap();
+        let post = |body: &str| http(addr, &format!("POST /{path} HTTP/1.1\r\nHost: tv\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+        assert!(post(&format!("text={long}%F0%9F%98%80&one=")).contains("Too long (at most 10000 characters)"));
+        assert!(post(&format!("text={long}&one=")).contains("Sent to the TV"));
+        assert_eq!(p.take().unwrap()["text"].chars().count(), MULTILINE_MAX_LEN);
     }
 
     fn http(addr: &str, req: &str) -> String {
