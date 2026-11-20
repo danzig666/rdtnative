@@ -94,6 +94,8 @@ impl Time {
 /// What a user page lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UserTab {
+    /// Posts and comments together, newest first.
+    Overview,
     Submitted,
     Comments,
     Saved,
@@ -104,6 +106,7 @@ pub enum UserTab {
 impl UserTab {
     pub fn key(self) -> &'static str {
         match self {
+            UserTab::Overview => "overview",
             UserTab::Submitted => "submitted",
             UserTab::Comments => "comments",
             UserTab::Saved => "saved",
@@ -128,6 +131,8 @@ pub enum Feed {
     Search { q: String, sub: Option<String> },
     /// A subreddit's posts by a domain ("youtube.com").
     Domain(String),
+    /// A custom feed (multireddit): `/user/{owner}/m/{name}`.
+    Custom { owner: String, name: String },
 }
 
 impl Feed {
@@ -140,7 +145,7 @@ impl Feed {
             Feed::Sub(s) => format!("r/{s}"),
             Feed::Multi(subs) => subs.iter().map(|s| format!("r/{s}")).collect::<Vec<_>>().join(" + "),
             Feed::User(u, t) => match t {
-                UserTab::Submitted => format!("u/{u}"),
+                UserTab::Overview | UserTab::Submitted => format!("u/{u}"),
                 UserTab::Comments => format!("u/{u} \u{b7} comments"),
                 UserTab::Saved => "Saved".into(),
                 UserTab::Upvoted => "Upvoted".into(),
@@ -149,6 +154,7 @@ impl Feed {
             Feed::Search { q, sub: None } => format!("\u{201c}{q}\u{201d}"),
             Feed::Search { q, sub: Some(s) } => format!("\u{201c}{q}\u{201d} in r/{s}"),
             Feed::Domain(d) => d.clone(),
+            Feed::Custom { name, .. } => format!("m/{name}"),
         }
     }
 
@@ -166,7 +172,7 @@ impl Feed {
         match self {
             Feed::Front if signed_in => vec![Sort::Best, Sort::Hot, Sort::New, Sort::Top, Sort::Rising, Sort::Controversial],
             Feed::Search { .. } => vec![Sort::Hot, Sort::New, Sort::Top],
-            Feed::User(_, UserTab::Submitted | UserTab::Comments) => vec![Sort::Hot, Sort::New, Sort::Top, Sort::Controversial],
+            Feed::User(_, UserTab::Overview | UserTab::Submitted | UserTab::Comments) => vec![Sort::Hot, Sort::New, Sort::Top, Sort::Controversial],
             Feed::User(..) => vec![],
             _ => vec![Sort::Hot, Sort::New, Sort::Top, Sort::Rising, Sort::Controversial],
         }
@@ -192,11 +198,16 @@ impl Feed {
             Feed::Sub(s) => sorted(&format!("/r/{s}")),
             Feed::Multi(subs) => sorted(&format!("/r/{}", subs.join("+"))),
             Feed::Domain(d) => sorted(&format!("/domain/{d}")),
+            Feed::Custom { owner, name } => sorted(&format!("/user/{owner}/m/{name}")),
             Feed::User(u, tab) => {
-                if matches!(tab, UserTab::Submitted | UserTab::Comments) {
+                if matches!(tab, UserTab::Overview | UserTab::Submitted | UserTab::Comments) {
                     q.push(("sort".into(), sort.key().into()));
                 }
-                q.push(("type".into(), "links".into()));
+                // Saved, upvoted and hidden mix in comments a feed of posts cannot show; the
+                // overview and comments tabs are read with comments.
+                if !matches!(tab, UserTab::Overview | UserTab::Comments) {
+                    q.push(("type".into(), "links".into()));
+                }
                 format!("/user/{u}/{}", tab.key())
             }
             Feed::Search { q: text, sub } => {
@@ -397,6 +408,23 @@ mod tests {
         assert_eq!(Feed::Multi(vec!["a".into(), "b".into()]).request(Sort::New, Time::All, None, 5).0, "/r/a+b/new");
         assert_eq!(Feed::Front.default_sort(false), Sort::Hot);
         assert_eq!(Feed::Sub("x".into()).title(), "r/x");
+    }
+
+    #[test]
+    fn custom_feed_and_user_overview_requests() {
+        let custom = Feed::Custom { owner: "alice".into(), name: "tech".into() };
+        let (p, qs) = custom.request(Sort::Top, Time::Month, Some("t3_y"), 50);
+        assert_eq!((p.as_str(), q(&qs, "t").as_deref(), q(&qs, "after").as_deref()), ("/user/alice/m/tech/top", Some("month"), Some("t3_y")));
+        assert_eq!(custom.title(), "m/tech");
+        assert_eq!(custom.sub(), None);
+        assert!(custom.sorts(true).contains(&Sort::Rising));
+        let (p, qs) = Feed::User("bob".into(), UserTab::Overview).request(Sort::New, Time::All, None, 25);
+        assert_eq!((p.as_str(), q(&qs, "sort").as_deref(), q(&qs, "type")), ("/user/bob/overview", Some("new"), None));
+        let (p, qs) = Feed::User("bob".into(), UserTab::Comments).request(Sort::Top, Time::Year, None, 25);
+        assert_eq!((p.as_str(), q(&qs, "type"), q(&qs, "t").as_deref()), ("/user/bob/comments", None, Some("year")));
+        let (_, qs) = Feed::User("bob".into(), UserTab::Submitted).request(Sort::Hot, Time::All, None, 25);
+        assert_eq!(q(&qs, "type").as_deref(), Some("links"));
+        assert_eq!(Feed::User("bob".into(), UserTab::Overview).sorts(false), [Sort::Hot, Sort::New, Sort::Top, Sort::Controversial]);
     }
 
     #[test]
