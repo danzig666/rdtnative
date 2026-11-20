@@ -157,6 +157,11 @@ pub struct PostScreen {
     /// Comments that came in with reloads before this page opened (seen on an earlier visit).
     arrived_before: HashSet<String>,
     live: Live,
+    /// The sort the user asked for (a pick, Live on or off): asked again if a load in flight (a
+    /// Live poll) kept it from happening, or the thread was dropped meanwhile.
+    want_sort: Option<CommentSort>,
+    /// The load of the whole thread whose visit was last recorded (its `fetched_at`).
+    seen_sent: u64,
     state: State,
 }
 
@@ -270,6 +275,8 @@ impl PostScreen {
             arrived_at: Default::default(),
             arrived_before: HashSet::new(),
             live: Live::default(),
+            want_sort: None,
+            seen_sent: 0,
         }
     }
 
@@ -571,6 +578,7 @@ impl PostScreen {
                     self.live.sort_before = None;
                     self.show_live(false);
                 }
+                self.want_sort = Some(s);
                 fx.push(Fx::App(RdFx::LoadThread { id: self.key.clone(), sort: Some(s), reload: true }));
                 self.right.to_top();
             }
@@ -599,11 +607,13 @@ impl PostScreen {
         if on {
             self.live.sort_before = Some(cur);
             self.live.next_ms = cx.views.now_ms.wrapping_add(Self::live_period(cx));
+            self.want_sort = Some(CommentSort::New);
             fx.push(Fx::App(RdFx::LoadThread { id: self.key.clone(), sort: Some(CommentSort::New), reload: cur != CommentSort::New }));
             if cur != CommentSort::New {
                 self.right.to_top();
             }
         } else if let Some(s) = self.live.sort_before.take().filter(|s| *s != CommentSort::New) {
+            self.want_sort = Some(s);
             fx.push(Fx::App(RdFx::LoadThread { id: self.key.clone(), sort: Some(s), reload: true }));
             self.right.to_top();
         }
@@ -627,12 +637,14 @@ impl PostScreen {
                 self.set_live(true, cx, fx);
             }
         }
+        // A sort asked for while a load was on its way (a Live poll) did not happen: ask again.
+        if let Some(w) = self.want_sort {
+            if self.thread(cx).is_some_and(|t| !t.loading && t.sort != w) {
+                fx.push(Fx::App(RdFx::LoadThread { id: self.key.clone(), sort: Some(w), reload: true }));
+            }
+        }
         if !self.live.on {
             return;
-        }
-        // A sort asked for while a load was on its way did not happen: ask again.
-        if self.thread(cx).is_some_and(|t| !t.loading && t.sort != CommentSort::New) {
-            fx.push(Fx::App(RdFx::LoadThread { id: self.key.clone(), sort: Some(CommentSort::New), reload: true }));
         }
         // No polls while a menu covers the page or the app is in the background (covered by
         // another page, it gets no ticks at all).
@@ -646,6 +658,19 @@ impl PostScreen {
         if secs != self.live.shown_secs {
             self.live.shown_secs = secs;
             fx.invalidate(plx_machine::present::Provenance::Lifecycle);
+        }
+    }
+
+    /// The visit is recorded as soon as the whole thread is here (and again with each reload), not
+    /// only when the page closes: leaving the app with EXIT or Home never closes it.
+    fn note_seen(&mut self, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
+        if self.comment.is_some() {
+            return;
+        }
+        let (Some(t), Some(it)) = (self.thread(cx), self.item(cx)) else { return };
+        if t.fetched_at > 0 && !t.partial && t.fetched_at != self.seen_sent {
+            self.seen_sent = t.fetched_at;
+            fx.push(Fx::App(RdFx::MarkSeen { id: self.id.clone(), at: t.fetched_at as i64, comments: it.post.num_comments }));
         }
     }
 
@@ -893,8 +918,19 @@ impl Machine<RdHost> for PostScreen {
                     }
                 }
             }
-            ScreenEvent::Tick(t) => self.tick_live(t.ms, cx, fx),
-            ScreenEvent::Async(_, RdMsg::Changed) | ScreenEvent::Uncover => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
+            ScreenEvent::Tick(t) => {
+                self.note_seen(cx, fx);
+                self.tick_live(t.ms, cx, fx);
+            }
+            ScreenEvent::Uncover => {
+                // Signing in or out meanwhile (from this page, or a lost sign-in) dropped the
+                // thread: it loads again, in the sort the user asked for.
+                if self.thread(cx).is_none() {
+                    fx.push(Fx::App(RdFx::LoadThread { id: self.key.clone(), sort: self.want_sort, reload: false }));
+                }
+                fx.invalidate(plx_machine::present::Provenance::Lifecycle);
+            }
+            ScreenEvent::Async(_, RdMsg::Changed) => fx.invalidate(plx_machine::present::Provenance::Lifecycle),
             ScreenEvent::FocusMoved { to, by, .. } => {
                 // The user moved first: the comments, when they come, do not take the focus.
                 if *by == By::Dir {

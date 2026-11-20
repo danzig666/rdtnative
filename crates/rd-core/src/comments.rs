@@ -385,6 +385,23 @@ pub fn comment_names(nodes: &[Node]) -> HashSet<String> {
     out
 }
 
+/// The names of the comments in `nodes` written after `t` (Unix seconds), at any depth.
+pub fn comments_since(nodes: &[Node], t: i64) -> HashSet<String> {
+    fn walk(nodes: &[Node], t: i64, out: &mut HashSet<String>) {
+        for n in nodes {
+            if let Node::Comment(c) = n {
+                if c.created_utc > t {
+                    out.insert(c.name.clone());
+                }
+                walk(&c.replies, t, out);
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    walk(nodes, t, &mut out);
+    out
+}
+
 /// A thread loaded again, laid over the copy on screen so nothing the user opened is lost: at
 /// each level the fresh comments in Reddit's order (new scores, new replies), then the comments
 /// only the old copy has (pages fetched with "load more", older ones past the fresh listing's
@@ -447,17 +464,24 @@ pub fn merge_fresh(old: Vec<Node>, fresh: Vec<Node>) -> Vec<Node> {
 }
 
 /// Whether a post reads like a thread people follow as it happens (a match, game, live or
-/// discussion thread) and is young enough, under 12 hours, to still be one.
+/// discussion thread) and is young enough, under 12 hours, to still be one. "Live" on its own is
+/// a common verb ("Where do you live?"): in a title it counts only as a leading tag ("[Live]",
+/// "LIVE:"); a flair is a tag already.
 pub fn is_live_thread(title: &str, flair: Option<&str>, created_utc: i64, now: i64) -> bool {
-    const PHRASES: [&str; 4] = ["match thread", "game thread", "live thread", "discussion thread"];
+    const PHRASES: [&str; 8] = ["match thread", "game thread", "live thread", "discussion thread", "live updates", "live coverage", "live blog", "live discussion"];
     if now - created_utc >= 12 * 3600 {
         return false;
     }
-    let live = |s: &str| {
-        let s = s.to_lowercase();
-        PHRASES.iter().any(|p| s.contains(p)) || s.split(|c: char| !c.is_alphanumeric()).any(|w| w == "live")
-    };
-    live(title) || flair.is_some_and(live)
+    let phrase = |s: &str| PHRASES.iter().any(|p| s.contains(p));
+    let title = title.to_lowercase();
+    let lead = title.trim_start();
+    let lead = lead.strip_prefix(['[', '(', '|']).unwrap_or(lead).trim_start();
+    let tag = lead.strip_prefix("live").is_some_and(|rest| {
+        let rest = rest.trim_start();
+        rest.is_empty() || rest.starts_with([']', ')', ':', '|', '-', '\u{2013}', '\u{2014}'])
+    });
+    let flair = flair.map(str::to_lowercase).is_some_and(|f| phrase(&f) || f.split(|c: char| !c.is_alphanumeric()).any(|w| w == "live"));
+    phrase(&title) || tag || flair
 }
 
 #[cfg(test)]
@@ -617,6 +641,29 @@ mod tests {
         assert!(is_live_thread("[Live] Launch coverage", None, now - 600, now));
         assert!(!is_live_thread("I delivered pizza alive", None, now - 600, now));
         assert!(!is_live_thread("Match Thread: yesterday", None, now - 13 * 3600, now));
+        assert!(is_live_thread("LIVE: Election night", None, now - 600, now));
+        assert!(is_live_thread("(Live) Apple event", None, now - 600, now));
+        assert!(is_live_thread("Storm live updates", None, now - 600, now));
+        // The verb is not a live thread.
+        for t in ["Where do you live?", "Things you can't live without", "I live in Ohio AMA", "Live music recommendations?", "Live and let die"] {
+            assert!(!is_live_thread(t, None, now - 600, now), "{t}");
+        }
+        assert!(is_live_thread("Where do you live?", Some("Live"), now - 600, now));
+    }
+
+    #[test]
+    fn comments_since_a_time_at_any_depth() {
+        let c = |id: &str, at: i64, replies: Vec<Node>| {
+            let mut n = comment(id, "t3_p", 0, replies);
+            if let Node::Comment(c) = &mut n {
+                c.created_utc = at;
+            }
+            n
+        };
+        let tree = vec![c("a", 100, vec![c("b", 300, vec![])]), c("d", 250, vec![])];
+        let mut got: Vec<String> = comments_since(&tree, 200).into_iter().collect();
+        got.sort();
+        assert_eq!(got, ["t1_b", "t1_d"]);
     }
 
     #[test]

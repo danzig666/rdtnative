@@ -208,7 +208,7 @@ pub enum RdFx {
     MoreComments { post: String, more_id: String },
     /// Open or close a comment thread (`post` is the thread key).
     ToggleComment { post: String, name: String },
-    /// The user left a post whose comments were loaded at `at` (Unix seconds), with `comments`.
+    /// The user saw a post's whole thread, loaded at `at` (Unix seconds), with `comments`.
     MarkSeen { id: String, at: i64, comments: i64 },
     /// Resolve an Imgur page of a post through Imgur's API.
     ResolveImgur(String),
@@ -518,11 +518,18 @@ impl AppRig {
         plx_machine::present::wake_from_worker();
     }
 
-    /// Writes what is kept on a timer now (the read posts): the app is leaving or may be closed.
+    /// Writes what is kept on a timer now (the read posts, the visits for the new comments): the
+    /// app is leaving or may be closed.
     pub fn flush(&mut self) {
         if self.read_dirty {
             self.read_dirty = false;
+            self.read_saved_ms = self.now_ms;
             store::store_read(&self.store.read);
+        }
+        if self.seen_dirty {
+            self.seen_dirty = false;
+            self.seen_saved_ms = self.now_ms;
+            crate::seen::save(&self.store.seen);
         }
     }
 
@@ -744,17 +751,23 @@ impl AppRig {
                 }
                 st.loading = false;
                 st.gen = st.gen.wrapping_add(1);
+                let mut failed = None;
                 match result {
                     Ok((post, tree)) => {
                         st.error = None;
                         st.sort = sort;
                         st.partial = partial;
+                        let prev = st.fetched_at as i64;
                         st.fetched_at = rd_core::now_secs();
                         let auto = auto_collapsed(&tree, &self.store.prefs);
                         if merge {
                             let before = comments::comment_names(&st.tree);
                             st.tree = comments::merge_fresh(std::mem::take(&mut st.tree), tree);
-                            st.arrived.extend(comments::comment_names(&st.tree).into_iter().filter(|n| !before.contains(n)));
+                            // News are comments written since the last load: an older one that sat
+                            // behind a "load more" row (or past the listing's cut) and now shows
+                            // inline is not. The slack allows for the TV's clock and Reddit's cache.
+                            let fresh = comments::comments_since(&st.tree, prev - ARRIVED_SLACK_SECS);
+                            st.arrived.extend(fresh.into_iter().filter(|n| !before.contains(n)));
                             // What the user opened or closed stays so; deep replies and moderator
                             // notes that just came start collapsed like the rest.
                             st.toggled.extend(auto.into_iter().filter(|n| !before.contains(n)));
@@ -783,8 +796,17 @@ impl AppRig {
                     }
                     Err(e) => {
                         crate::log(&format!("thread {id}: {e}"));
+                        // A full load over a preview (or in another sort) failed: the comments on
+                        // screen are not the whole thread, and the page draws errors only over an
+                        // empty list.
+                        if !partial && !merge && !st.tree.is_empty() {
+                            failed = Some(format!("{}: {e}", crate::i18n::tr("Couldn't load comments")));
+                        }
                         st.error = Some(e);
                     }
+                }
+                if let Some(t) = failed {
+                    self.store.toast(t, now);
                 }
             }
             Work::More { epoch, post, more_id, result } => {
@@ -1317,6 +1339,11 @@ impl AppRig {
             return;
         }
         let merge = whole && st.sort == sort;
+        // Over a preview: until the whole thread arrives it is not whole, so a failed load leaves
+        // it to load again on the next open (and no visit is recorded from the preview).
+        if st.partial {
+            st.fetched_at = 0;
+        }
         st.loading = true;
         st.partial = false;
         st.error = None;
@@ -1327,7 +1354,11 @@ impl AppRig {
     /// Live mode's poll: thread `key` again, merged in (or a first try after a failed load); it
     /// waits for room under the rate limit.
     fn refresh_thread(&mut self, from: MachineId, key: String) {
-        let Some(st) = self.store.threads.get_mut(&key) else { return };
+        // The thread was dropped (a sign-in or sign-out meanwhile): Live mode loads it again.
+        let Some(st) = self.store.threads.get_mut(&key) else {
+            self.load_thread(from, key, Some(CommentSort::New), false);
+            return;
+        };
         if st.loading || st.partial {
             return;
         }
@@ -2229,6 +2260,10 @@ fn resolve_share(url: &str) -> Option<rd_core::listing::RedditLink> {
 
 /// How long a loaded thread is shown as it is before opening the post loads it again.
 const THREAD_FRESH_SECS: u64 = 180;
+
+/// A reload marks as new the comments written up to this long before the last load (the TV's
+/// clock and Reddit's listing cache may be off by a little).
+const ARRIVED_SLACK_SECS: i64 = 60;
 
 fn new_thread(sort: CommentSort) -> ThreadState {
     ThreadState {
