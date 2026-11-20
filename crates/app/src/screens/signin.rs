@@ -245,12 +245,12 @@ impl Screen<RdHost> for SignInScreen {
             let tip = if redirect == auto || redirect == rd_core::DEFAULT_REDIRECT_URI {
                 crate::i18n::tr("Approving on Reddit signs in by itself: nothing to copy.").to_string()
             } else if !redirect.starts_with("http://") && !redirect.starts_with("https://") {
-                crate::i18n::tr("Your redirect URI is not a web address, so after Allow the browser shows nothing. Use Firefox on a computer, or set your Reddit app's redirect URI to rdtnative's page: the sign-in page explains how.").to_string()
+                crate::i18n::tr("Your client ID's redirect URI is not a web address: after Allow the browser stays on Reddit's page. On a computer, Firefox shows the address in its address bar, Chrome in its console (F12). The sign-in page explains it.").to_string()
             } else {
                 format!("{} {auto}", crate::i18n::tr("No copying: make your Reddit app's redirect URI (and Settings \u{203a} Reddit API) this address:"))
             };
             let ts = ui::sz(22);
-            for (i, l) in ui::wrap_lines(f.measure, &tip, 720.0, ts, false, 4).iter().enumerate() {
+            for (i, l) in ui::wrap_lines(f.measure, &tip, 720.0, ts, false, 5).iter().enumerate() {
                 ui::text_raw(p, l, 160.0, 640.0 + i as f32 * ts as f32 * 1.4, ts, ui::FAINT, ui::ALIGN_LEFT, false);
             }
         }

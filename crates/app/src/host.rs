@@ -2180,17 +2180,18 @@ fn signin_form(authorize_url: &str, redirect: &str) -> rd_phone::Form {
             .placeholder("myapp://callback?state=…&code=…")
             .max_len(2048),
     );
-    // A redirect URI that is not a web address (myapp://...): the browser cannot open it, so it
-    // stays on Reddit's page and only the developer tools show the address. Say so up front.
-    if !redirect.starts_with("http://") && !redirect.starts_with("https://") {
-        form.intro = vec![
-            format!("Your app's redirect URI ({redirect}) is not a web address. After you approve, the browser cannot open it: it stays on Reddit's page, and the address with code= shows only in the developer tools. On a phone it usually cannot be seen at all: use a computer."),
-            format!("Easiest: if you can change your Reddit app's redirect URI, set it to {} (and leave it empty in rdtnative's settings). Then Reddit's answer goes back to the TV by itself, and \"Sign in on this TV\" works too.", rd_core::DEFAULT_REDIRECT_URI),
-        ];
+    // A redirect URI that is not a web address (myapp://...), fixed by the client ID: the browser
+    // cannot open it and stays on Reddit's page; only Firefox's address bar and Chrome's console
+    // show the address. Lead with the steps for that.
+    let fixed_scheme = !redirect.starts_with("http://") && !redirect.starts_with("https://");
+    if fixed_scheme {
+        form.intro = vec![format!(
+            "This client ID sends Reddit's answer to {redirect}, which is not a web address: after Allow the browser stays on Reddit's page. The address with code= is still there; copy it from one of these places. Use a computer: phones do not show it."
+        )];
         form.steps = vec![
-            "Press \"Approve on Reddit\" (it opens a new tab).".into(),
-            "In that tab, before you press Allow: in Chrome or Edge press F12 and open Console. Firefox needs nothing.".into(),
-            "Press Allow. Firefox shows an error page whose address bar holds the address; Chrome and Edge show a red line \"Failed to launch '...'\" in the Console. Copy the address, or the whole red line.".into(),
+            "Press \"Approve on Reddit\" (it opens a new tab), log in if asked, and press Allow.".into(),
+            "Firefox: the address bar now holds the address (on an error page). Copy all of it.".into(),
+            "Chrome or Edge: press F12, open Console and find the red line \"Failed to launch '...'\". Copy the whole line (or right-click the address, Copy link address). If there is no such line, press Allow again with the Console open.".into(),
             "Paste it below. Pasting sends it to the TV at once.".into(),
         ];
     }
@@ -2212,6 +2213,10 @@ fn signin_form(authorize_url: &str, redirect: &str) -> rd_phone::Form {
             "If your Reddit app's redirect URI is this page's address without the last part (shown on the TV, like http://192.168.1.20:8091/), Reddit sends the browser straight here and the TV signs in by itself.".into(),
         ),
     ];
+    // The steps above already cover a fixed myapp:// redirect; the notes are about other kinds.
+    if fixed_scheme {
+        form.notes.clear();
+    }
     form.done = ("Sent to the TV.".into(), "The TV is signing in now; it says when it is done. You can close this page.".into());
     form
 }
