@@ -39,11 +39,28 @@ pub struct PlayerScreen {
     nav: BarNav,
     /// Keys the player has no use for, each logged once (to learn what the TV sends for them).
     unbound: Vec<(u32, u32)>,
+    /// A page went over the video while it still loaded: it was stopped, and starts again when
+    /// the page goes.
+    stopped_covered: bool,
 }
 
 impl PlayerScreen {
     pub fn new(entry: EntryId, url: String, title: String, looping: bool) -> Self {
-        PlayerScreen { entry, state: State(format!("player {url}")), url, title, looping, shown_at: 0, nav: BarNav::default(), unbound: Vec::new() }
+        PlayerScreen { entry, state: State(format!("player {url}")), url, title, looping, shown_at: 0, nav: BarNav::default(), unbound: Vec::new(), stopped_covered: false }
+    }
+
+    /// The controls close by themselves: at once when the video failed, else after [`ROW_MS`]
+    /// without a key, the bar then fading from there as it does after any key.
+    fn expire_row(&mut self, now: u32, st: &Status) {
+        if self.nav.row.is_none() {
+            return;
+        }
+        if matches!(st.phase, Phase::Failed(_)) {
+            self.nav = BarNav::default();
+        } else if now.wrapping_sub(self.shown_at) > ROW_MS {
+            self.nav = BarNav::default();
+            self.shown_at = now.wrapping_sub(HUD_MS);
+        }
     }
 
     /// How much of the bar shows: all of it while the video is not playing or the remote is in
@@ -78,6 +95,29 @@ impl Machine<RdHost> for PlayerScreen {
             }
             ScreenEvent::Unmount => {
                 fx.push(Fx::App(RdFx::StopVideo));
+                Handled::Yes
+            }
+            // A page pushed over the video (a voice search, Sign in, a shared link): a playing
+            // video pauses, one still loading stops (it would start, with its sound, under the
+            // page). It plays on, or starts again, when the page goes.
+            ScreenEvent::Cover => {
+                match st.phase {
+                    Phase::Playing => fx.push(Fx::App(RdFx::VideoControl(Control::Pause))),
+                    Phase::Loading | Phase::Idle => {
+                        fx.push(Fx::App(RdFx::StopVideo));
+                        self.stopped_covered = true;
+                    }
+                    _ => {}
+                }
+                Handled::Yes
+            }
+            ScreenEvent::Uncover => {
+                // Stopped under the page, or another video took the player meanwhile.
+                if std::mem::take(&mut self.stopped_covered) || st.phase == Phase::Idle {
+                    fx.push(Fx::App(RdFx::Play { url: self.url.clone(), looping: self.looping }));
+                }
+                self.shown_at = now;
+                fx.invalidate(plx_machine::present::Provenance::Lifecycle);
                 Handled::Yes
             }
             ScreenEvent::Input(InputEvent { kind: InputKind::Key { key, sym, wcode, edge, .. }, .. }) => {
@@ -117,9 +157,7 @@ impl Machine<RdHost> for PlayerScreen {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                if self.nav.row.is_some() && (t.ms.wrapping_sub(self.shown_at) > ROW_MS || matches!(st.phase, Phase::Failed(_))) {
-                    self.nav = BarNav::default();
-                }
+                self.expire_row(t.ms, st);
                 fx.invalidate(plx_machine::present::Provenance::Lifecycle);
                 Handled::Yes
             }
@@ -555,6 +593,26 @@ mod tests {
 
     fn act(a: Act) -> Did {
         Did::Done(Some(a))
+    }
+
+    #[test]
+    fn controls_left_alone_close_and_the_bar_fades() {
+        let st = playing();
+        let mut s = PlayerScreen::new(EntryId(1), "u".into(), "t".into(), false);
+        s.shown_at = 1_000;
+        s.nav.row = Some(Ctl::Speed);
+        s.expire_row(1_000 + ROW_MS, &st);
+        assert!(s.nav.row.is_some());
+        let now = 1_001 + ROW_MS;
+        s.expire_row(now, &st);
+        assert!(s.nav.row.is_none());
+        // Not gone at once: the usual fade, from full.
+        assert!(s.hud_alpha(now, &st) > 0.99);
+        assert!(s.hud_alpha(now + 450, &st) < 0.01);
+        // A failed video closes them at once.
+        s.nav.row = Some(Ctl::Speed);
+        s.expire_row(now, &Status { phase: Phase::Failed("x".into()), ..Default::default() });
+        assert!(s.nav.row.is_none());
     }
 
     #[test]

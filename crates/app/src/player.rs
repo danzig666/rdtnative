@@ -66,6 +66,15 @@ pub struct Status {
     pub notice: Option<String>,
     /// Sound off (the video channel's switch); every new video starts with sound.
     pub muted: bool,
+    /// Before the video first plays: the addresses not tried yet (one per line), which a quality
+    /// change then reloads behind the chosen one.
+    pub fallback: Option<String>,
+    /// Where the video goes once it plays: a reload's start, or a seek made while it loaded (a
+    /// seek sent before the pipeline plays is ignored).
+    pub want_ms: Option<u64>,
+    /// Seeks the viewer made since the load: a load's second try at its start position does not
+    /// undo one.
+    pub user_seeks: u32,
 }
 
 /// What the viewer asks of the playing video, beside pause and seek.
@@ -166,22 +175,32 @@ mod tv {
 
         /// Main thread. Plays `url` full screen.
         pub fn start(&mut self, url: String, looping: bool) {
-            self.load(url, looping, 0, 1.0);
+            self.load(url, looping, 0, 1.0, false);
         }
 
         /// Main thread. Plays `url` (addresses, one per line) full screen from `start_ms`, at speed
-        /// `rate` and the current quality cap.
-        fn load(&mut self, url: String, looping: bool, start_ms: u64, rate: f32) {
+        /// `rate` and the current quality cap; `pause_after`: paused again once it is there (the
+        /// viewer had paused it).
+        fn load(&mut self, url: String, looping: bool, start_ms: u64, rate: f32, pause_after: bool) {
             // A reload of the same stream keeps its quality choice on screen while it loads.
             let heights = {
                 let s = self.status.lock().unwrap();
-                if s.url == url { s.heights.clone() } else { Vec::new() }
+                if same_stream(&url, &s.url) { s.heights.clone() } else { Vec::new() }
             };
             self.stop();
             let my_gen = self.gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             let gen = self.gen.clone();
-            *self.status.lock().unwrap() =
-                Status { phase: Phase::Loading, url: url.clone(), looping, position_ms: start_ms, rate: Rate(rate), heights, max_height: self.cap, ..Default::default() };
+            *self.status.lock().unwrap() = Status {
+                phase: Phase::Loading,
+                url: url.clone(),
+                looping,
+                position_ms: start_ms,
+                rate: Rate(rate),
+                heights,
+                max_height: self.cap,
+                want_ms: (start_ms > 2000).then_some(start_ms),
+                ..Default::default()
+            };
             let Some(create) = sdl_sym::<CreateFn>("SDL_webOSCreateExportedWindow") else {
                 self.fail("this TV has no video window for native apps (webOS 4 is not supported yet)");
                 return;
@@ -211,11 +230,16 @@ mod tv {
                 // The probe can pass an address the TV's player is then refused (v.redd.it answers
                 // 403 to it): the ones after it are tried if the stream fails before it plays.
                 let rest: Vec<&str> = all.iter().skip_while(|u| **u != url).skip(1).copied().collect();
-                let rest = Arc::new(Mutex::new((!rest.is_empty()).then(|| rest.join("\n"))));
+                let rest = (!rest.is_empty()).then(|| rest.join("\n"));
                 if !live() {
                     return;
                 }
-                status.lock().unwrap().url = url.clone();
+                {
+                    let mut s = status.lock().unwrap();
+                    s.url = url.clone();
+                    s.fallback = rest.clone();
+                }
+                let rest = Arc::new(Mutex::new(rest));
                 let uri = hls_source(&url, cap, &status, &live);
                 if !live() {
                     return;
@@ -252,12 +276,9 @@ mod tv {
                 let r = luna.call("luna://com.webos.media/play", &format!(r#"{{"mediaId":{}}}"#, json_str(&mid)));
                 crate::log(&format!("player: play -> {r}"));
                 plx_machine::present::wake_from_worker();
-                let rate = status.lock().unwrap().rate.0;
-                if start_ms <= 2000 && rate == 1.0 {
-                    return;
-                }
                 // A seek (or a speed) sent right after play is answered and ignored (ytnative saw a
-                // resumed video start from 0:00): wait until the pipeline plays.
+                // resumed video start from 0:00): wait until the pipeline plays. Seeks the viewer
+                // makes meanwhile land in `want_ms`, the speed in `rate`.
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
                 while live() && status.lock().unwrap().phase == Phase::Loading && std::time::Instant::now() < deadline {
                     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -265,16 +286,34 @@ mod tv {
                 if !live() || matches!(status.lock().unwrap().phase, Phase::Failed(_)) {
                     return;
                 }
-                if start_ms > 2000 {
+                let (target, seq) = {
+                    let mut s = status.lock().unwrap();
+                    (s.want_ms.take(), s.user_seeks)
+                };
+                let pause = || {
+                    let r = luna.call("luna://com.webos.media/pause", &media_json(&mid));
+                    crate::log(&format!("player: paused again -> {r}"));
+                };
+                if let Some(to) = target {
                     let seek = |why: &str| {
-                        let r = luna.call("luna://com.webos.media/seek", &format!(r#"{{"mediaId":{},"position":{start_ms}}}"#, json_str(&mid)));
-                        crate::log(&format!("player: start at {start_ms} ms ({why}) -> {r}"));
+                        let r = luna.call("luna://com.webos.media/seek", &format!(r#"{{"mediaId":{},"position":{to}}}"#, json_str(&mid)));
+                        crate::log(&format!("player: start at {to} ms ({why}) -> {r}"));
                     };
                     seek("playing");
+                    if pause_after && live() {
+                        pause();
+                    }
                     std::thread::sleep(std::time::Duration::from_secs(2));
-                    if live() && status.lock().unwrap().position_ms + 5_000 < start_ms {
+                    // Once more when the first was ignored, unless the viewer moved meanwhile.
+                    let again = {
+                        let s = status.lock().unwrap();
+                        s.user_seeks == seq && s.want_ms.is_none() && s.position_ms + 5_000 < to
+                    };
+                    if live() && again {
                         seek("again");
                     }
+                } else if pause_after && live() {
+                    pause();
                 }
                 let rate = status.lock().unwrap().rate.0;
                 if live() && rate != 1.0 {
@@ -286,9 +325,10 @@ mod tv {
             }
         }
 
-        /// After the TV took the pipeline away: loads the video again at `at` (else where it was).
-        /// False while the pipeline is there.
-        fn reload_lost(&mut self, at: Option<u64>) -> bool {
+        /// After the TV took the pipeline away (or a quality change waits for the viewer): loads
+        /// the video again at `at` (else where it was), paused there when `paused`. False while
+        /// the pipeline is there.
+        fn reload_lost(&mut self, at: Option<u64>, paused: bool) -> bool {
             let (url, looping, rate, from) = {
                 let s = self.status.lock().unwrap();
                 let Some(from) = s.reload else { return false };
@@ -296,12 +336,12 @@ mod tv {
             };
             let at = at.unwrap_or(from);
             crate::log(&format!("player: loading the video again at {at} ms"));
-            self.load(url, looping, at, rate);
+            self.load(url, looping, at, rate, paused);
             true
         }
 
         pub fn toggle_pause(&mut self) {
-            if self.reload_lost(None) {
+            if self.reload_lost(None, false) {
                 return;
             }
             let Some(luna) = self.luna else { return };
@@ -322,7 +362,7 @@ mod tv {
 
         /// From the start: seek to 0, then play.
         pub fn replay(&mut self) {
-            if self.reload_lost(Some(0)) {
+            if self.reload_lost(Some(0), false) {
                 return;
             }
             let Some(luna) = self.luna else { return };
@@ -355,41 +395,56 @@ mod tv {
             let _ = plx_base::task::spawn("media", move || apply_rate(luna, &mid, rate, &status, &current));
         }
 
-        /// This video's highest quality (an HLS height; 0 = Auto): it loads again where it is.
+        /// This video's highest quality (an HLS height; 0 = Auto): it loads again where it is. A
+        /// paused or ended video stays so and loads at the new quality when the viewer goes on.
         pub fn set_quality(&mut self, h: u32) {
             self.cap = h;
-            let (url, looping, at, rate, phase) = {
+            let (url, looping, at, rate, phase, fallback) = {
                 let s = self.status.lock().unwrap();
-                (s.url.clone(), s.looping, s.reload.unwrap_or(s.position_ms), s.rate.0, s.phase.clone())
+                (s.url.clone(), s.looping, s.want_ms.or(s.reload).unwrap_or(s.position_ms), s.rate.0, s.phase.clone(), s.fallback.clone())
             };
             if url.is_empty() || matches!(phase, Phase::Idle | Phase::Failed(_)) {
                 return;
             }
+            if matches!(phase, Phase::Paused | Phase::Ended) {
+                let mut s = self.status.lock().unwrap();
+                s.max_height = h;
+                if s.reload.is_none() {
+                    s.reload = Some(s.position_ms);
+                }
+                crate::log(&format!("player: quality {h}p from {at} ms when the video goes on"));
+                return;
+            }
             crate::log(&format!("player: quality {h}p, again at {at} ms"));
-            self.load(url, looping, at, rate);
+            self.load(quality_reload(&url, &phase, fallback.as_deref()), looping, at, rate, false);
         }
 
         pub fn seek_by(&mut self, delta_ms: i64) {
-            let lost = {
+            let (lost, paused) = {
                 let s = self.status.lock().unwrap();
-                let dur = s.duration_ms as i64;
-                s.reload.map(|at| {
-                    let to = (at as i64 + delta_ms).max(0);
-                    (if dur > 0 { to.min((dur - 500).max(0)) } else { to }) as u64
-                })
+                (s.reload.map(|at| seek_target(at, delta_ms, s.duration_ms)), matches!(s.phase, Phase::Paused | Phase::Ended))
             };
             if let Some(to) = lost {
-                self.reload_lost(Some(to));
+                self.reload_lost(Some(to), paused);
                 return;
+            }
+            {
+                // Before the video plays: it goes there once it does.
+                let mut s = self.status.lock().unwrap();
+                if s.phase == Phase::Loading || s.want_ms.is_some() {
+                    let to = seek_target(s.want_ms.unwrap_or(s.position_ms), delta_ms, s.duration_ms);
+                    s.want_ms = Some(to);
+                    s.position_ms = to;
+                    return;
+                }
             }
             let Some(luna) = self.luna else { return };
             let Some(mid) = self.media_id.lock().unwrap().clone() else { return };
             let to = {
                 let mut s = self.status.lock().unwrap();
-                let dur = s.duration_ms as i64;
-                let to = (s.position_ms as i64 + delta_ms).max(0);
-                let to = if dur > 0 { to.min((dur - 500).max(0)) } else { to };
-                s.position_ms = to as u64;
+                let to = seek_target(s.position_ms, delta_ms, s.duration_ms);
+                s.position_ms = to;
+                s.user_seeks = s.user_seeks.wrapping_add(1);
                 to
             };
             let payload = format!(r#"{{"mediaId":{},"position":{to}}}"#, json_str(&mid));
@@ -433,13 +488,14 @@ mod tv {
         }
 
         pub fn tick(&mut self) {
+            // The same video at the next address: the speed chosen while it loaded stays.
             let retry = {
                 let mut s = self.status.lock().unwrap();
-                s.retry.take().map(|r| (r, s.looping))
+                s.retry.take().map(|r| (r, s.looping, s.rate.0))
             };
-            if let Some((urls, looping)) = retry {
+            if let Some((urls, looping, rate)) = retry {
                 crate::log("player: stream refused, trying the next one");
-                self.start(urls, looping);
+                self.load(urls, looping, 0, rate, false);
             }
         }
     }
@@ -522,6 +578,7 @@ mod tv {
             s.position_ms = t;
         } else if v.get("playing").is_some() {
             s.phase = Phase::Playing;
+            s.fallback = None;
         } else if v.get("paused").is_some() {
             s.phase = Phase::Paused;
         } else if v.get("endOfStream").is_some() {
@@ -547,6 +604,7 @@ mod tv {
             if s.phase == Phase::Loading && s.position_ms == 0 {
                 if let Some(next) = rest.lock().unwrap().take() {
                     s.retry = Some(next);
+                    s.fallback = None;
                     drop(s);
                     plx_machine::present::wake_from_worker();
                     return;
@@ -767,6 +825,32 @@ pub fn candidates(urls: &str) -> Vec<&str> {
     urls.lines().map(str::trim).filter(|u| !u.is_empty()).collect()
 }
 
+/// Whether loading `urls` plays the stream `playing` (the address chosen from a list) again: its
+/// quality choice then stays on screen while it loads.
+#[cfg(any(test, not(any(windows, feature = "sim"))))]
+fn same_stream(urls: &str, playing: &str) -> bool {
+    urls == playing || candidates(urls).first() == Some(&playing)
+}
+
+/// What a quality change loads: the address playing, and while the video has not played yet the
+/// ones not tried, so a stream the TV's player refuses still falls back to them.
+#[cfg(any(test, not(any(windows, feature = "sim"))))]
+fn quality_reload(url: &str, phase: &Phase, fallback: Option<&str>) -> String {
+    match fallback.filter(|_| *phase == Phase::Loading) {
+        Some(f) => format!("{url}\n{f}"),
+        None => url.to_string(),
+    }
+}
+
+/// Where a seek of `delta_ms` from `at` lands: not before the start, nor in the last half second
+/// of a video whose length is known.
+#[cfg(any(test, not(any(windows, feature = "sim"))))]
+fn seek_target(at: u64, delta_ms: i64, duration_ms: u64) -> u64 {
+    let to = (at as i64 + delta_ms).max(0);
+    let dur = duration_ms as i64;
+    (if dur > 0 { to.min((dur - 500).max(0)) } else { to }) as u64
+}
+
 /// The first candidate the server serves (asked for one byte; a 403 or 404 moves on). Without an
 /// answer from any (no network, all refused), the first one: the TV's player says why.
 #[cfg(not(any(windows, feature = "sim")))]
@@ -821,6 +905,19 @@ mod tests {
     }
 
     #[test]
+    fn reloads_keep_what_they_can() {
+        // A quality change before the video played keeps the addresses not tried behind it.
+        assert_eq!(quality_reload("h", &Phase::Loading, Some("d\nm")), "h\nd\nm");
+        assert_eq!(quality_reload("h", &Phase::Playing, Some("d")), "h");
+        assert_eq!(quality_reload("h", &Phase::Loading, None), "h");
+        // ...and its quality choice stays on screen.
+        assert!(same_stream("h\nd\nm", "h") && same_stream("h", "h") && !same_stream("d\nm", "h"));
+        assert_eq!(seek_target(5_000, -10_000, 0), 0);
+        assert_eq!(seek_target(50_000, 30_000, 60_000), 59_500);
+        assert_eq!(seek_target(50_000, 30_000, 0), 80_000);
+    }
+
+    #[test]
     fn luna_replies() {
         assert!(replied_ok(r#"{"returnValue":true,"errorCode":0}"#));
         assert!(replied_ok("{\n  \"returnValue\": true\n}"));
@@ -845,6 +942,9 @@ mod tests {
         assert!(st().looping);
         p.control(Control::Pause);
         assert_eq!(st().phase, Phase::Paused);
+        // A paused video stays paused at a new quality.
+        p.control(Control::Quality(480));
+        assert_eq!((st().phase, st().max_height), (Phase::Paused, 480));
         p.control(Control::Play);
         assert_eq!(st().phase, Phase::Playing);
         p.seek_by(70_000);
