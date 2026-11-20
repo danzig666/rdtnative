@@ -27,6 +27,7 @@ mod sim;
 mod store;
 mod ui;
 mod update;
+mod voice;
 #[cfg_attr(any(windows, feature = "sim"), path = "sim/wl.rs")]
 mod wl;
 
@@ -209,6 +210,7 @@ fn main() {
         let mut rig = AppRig::new();
         // Once in a while at start: is there a newer release? (asked about on the feed)
         update::start_auto_check();
+        voice::start();
         let mut d = Dispatcher::<RdHost>::with_transition(Box::new(PageDip::new()));
         d.request(MachineId::Nav, NavOp::Root(RdArg::Home));
         let (mut mouse_down, mut last_wheel) = (false, 0u32);
@@ -354,6 +356,10 @@ fn main() {
                     source: plx_machine::machine::Source::Sdl,
                     kind: plx_machine::machine::InputKind::PointerHidden,
                 });
+            }
+            // Words said to LG's voice search: into the open keyboard, else a Reddit search.
+            for q in voice::take() {
+                rig.voice_text(q, d.top_screen().map(|s| s.name()) == Some("keyboard"));
             }
             // The automatic update check found a newer version: ask once, on the feed (never over
             // a video or a page being read).

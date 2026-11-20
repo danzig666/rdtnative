@@ -805,6 +805,18 @@ impl AppRig {
         plx_machine::present::wake_from_worker();
     }
 
+    /// Words said to the TV's voice search: typed into the open keyboard, otherwise searched for
+    /// on all of Reddit.
+    pub fn voice_text(&mut self, text: String, keyboard_open: bool) {
+        if keyboard_open {
+            self.store.incoming = Incoming { seq: self.store.incoming.seq.wrapping_add(1), text, done: false };
+        } else {
+            self.store.prefs.remember_search(&text);
+            store::store_prefs(&self.store.prefs);
+            self.store.nav_request = Some(RdArg::Feed(Feed::Search { q: text, sub: None }));
+        }
+        self.store.bump();
+    }
 
     /// Validates the draft; when valid, stores it (a new client ID starts a new identity, other
     /// changes keep the tokens) and reloads.
