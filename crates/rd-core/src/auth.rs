@@ -128,9 +128,19 @@ pub enum Callback {
     Denied { error: String, state: String },
 }
 
-/// Parses a pasted callback URL (or just its query string, or a bare code).
+/// The callback address inside a longer paste, such as Chrome's console line "Failed to launch
+/// 'myapp://cb?state=..&code=..' because the scheme does not have a registered handler.": the
+/// first word (split at spaces and quotes) that carries `code=` or `error=`.
+fn callback_in(s: &str) -> &str {
+    s.split(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`' | '<' | '>' | '‘' | '’' | '“' | '”'))
+        .find(|w| w.contains("code=") || w.contains("error="))
+        .unwrap_or(s)
+}
+
+/// Parses a pasted callback URL (or just its query string, or a bare code, or a line of text
+/// with the URL in it).
 pub fn parse_callback(input: &str) -> Result<Callback, String> {
-    let s = input.trim();
+    let s = callback_in(input.trim());
     let query = match s.split_once('?') {
         Some((_, q)) => q,
         None if s.contains('=') => s,
@@ -325,6 +335,11 @@ mod tests {
         );
         assert_eq!(parse_callback(" bareCode ").unwrap(), Callback::Code { code: "bareCode".into(), state: "".into() });
         assert!(parse_callback("https://x/cb?state=s").is_err());
+        // Chrome's console line, copied whole (and its "Copy link address" form).
+        let line = "Failed to launch 'myapp://oauth?state=n1.192.168.0.5%3A8091&code=Ab-c_9' because the scheme does not have a registered handler.";
+        let want = Callback::Code { code: "Ab-c_9".into(), state: "n1.192.168.0.5:8091".into() };
+        assert_eq!(parse_callback(line).unwrap(), want);
+        assert_eq!(parse_callback("myapp://oauth?state=n1.192.168.0.5%3A8091&code=Ab-c_9").unwrap(), want);
         assert_eq!(decode_component("a%2Fb+c%"), "a/b c%");
     }
 

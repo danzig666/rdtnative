@@ -1851,7 +1851,7 @@ impl AppRig {
             |host| {
                 let state = rd_core::auth::State { nonce, tv: Some(host.to_string()) };
                 url = rd_core::auth::authorize_url(&client, saved.redirect(), &state.encode());
-                signin_form(&url)
+                signin_form(&url, saved.redirect())
             },
             Box::new(signin_validator(self.signin_nonce.clone())),
         )
@@ -2162,7 +2162,7 @@ fn redgifs_token(http: &reqwest::blocking::Client) -> Option<String> {
 /// short address) or opened from the QR code on a phone. It links to Reddit's approve page and
 /// takes the address Reddit sent the browser to; when the app's redirect URI points at this
 /// server, Reddit's redirect lands here and signs in by itself.
-fn signin_form(authorize_url: &str) -> rd_phone::Form {
+fn signin_form(authorize_url: &str, redirect: &str) -> rd_phone::Form {
     let mut form = rd_phone::Form::new("rdtnative: sign in");
     form.short = true;
     form.paste_submits = true;
@@ -2180,6 +2180,20 @@ fn signin_form(authorize_url: &str) -> rd_phone::Form {
             .placeholder("myapp://callback?state=…&code=…")
             .max_len(2048),
     );
+    // A redirect URI that is not a web address (myapp://...): the browser cannot open it, so it
+    // stays on Reddit's page and only the developer tools show the address. Say so up front.
+    if !redirect.starts_with("http://") && !redirect.starts_with("https://") {
+        form.intro = vec![
+            format!("Your app's redirect URI ({redirect}) is not a web address. After you approve, the browser cannot open it: it stays on Reddit's page, and the address with code= shows only in the developer tools. On a phone it usually cannot be seen at all: use a computer."),
+            format!("Easiest: if you can change your Reddit app's redirect URI, set it to {} (and leave it empty in rdtnative's settings). Then Reddit's answer goes back to the TV by itself, and \"Sign in on this TV\" works too.", rd_core::DEFAULT_REDIRECT_URI),
+        ];
+        form.steps = vec![
+            "Press \"Approve on Reddit\" (it opens a new tab).".into(),
+            "In that tab, before you press Allow: in Chrome or Edge press F12 and open Console. Firefox needs nothing.".into(),
+            "Press Allow. Firefox shows an error page whose address bar holds the address; Chrome and Edge show a red line \"Failed to launch '...'\" in the Console. Copy the address, or the whole red line.".into(),
+            "Paste it below. Pasting sends it to the TV at once.".into(),
+        ];
+    }
     form.notes = vec![
         (
             "Firefox".into(),
@@ -2187,7 +2201,7 @@ fn signin_form(authorize_url: &str) -> rd_phone::Form {
         ),
         (
             "Chrome, Edge, Brave".into(),
-            "With an http:// or https:// redirect URI, the address bar holds the address after you approve: copy it.\n\nWith another kind (like myapp://callback), Approve seems to do nothing: the browser stays on Reddit's page. The address is in the developer tools: press F12, open Console, and look for the red line \"Failed to launch '…' because the scheme does not have a registered handler\". Right-click the address in it, choose \"Copy link address\" and paste it here. If the Console was not open when you approved, open it and approve again.".into(),
+            "With an http:// or https:// redirect URI, the address bar holds the address after you approve: copy it.\n\nWith another kind (like myapp://callback), Approve seems to do nothing: the browser stays on Reddit's page. The address is in the developer tools: press F12, open Console, and look for the red line \"Failed to launch '…' because the scheme does not have a registered handler\". Right-click the address in it and choose \"Copy link address\" (or copy the whole line) and paste it here. If the Console was not open when you approved, open it and approve again.".into(),
         ),
         (
             "Phone".into(),

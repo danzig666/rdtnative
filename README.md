@@ -81,7 +81,11 @@ replies, your home feed and the inbox.
 
    With rdtnative's redirect page, Reddit's answer goes back to the TV by itself. With another
    redirect URI, copy the address the browser ends up on (it contains `code=`) and paste it into
-   the phone or computer page; it goes straight to the TV. "Sign in on this TV" needs rdtnative's
+   the phone or computer page; it goes straight to the TV. If that redirect URI is not a web
+   address (like `myapp://…`), the browser shows nothing after Allow: use Firefox on a computer
+   (the address bar holds it), or in Chrome or Edge press F12 › Console in Reddit's tab before
+   Allow and paste the red "Failed to launch" line. Simplest is to set your Reddit app's
+   redirect URI to rdtnative's page, if you can. "Sign in on this TV" needs rdtnative's
    page (or the TV's own address shown on the sign-in screen) as the redirect URI.
 3. **More accounts:** Settings › Accounts › Add account. Switch between them there or from the
    side menu.

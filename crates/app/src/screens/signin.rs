@@ -238,16 +238,19 @@ impl Screen<RdHost> for SignInScreen {
         for (i, l) in steps.iter().enumerate() {
             ui::text(p, l, 160.0, 460.0 + i as f32 * ls as f32 * 1.6, ls, ui::WHITE, ui::ALIGN_LEFT, false);
         }
-        // Without copying: the app's redirect URI pointing at the page's server.
+        // Whether Reddit's answer comes back by itself: rdtnative's page and this TV's address
+        // hand it over; a redirect URI that is not a web address cannot even be seen in Chrome.
         if let Some(auto) = v.and_then(|v| v.auto_redirect.as_deref()) {
             let redirect = st.saved.as_ref().map(|s| s.redirect().to_string()).unwrap_or_default();
-            let tip = if redirect == auto {
-                "Your app's redirect URI points at this TV: approving signs in by itself.".to_string()
+            let tip = if redirect == auto || redirect == rd_core::DEFAULT_REDIRECT_URI {
+                crate::i18n::tr("Approving on Reddit signs in by itself: nothing to copy.").to_string()
+            } else if !redirect.starts_with("http://") && !redirect.starts_with("https://") {
+                crate::i18n::tr("Your redirect URI is not a web address, so after Allow the browser shows nothing. Use Firefox on a computer, or set your Reddit app's redirect URI to rdtnative's page: the sign-in page explains how.").to_string()
             } else {
                 format!("{} {auto}", crate::i18n::tr("No copying: make your Reddit app's redirect URI (and Settings \u{203a} Reddit API) this address:"))
             };
             let ts = ui::sz(22);
-            for (i, l) in ui::wrap_lines(f.measure, &tip, 720.0, ts, false, 3).iter().enumerate() {
+            for (i, l) in ui::wrap_lines(f.measure, &tip, 720.0, ts, false, 4).iter().enumerate() {
                 ui::text_raw(p, l, 160.0, 640.0 + i as f32 * ts as f32 * 1.4, ts, ui::FAINT, ui::ALIGN_LEFT, false);
             }
         }
