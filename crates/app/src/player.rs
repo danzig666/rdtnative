@@ -34,6 +34,8 @@ pub struct Status {
     /// Set when the stream failed before playing and other addresses are left (one per line):
     /// the main thread starts them on its next tick.
     pub retry: Option<String>,
+    /// Sound off (the video channel's switch); every new video starts with sound.
+    pub muted: bool,
 }
 
 #[cfg(not(any(windows, feature = "sim")))]
@@ -201,6 +203,19 @@ mod tv {
             });
         }
 
+        /// Sound off or on for the playing video: the `audioOutput` flag of uMediaServer's
+        /// `setPlayRate` (at normal speed). Per pipeline: a new video starts with sound.
+        pub fn set_muted(&mut self, on: bool) {
+            let Some(luna) = self.luna else { return };
+            let Some(mid) = self.media_id.lock().unwrap().clone() else { return };
+            self.status.lock().unwrap().muted = on;
+            let payload = format!(r#"{{"mediaId":{},"playRate":1.0,"audioOutput":{}}}"#, json_str(&mid), !on);
+            let _ = plx_base::task::spawn("media", move || {
+                let r = luna.call("luna://com.webos.media/setPlayRate", &payload);
+                crate::log(&format!("player: setPlayRate audioOutput {} -> {r}", !on));
+            });
+        }
+
         /// Main thread. Unloads the pipeline and destroys the video window.
         pub fn stop(&mut self) {
             self.gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -323,6 +338,10 @@ mod sim {
             if self.started.is_some() {
                 self.started = Some(std::time::Instant::now());
             }
+        }
+        /// No sound to switch here: only the flag.
+        pub fn set_muted(&mut self, on: bool) {
+            self.status.lock().unwrap().muted = on;
         }
         pub fn stop(&mut self) {
             self.active = false;

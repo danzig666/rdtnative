@@ -184,6 +184,28 @@ pub const OPTS: &[Opt] = &[
     Opt { key: "left_sidebar", label: "Left opens the menu", help: "Left from the first column opens the side menu (BACK always does).", values: ON_OFF, default: "on" },
     Opt { key: "back_exit", label: "Leaving the app", help: "BACK on the side menu leaves the app.", values: &[("twice", "Press BACK twice"), ("once", "Press BACK once")], default: "twice" },
     Opt { key: "color_keys", label: "Colour buttons", help: "Red downvotes, green upvotes, yellow saves, blue opens the comments.", values: ON_OFF, default: "on" },
+    // Slideshow and idle screen
+    Opt {
+        key: "slide_secs",
+        label: "Slideshow interval",
+        help: "How long each picture stays on screen in a slideshow.",
+        values: &[("5", "5 seconds"), ("8", "8 seconds"), ("12", "12 seconds"), ("20", "20 seconds")],
+        default: "8",
+    },
+    Opt {
+        key: "slide_video",
+        label: "Longest video in a slideshow",
+        help: "A longer video moves on to the next post after this. GIFs loop for at least one slideshow interval.",
+        values: &[("30", "30 seconds"), ("60", "1 minute"), ("180", "3 minutes"), ("0", "Whole video")],
+        default: "60",
+    },
+    Opt {
+        key: "idle_after",
+        label: "Idle screen after",
+        help: "When no button was pressed for this long and nothing plays, pictures from a subreddit fill the screen. Any button returns to where you were.",
+        values: &[("0", "Off"), ("5", "5 minutes"), ("10", "10 minutes"), ("20", "20 minutes"), ("30", "30 minutes")],
+        default: "0",
+    },
 ];
 
 pub fn opt(key: &str) -> Option<&'static Opt> {
@@ -197,7 +219,7 @@ pub struct Page {
     pub keys: &'static [&'static str],
 }
 
-pub fn pages() -> [Page; 4] {
+pub fn pages() -> [Page; 5] {
     use crate::ui::icon::Kind as K;
     [
         Page {
@@ -216,8 +238,13 @@ pub fn pages() -> [Page; 4] {
             keys: &["start_page", "default_sort", "default_time", "remember_sort", "comment_sort", "collapse_depth", "collapse_mod"],
         },
         Page { title: "Remote and navigation", icon: K::Gauge, keys: &["edge_scroll", "wheel_rows", "smooth_scroll", "left_sidebar", "back_exit", "color_keys"] },
+        // Settings shows the idle screen's subreddit (typed, not an option) under "idle_after".
+        Page { title: "Slideshow and idle screen", icon: K::Play, keys: &["slide_secs", "slide_video", "idle_after"] },
     ]
 }
+
+/// The idle screen's subreddit until the user names another.
+pub const DEFAULT_IDLE_SUB: &str = "EarthPorn";
 
 /// The Imgur client ID used until the user enters their own.
 pub const DEFAULT_IMGUR_ID: &str = "981c2f80e996ca3";
@@ -245,6 +272,9 @@ pub struct Prefs {
     /// The user confirmed being an adult (asked the first time NSFW is set to Show).
     #[serde(default)]
     pub adult_ok: bool,
+    /// The subreddit the idle screen shows (`None`: [`DEFAULT_IDLE_SUB`]).
+    #[serde(default)]
+    pub idle_sub: Option<String>,
 }
 
 impl Prefs {
@@ -275,6 +305,9 @@ impl Prefs {
     }
     pub fn imgur_id(&self) -> &str {
         self.imgur_client_id.as_deref().filter(|s| !s.is_empty()).unwrap_or(DEFAULT_IMGUR_ID)
+    }
+    pub fn idle_sub(&self) -> &str {
+        self.idle_sub.as_deref().filter(|s| !s.is_empty()).unwrap_or(DEFAULT_IDLE_SUB)
     }
     pub fn is_favorite(&self, sub: &str) -> bool {
         self.favorites.iter().any(|f| f.eq_ignore_ascii_case(sub))

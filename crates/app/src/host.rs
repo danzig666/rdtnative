@@ -37,6 +37,8 @@ pub enum Typing {
     /// A reply to this fullname (a post or a comment), on post `post`.
     Reply { parent: String, post: String },
     SignInCode,
+    /// The subreddit the idle screen shows.
+    IdleSub,
 }
 
 /// The pop-up menus.
@@ -62,6 +64,8 @@ pub enum MenuKind {
     Links(String, String),
     /// A newer release was found: install it now?
     Update,
+    /// Slideshow or video channel of a feed, from post `1` (the one focused).
+    Play(FeedKey, Option<String>),
 }
 
 /// What a navigation entry shows.
@@ -92,6 +96,8 @@ pub enum RdArg {
     Menu(MenuKind),
     /// Full-screen video: (stream URL, title, loops).
     Play { url: String, title: String, looping: bool },
+    /// A feed's pictures and videos one after another, from post `start`.
+    Slideshow { key: FeedKey, start: Option<String>, mode: screens::slideshow::ShowMode },
 }
 
 impl ScreenArg for RdArg {
@@ -116,6 +122,7 @@ impl ScreenArg for RdArg {
             RdArg::Inbox => 14,
             RdArg::Menu(_) => 15,
             RdArg::Play { .. } => 16,
+            RdArg::Slideshow { .. } => 20,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -182,6 +189,8 @@ pub enum RdFx {
     StopVideo,
     PauseVideo,
     SeekVideo(i64),
+    /// Sound off (true) or on for the playing video.
+    MuteVideo(bool),
     /// Play a YouTube video in ytnative (or LG's YouTube app).
     OpenYouTube(String),
     /// Open a web address in the TV's browser.
@@ -249,6 +258,7 @@ impl Mounter<RdHost> for Mount {
                 let current = match t {
                     Typing::Api(f) => cx.views.store.draft.get(*f).to_string(),
                     Typing::ImgurId => cx.views.store.prefs.imgur_client_id.clone().unwrap_or_default(),
+                    Typing::IdleSub => cx.views.store.prefs.idle_sub.clone().unwrap_or_default(),
                     _ => String::new(),
                 };
                 Box::new(keyboard::KeyboardScreen::new(entry, t.clone(), &current))
@@ -258,6 +268,7 @@ impl Mounter<RdHost> for Mount {
             RdArg::Inbox => Box::new(subs::InboxScreen::new(entry)),
             RdArg::Menu(k) => Box::new(menu::MenuScreen::new(entry, k.clone(), cx)),
             RdArg::Play { url, title, looping } => Box::new(player::PlayerScreen::new(entry, url.clone(), title.clone(), *looping)),
+            RdArg::Slideshow { key, start, mode } => Box::new(slideshow::SlideshowScreen::new(entry, key.clone(), start.clone(), *mode)),
         }
     }
 }
@@ -1357,6 +1368,11 @@ impl AppRig {
             Typing::FindSub if !text.is_empty() => self.search_subs(from, text),
             Typing::Reply { parent, post } if !text.is_empty() => self.reply(from, parent, post, text),
             Typing::SignInCode if !text.is_empty() => self.signin_code(&text),
+            Typing::IdleSub => {
+                let sub = text.trim_start_matches("/r/").trim_start_matches("r/");
+                self.store.prefs.idle_sub = (!sub.is_empty()).then(|| sub.to_string());
+                store::store_prefs(&self.store.prefs);
+            }
             _ => {}
         }
         self.store.bump();
@@ -1697,6 +1713,7 @@ impl Rig<RdHost> for AppRig {
             }
             RdFx::PauseVideo => self.player.toggle_pause(),
             RdFx::SeekVideo(d) => self.player.seek_by(d),
+            RdFx::MuteVideo(on) => self.player.set_muted(on),
             RdFx::OpenShare(url) => {
                 self.store.toast("Opening the shared link\u{2026}", now);
                 self.spawn(from, "share", move || {

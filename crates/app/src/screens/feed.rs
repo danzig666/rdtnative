@@ -49,6 +49,8 @@ enum BarItem {
     Join,
     Refresh,
     Menu,
+    /// Slideshow or video channel of this feed.
+    Play,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -342,6 +344,7 @@ impl FeedScreen {
         }
         v.push(BarItem::Layout);
         v.push(BarItem::Search);
+        v.push(BarItem::Play);
         if let Some(_sub) = self.key.feed.sub() {
             v.push(BarItem::Favorite);
             if st.signed_in() {
@@ -384,6 +387,7 @@ impl FeedScreen {
             }
             BarItem::Refresh => ("Refresh".into(), Some(Icon::Repeat), false),
             BarItem::Menu => ("More".into(), Some(Icon::Info), false),
+            BarItem::Play => ("Play".into(), Some(Icon::Play), false),
         }
     }
 
@@ -572,6 +576,11 @@ impl FeedScreen {
                 if let Some(sub) = self.key.feed.sub() {
                     fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Sub(sub.to_string())))));
                 }
+            }
+            BarItem::Play => {
+                // From the post focused last (focus is on this button now).
+                let start = self.flow.last_focused().and_then(|i| self.items(cx).get(i).map(|it| it.post.id.clone()));
+                fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Play(self.key.clone(), start)))));
             }
         }
         fx.invalidate(plx_machine::present::Provenance::Input);

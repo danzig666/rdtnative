@@ -7,5 +7,6 @@ pub mod player;
 pub mod post;
 pub mod settings;
 pub mod signin;
+pub mod slideshow;
 pub mod subs;
 pub mod viewer;

@@ -498,3 +498,43 @@ No video is playing	Nem megy videó	Es läuft kein Video	No se está reproducien
 Sign-in and settings	Bejelentkezés és beállítások	Anmeldung und Einstellungen	Sesión y ajustes	Connexion et paramètres	Вход и настройки
 Kept across restarts	Újraindítás után is megmarad	Bleiben nach einem Neustart erhalten	Se conservan al reiniciar	Conservés après un redémarrage	Сохраняются после перезапуска
 Lost at every restart (no writable folder)	Minden újraindításkor elvész (nincs írható mappa)	Gehen bei jedem Neustart verloren (kein beschreibbarer Ordner)	Se pierden en cada reinicio (sin carpeta con permiso de escritura)	Perdus à chaque redémarrage (aucun dossier accessible en écriture)	Теряются при каждом перезапуске (нет папки для записи)
+Slideshow	Diavetítés	Diashow	Presentación	Diaporama	Слайд-шоу
+Video channel	Videócsatorna	Videokanal	Canal de vídeo	Chaîne vidéo	Видеоканал
+Paused	Szüneteltetve	Pausiert	En pausa	En pause	Пауза
+Sound on	Hang be	Ton an	Sonido activado	Son activé	Звук включён
+Sound off	Hang ki	Ton aus	Sonido desactivado	Son coupé	Звук выключен
+OK pauses	OK: szünet	OK pausiert	OK pausa	OK met en pause	OK — пауза
+OK resumes	OK: folytatás	OK setzt fort	OK reanuda	OK reprend	OK — продолжить
+←/→ previous / next	←/→ előző / következő	←/→ zurück / weiter	←/→ anterior / siguiente	←/→ précédent / suivant	←/→ назад / вперёд
+↑ sound	↑ hang	↑ Ton	↑ sonido	↑ son	↑ звук
+Blue: comments	Kék: hozzászólások	Blau: Kommentare	Azul: comentarios	Bleu : commentaires	Синяя: комментарии
+BACK leaves	BACK: kilépés	BACK beendet	BACK sale	BACK quitte	BACK — выход
+Any button returns	Bármelyik gomb visszavisz	Jede Taste kehrt zurück	Cualquier botón vuelve	N'importe quel bouton revient	Любая кнопка возвращает назад
+Couldn't play this video	Nem sikerült lejátszani ezt a videót	Dieses Video konnte nicht abgespielt werden	No se pudo reproducir este vídeo	Impossible de lire cette vidéo	Не удалось воспроизвести это видео
+Couldn't load the picture	Nem sikerült betölteni a képet	Das Bild konnte nicht geladen werden	No se pudo cargar la imagen	Impossible de charger l'image	Не удалось загрузить изображение
+Couldn't load this feed	Nem sikerült betölteni ezt a hírfolyamot	Dieser Feed konnte nicht geladen werden	No se pudo cargar este feed	Impossible de charger ce flux	Не удалось загрузить эту ленту
+Nothing to show	Nincs mit megjeleníteni	Nichts anzuzeigen	No hay nada que mostrar	Rien à afficher	Нечего показать
+This feed has no videos the TV can play.	Ebben a hírfolyamban nincs olyan videó, amelyet a tévé le tud játszani.	Dieser Feed enthält keine Videos, die der Fernseher abspielen kann.	Este feed no tiene vídeos que el televisor pueda reproducir.	Ce flux ne contient aucune vidéo que le téléviseur peut lire.	В этой ленте нет видео, которые может воспроизвести телевизор.
+This feed has no pictures the TV can show.	Ebben a hírfolyamban nincs olyan kép, amelyet a tévé meg tud jeleníteni.	Dieser Feed enthält keine Bilder, die der Fernseher anzeigen kann.	Este feed no tiene imágenes que el televisor pueda mostrar.	Ce flux ne contient aucune image que le téléviseur peut afficher.	В этой ленте нет изображений, которые может показать телевизор.
+Slideshow and idle screen	Diavetítés és tétlenségi képernyő	Diashow und Ruhebildschirm	Presentación y pantalla de inactividad	Diaporama et écran d'inactivité	Слайд-шоу и экран бездействия
+Slideshow interval	Diavetítés időköze	Diashow-Intervall	Intervalo de la presentación	Intervalle du diaporama	Интервал слайд-шоу
+How long each picture stays on screen in a slideshow.	Mennyi ideig marad a képernyőn egy kép diavetítés közben.	Wie lange jedes Bild in einer Diashow zu sehen ist.	Cuánto tiempo permanece cada imagen en pantalla en una presentación.	Durée d'affichage de chaque image dans un diaporama.	Сколько времени каждое изображение показывается в слайд-шоу.
+5 seconds	5 másodperc	5 Sekunden	5 segundos	5 secondes	5 секунд
+8 seconds	8 másodperc	8 Sekunden	8 segundos	8 secondes	8 секунд
+12 seconds	12 másodperc	12 Sekunden	12 segundos	12 secondes	12 секунд
+20 seconds	20 másodperc	20 Sekunden	20 segundos	20 secondes	20 секунд
+Longest video in a slideshow	Leghosszabb videó a diavetítésben	Längstes Video in einer Diashow	Vídeo más largo en una presentación	Vidéo la plus longue dans un diaporama	Самое длинное видео в слайд-шоу
+A longer video moves on to the next post after this. GIFs loop for at least one slideshow interval.	Egy hosszabb videó ennyi idő után a következő bejegyzésre lép. A GIF-ek legalább egy diavetítési időközig ismétlődnek.	Ein längeres Video geht danach zum nächsten Beitrag weiter. GIFs laufen mindestens ein Diashow-Intervall lang in Schleife.	Un vídeo más largo pasa a la siguiente publicación pasado este tiempo. Los GIF se repiten durante al menos un intervalo de la presentación.	Une vidéo plus longue passe à la publication suivante après cette durée. Les GIF tournent en boucle pendant au moins un intervalle du diaporama.	Более длинное видео после этого переходит к следующему посту. GIF повторяются как минимум один интервал слайд-шоу.
+30 seconds	30 másodperc	30 Sekunden	30 segundos	30 secondes	30 секунд
+1 minute	1 perc	1 Minute	1 minuto	1 minute	1 минута
+3 minutes	3 perc	3 Minuten	3 minutos	3 minutes	3 минуты
+Whole video	Teljes videó	Ganzes Video	Vídeo completo	Vidéo entière	Всё видео
+Idle screen after	Tétlenségi képernyő ennyi idő után	Ruhebildschirm nach	Pantalla de inactividad tras	Écran d'inactivité après	Экран бездействия через
+When no button was pressed for this long and nothing plays, pictures from a subreddit fill the screen. Any button returns to where you were.	Ha ennyi ideig nem nyomtál meg gombot, és semmi sem megy, egy subreddit képei töltik ki a képernyőt. Bármelyik gomb visszavisz oda, ahol voltál.	Wurde so lange keine Taste gedrückt und läuft nichts, füllen Bilder aus einem Subreddit den Bildschirm. Jede Taste bringt dich zurück, wo du warst.	Si no se pulsa ningún botón durante este tiempo y no se reproduce nada, las imágenes de un subreddit llenan la pantalla. Cualquier botón te devuelve a donde estabas.	Si aucun bouton n'a été pressé pendant cette durée et que rien n'est en lecture, les images d'un subreddit remplissent l'écran. N'importe quel bouton vous ramène où vous étiez.	Если столько времени не нажималась ни одна кнопка и ничего не воспроизводится, экран заполняют изображения из сабреддита. Любая кнопка возвращает туда, где вы были.
+5 minutes	5 perc	5 Minuten	5 minutos	5 minutes	5 минут
+10 minutes	10 perc	10 Minuten	10 minutos	10 minutes	10 минут
+20 minutes	20 perc	20 Minuten	20 minutos	20 minutes	20 минут
+30 minutes	30 perc	30 Minuten	30 minutos	30 minutes	30 минут
+Idle screen subreddit	A tétlenségi képernyő subredditje	Subreddit für den Ruhebildschirm	Subreddit de la pantalla de inactividad	Subreddit de l'écran d'inactivité	Сабреддит экрана бездействия
+The subreddit whose pictures the idle screen shows (its hot posts). OK types another one.	Az a subreddit, amelynek képeit a tétlenségi képernyő mutatja (a felkapott bejegyzéseit). Az OK-val másikat írhatsz be.	Das Subreddit, dessen Bilder der Ruhebildschirm zeigt (seine angesagten Beiträge). Mit OK gibst du ein anderes ein.	El subreddit cuyas imágenes muestra la pantalla de inactividad (sus publicaciones populares). Con OK escribes otro.	Le subreddit dont l'écran d'inactivité montre les images (ses publications populaires). OK permet d'en saisir un autre.	Сабреддит, изображения которого показывает экран бездействия (его популярные посты). OK — ввести другой.
+Its pictures fill the screen when the TV is idle. Empty uses r/EarthPorn.	A képei töltik ki a képernyőt, amikor a tévé tétlen. Üresen az r/EarthPorn.	Seine Bilder füllen den Bildschirm, wenn der Fernseher ruht. Leer nimmt r/EarthPorn.	Sus imágenes llenan la pantalla cuando el televisor está inactivo. Vacío usa r/EarthPorn.	Ses images remplissent l'écran quand le téléviseur est inactif. Vide utilise r/EarthPorn.	Его изображения заполняют экран, когда телевизор бездействует. Пусто — r/EarthPorn.
