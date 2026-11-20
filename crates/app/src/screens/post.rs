@@ -16,7 +16,7 @@ use plx_ui::frame::Budget;
 use plx_ui::screen::{AxisMask, At, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Placed, RenderStrategy, Screen, Seat, Step};
 use plx_ui::{Painter, Rect};
 use rd_core::comments::{self, Row as CRow};
-use rd_core::listing::{CommentSort, Feed, UserTab};
+use rd_core::listing::{CommentSort, Feed};
 use rd_core::media::Media;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -308,7 +308,7 @@ impl PostScreen {
                 self.choice = Some(b);
             }
             Bar::Sub => fx.push(Fx::Nav(NavOp::Push(RdArg::Feed(Feed::Sub(it.post.subreddit.clone()))))),
-            Bar::User => fx.push(Fx::Nav(NavOp::Push(RdArg::Feed(Feed::User(it.post.author.clone(), UserTab::Submitted))))),
+            Bar::User => fx.push(Fx::Nav(NavOp::Push(RdArg::Profile(it.post.author.clone())))),
             Bar::Links => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Links(self.id.clone(), String::new()))))),
             Bar::Refresh => fx.push(Fx::App(RdFx::LoadThread { id: self.id.clone(), sort: None, reload: true })),
         }
@@ -423,7 +423,7 @@ pub fn open_reddit_link(link: rd_core::listing::RedditLink, fx: &mut Effects<'_,
     use rd_core::listing::RedditLink;
     let arg = match link {
         RedditLink::Sub(s) => RdArg::Feed(Feed::Sub(s)),
-        RedditLink::User(u) => RdArg::Feed(Feed::User(u, UserTab::Submitted)),
+        RedditLink::User(u) => RdArg::Profile(u),
         RedditLink::Post(id, c) => RdArg::Post { id, comment: c },
         RedditLink::Share(url) => {
             fx.push(Fx::App(RdFx::OpenShare(url)));

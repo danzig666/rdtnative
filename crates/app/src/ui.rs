@@ -161,7 +161,7 @@ pub fn pointer() -> (f32, f32) {
 /// Screens whose lists glide smoothly under a pointer resting at the top or bottom edge (others
 /// step their rows). Not while a drop-down or menu is open over them.
 pub fn glides(screen: Option<&str>) -> bool {
-    !menu_open() && matches!(screen, Some("feed" | "post" | "subs" | "inbox"))
+    !menu_open() && matches!(screen, Some("feed" | "post" | "subs" | "inbox" | "profile" | "subinfo"))
 }
 
 /// Eases `t` (0..1) out: quick start, soft landing.

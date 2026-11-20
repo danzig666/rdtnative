@@ -1,5 +1,6 @@
-//! Subreddits: tabs for favourites, the subreddits the user joined, popular ones and search
-//! results, plus "Find subreddits" and "Go to r/…". OK opens one; holding OK opens its menu.
+//! Subreddits: tabs for favourites, the subreddits the user joined, their custom feeds, popular
+//! ones and search results, plus "Find subreddits" and "Go to r/…". OK opens one; holding OK opens
+//! a subreddit's menu.
 //! `InboxScreen` lists the signed-in user's messages and replies.
 
 use super::common::{self, State};
@@ -13,7 +14,7 @@ use plx_ui::frame::Budget;
 use plx_ui::screen::{AxisMask, At, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Placed, RenderStrategy, Screen, Seat, Step};
 use plx_ui::Rect;
 use rd_core::listing::Feed;
-use rd_core::model::Subreddit;
+use rd_core::model::{Multi, Subreddit};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 
@@ -26,6 +27,8 @@ const LIST_BASE: u32 = 0x1000_0000;
 enum Tab {
     Favorites,
     Joined,
+    /// The signed-in user's custom feeds (multireddits).
+    Custom,
     Popular,
     Results,
     Find,
@@ -36,10 +39,12 @@ fn header_h() -> f32 {
     ui::ls(140.0).max(130.0)
 }
 
-/// One row of the list.
+/// One row of the list: a subreddit or a custom feed.
 #[derive(Clone)]
 struct SubRow {
-    name: String,
+    /// "r/name", or a custom feed's own name.
+    label: String,
+    feed: Feed,
     title: String,
     desc: String,
     members: i64,
@@ -49,12 +54,30 @@ struct SubRow {
 
 impl SubRow {
     fn from(s: &Subreddit) -> SubRow {
-        SubRow { name: s.display_name.clone(), title: s.title.clone(), desc: s.public_description.clone(), members: s.subscribers, icon: s.icon.as_ref().map(|i| rd_core::media::unescape(i)), nsfw: s.over18 }
+        SubRow::named(&s.display_name, s.title.clone(), s.public_description.clone(), s.subscribers, s.icon.as_ref().map(|i| rd_core::media::unescape(i)), s.over18)
+    }
+
+    fn named(name: &str, title: String, desc: String, members: i64, icon: Option<String>, nsfw: bool) -> SubRow {
+        SubRow { label: format!("r/{name}"), feed: Feed::Sub(name.to_string()), title, desc, members, icon, nsfw }
+    }
+
+    /// A custom feed: its name, "m/name · N subreddits", and the subreddits in it.
+    fn multi(m: &Multi) -> SubRow {
+        let count = match m.subs.len() {
+            1 => crate::i18n::tr("1 subreddit").to_string(),
+            n => crate::i18n::tr("{} subreddits").replace("{}", &n.to_string()),
+        };
+        let desc = if m.description.trim().is_empty() { m.subs.iter().map(|s| format!("r/{s}")).collect::<Vec<_>>().join(", ") } else { rd_core::markdown::plain(&m.description) };
+        SubRow { label: m.display_name.clone(), feed: m.feed(), title: format!("m/{}  \u{b7}  {count}", m.name), desc, members: 0, icon: m.icon.clone(), nsfw: m.over_18 }
     }
 }
 
+/// How a tab's list is loading: (gen, loading, error).
+type ListStatus<'a> = (u32, bool, Option<&'a str>);
+
 pub struct SubsScreen {
     entry: EntryId,
+    /// The tab shown; set before `Mount` when the page opens on custom feeds.
     tab: Tab,
     flow: Flow,
     sig: Cell<(u32, u32, Tab)>,
@@ -86,11 +109,17 @@ impl SubsScreen {
         }
     }
 
+    /// The page opened on the signed-in user's custom feeds (the side menu's entry).
+    pub fn custom_feeds(entry: EntryId) -> Self {
+        SubsScreen { tab: Tab::Custom, ..Self::new(entry) }
+    }
+
     fn tabs(&self, cx: &Cx<'_, RdHost>) -> Vec<Tab> {
         let st = cx.views.store;
         let mut v = vec![Tab::Favorites];
         if st.signed_in() {
             v.push(Tab::Joined);
+            v.push(Tab::Custom);
         }
         v.push(Tab::Popular);
         if !st.subs_search.0.is_empty() {
@@ -105,6 +134,7 @@ impl SubsScreen {
         match t {
             Tab::Favorites => ("Favourites".into(), Icon::Star),
             Tab::Joined => ("Joined".into(), Icon::Check),
+            Tab::Custom => ("Custom feeds".into(), Icon::Folder),
             Tab::Popular => ("Popular".into(), Icon::Trending),
             Tab::Results => (format!("\u{201c}{}\u{201d}", cx.views.store.subs_search.0), Icon::Search),
             Tab::Find => ("Find subreddits\u{2026}".into(), Icon::Search),
@@ -119,29 +149,36 @@ impl SubsScreen {
                 .prefs
                 .favorites
                 .iter()
-                .map(|f| {
-                    st.about.get(&f.to_ascii_lowercase()).map_or(SubRow { name: f.clone(), title: String::new(), desc: String::new(), members: 0, icon: None, nsfw: false }, |a| SubRow::from(&a.sub))
-                })
+                .map(|f| st.about.get(&f.to_ascii_lowercase()).map_or(SubRow::named(f, String::new(), String::new(), 0, None, false), |a| SubRow::from(&a.sub)))
                 .collect(),
             Tab::Joined => st.subs_mine.items.iter().map(SubRow::from).collect(),
+            Tab::Custom => st.multis.items.iter().map(SubRow::multi).collect(),
             Tab::Popular => st.subs_popular.items.iter().map(SubRow::from).collect(),
             Tab::Results => st.subs_search.1.items.iter().map(SubRow::from).collect(),
             _ => Vec::new(),
         }
     }
 
-    fn list_state<'a>(&self, cx: &Cx<'a, RdHost>) -> Option<&'a crate::store::SubList> {
+    fn list_state<'a>(&self, cx: &Cx<'a, RdHost>) -> Option<ListStatus<'a>> {
         let st = cx.views.store;
+        let of = |l: &'a crate::store::SubList| (l.gen, l.loading, l.error.as_deref());
         match self.tab {
-            Tab::Joined => Some(&st.subs_mine),
-            Tab::Popular => Some(&st.subs_popular),
-            Tab::Results => Some(&st.subs_search.1),
+            Tab::Joined => Some(of(&st.subs_mine)),
+            Tab::Custom => Some((st.multis.gen, st.multis.loading, st.multis.error.as_deref())),
+            Tab::Popular => Some(of(&st.subs_popular)),
+            Tab::Results => Some(of(&st.subs_search.1)),
             _ => None,
         }
     }
 
+    /// The current tab's button.
+    fn tab_key(&self, cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
+        let i = self.tabs(cx).iter().position(|t| *t == self.tab).unwrap_or(0) as u32;
+        FocusKey { entry: self.entry, elem: TAB_BASE + i }
+    }
+
     fn relayout(&self, cx: &Cx<'_, RdHost>) {
-        let gen = self.list_state(cx).map_or(0, |l| l.gen);
+        let gen = self.list_state(cx).map_or(0, |l| l.0);
         let sig = (gen, cx.views.store.gen, self.tab);
         if sig == self.sig.get() {
             return;
@@ -154,6 +191,7 @@ impl SubsScreen {
     }
 
     fn show(&mut self, t: Tab, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
+        let again = t == self.tab;
         match t {
             Tab::Find => {
                 fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::FindSub))));
@@ -167,6 +205,8 @@ impl SubsScreen {
         let st = cx.views.store;
         match self.tab {
             Tab::Joined if st.subs_mine.items.is_empty() => fx.push(Fx::App(RdFx::LoadSubs { mine: true })),
+            // Custom feeds made on reddit.com meanwhile: OK on the tab shown loads them again.
+            Tab::Custom if st.multis.items.is_empty() || again => fx.push(Fx::App(RdFx::LoadMultis)),
             Tab::Popular if st.subs_popular.items.is_empty() => fx.push(Fx::App(RdFx::LoadSubs { mine: false })),
             Tab::Favorites => {
                 for f in &st.prefs.favorites {
@@ -195,14 +235,16 @@ impl Machine<RdHost> for SubsScreen {
             return Handled::Yes;
         }
         if let Some(e) = common::press_hold(ev, cx) {
-            if let Some(r) = self.flow.index(e).and_then(|i| self.rows.borrow().get(i).cloned()) {
-                fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Sub(r.name)))));
+            if let Some(Feed::Sub(name)) = self.flow.index(e).and_then(|i| self.rows.borrow().get(i).map(|r| r.feed.clone())) {
+                fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Sub(name)))));
             }
             return Handled::Yes;
         }
         match ev {
             ScreenEvent::Mount => {
-                let first = if cx.views.store.prefs.favorites.is_empty() {
+                let first = if self.tab == Tab::Custom {
+                    Tab::Custom
+                } else if cx.views.store.prefs.favorites.is_empty() {
                     if cx.views.store.signed_in() { Tab::Joined } else { Tab::Popular }
                 } else {
                     Tab::Favorites
@@ -226,7 +268,7 @@ impl Machine<RdHost> for SubsScreen {
                         self.show(t, cx, fx);
                     }
                 } else if let Some(r) = self.flow.index(*e).and_then(|i| self.rows.borrow().get(i).cloned()) {
-                    fx.push(Fx::Nav(NavOp::Push(RdArg::Feed(Feed::Sub(r.name)))));
+                    fx.push(Fx::Nav(NavOp::Push(RdArg::Feed(r.feed))));
                 }
                 return Handled::Yes;
             }
@@ -270,10 +312,7 @@ impl Focusable<RdHost> for SubsScreen {
             };
         }
         match self.flow.neighbour(key, dir) {
-            Step::Edge if dir == Dir::Up => {
-                let i = self.tabs(cx).iter().position(|t| *t == self.tab).unwrap_or(0) as u32;
-                k(TAB_BASE + i)
-            }
+            Step::Edge if dir == Dir::Up => Step::Move(self.tab_key(cx)),
             s => s,
         }
     }
@@ -297,13 +336,14 @@ impl Focusable<RdHost> for SubsScreen {
         if self.flow.len() > 0 {
             return self.flow.key(0);
         }
-        FocusKey { entry: self.entry, elem: TAB_BASE }
+        // An empty or failed list: its tab, where OK loads it again.
+        self.tab_key(cx)
     }
-    fn seat(&self, g: GroupId, _from: Placed, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
+    fn seat(&self, g: GroupId, _from: Placed, cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
         if g == G_LIST && self.flow.len() > 0 {
             return self.flow.key(0);
         }
-        FocusKey { entry: self.entry, elem: TAB_BASE }
+        self.tab_key(cx)
     }
 }
 
@@ -328,9 +368,20 @@ impl Screen<RdHost> for SubsScreen {
         if rows.is_empty() {
             let area = self.flow.rect;
             match self.list_state(cx) {
-                Some(l) if l.loading => ui::spinner(p, cx.views.now_ms, 960.0, 500.0),
-                Some(l) if l.error.is_some() => common::message(p, f.measure, area, "Couldn't load the subreddits", l.error.as_deref().unwrap_or_default()),
+                Some((_, true, _)) => ui::spinner(p, cx.views.now_ms, 960.0, 500.0),
+                Some((_, _, Some(e))) if self.tab == Tab::Custom => {
+                    let detail = format!("{e}  {}", crate::i18n::tr("OK on \u{201c}Custom feeds\u{201d} tries again."));
+                    common::message(p, f.measure, area, "Couldn't load your custom feeds", &detail)
+                }
+                Some((_, _, Some(e))) => common::message(p, f.measure, area, "Couldn't load the subreddits", e),
                 _ if self.tab == Tab::Favorites => common::message(p, f.measure, area, "No favourites yet", "Open a subreddit and choose \u{201c}Add to favourites\u{201d}: it shows up here and in the side menu."),
+                _ if self.tab == Tab::Custom => common::message(
+                    p,
+                    f.measure,
+                    area,
+                    "No custom feeds yet",
+                    crate::i18n::tr("Make one on reddit.com (several subreddits in one feed), then press OK on \u{201c}Custom feeds\u{201d}: it shows up here."),
+                ),
                 _ => common::message(p, f.measure, area, "Nothing here", ""),
             }
         } else {
@@ -349,14 +400,15 @@ impl Screen<RdHost> for SubsScreen {
                 ui::fill(p, ir, isz / 2.0, ui::with_alpha(ui::accent(), 0.85));
                 let drew = s.icon.as_ref().is_some_and(|u| matches!(images::draw(p, images::THUMB, u, ir, isz / 2.0, Fit::Cover, ui::WHITE), images::Drawn::At(_)));
                 if !drew {
-                    ui::text_raw(p, "r/", ir.x + isz / 2.0, ir.y + (isz - ui::sz(30) as f32 * 1.3) / 2.0, ui::sz(30), ui::WHITE, ui::ALIGN_CENTER, true);
+                    let mark = if matches!(s.feed, Feed::Custom { .. }) { "m/" } else { "r/" };
+                    ui::text_raw(p, mark, ir.x + isz / 2.0, ir.y + (isz - ui::sz(30) as f32 * 1.3) / 2.0, ui::sz(30), ui::WHITE, ui::ALIGN_CENTER, true);
                 }
                 let tx = ir.x + isz + 20.0;
                 let tw = r.x + r.w - 20.0 - tx;
                 let ts = ui::sz(28);
                 let ms = ui::sz(21);
                 let mut y = r.y + 14.0;
-                let mut name = format!("r/{}", s.name);
+                let mut name = s.label.clone();
                 if s.nsfw {
                     name.push_str("  \u{b7}  NSFW");
                 }

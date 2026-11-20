@@ -329,6 +329,21 @@ pub fn age(created_utc: i64, now: i64) -> String {
     }
 }
 
+/// The calendar date (year, month 1-12, day) of a UTC timestamp: a subreddit's creation, a cake
+/// day.
+pub fn utc_date(secs: i64) -> (i32, u32, u32) {
+    // Days to civil date (proleptic Gregorian), in 400-year eras starting in March.
+    let z = secs.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    ((yoe + era * 400 + i64::from(month <= 2)) as i32, month, day)
+}
+
 /// `1234567` → `1.2M`, `15234` → `15k`, `1234` → `1.2k`.
 pub fn short_count(n: i64) -> String {
     let a = n.unsigned_abs() as f64;
@@ -434,6 +449,11 @@ mod tests {
         assert_eq!(age(0, 86_400 * 3), "3d");
         assert_eq!(age(0, 86_400 * 400), "1y");
         assert_eq!(short_count(15234), "15k");
+        assert_eq!(utc_date(0), (1970, 1, 1));
+        assert_eq!(utc_date(1291139521), (2010, 11, 30));
+        assert_eq!(utc_date(951782400), (2000, 2, 29));
+        assert_eq!(utc_date(1400000000), (2014, 5, 13));
+        assert_eq!(utc_date(-86_400), (1969, 12, 31));
         assert_eq!(vote("t3_a", 5).1[1].1, "1");
         assert_eq!(thread_request("abc", CommentSort::Top, None).0, "/comments/abc");
         assert_eq!(parse_reddit_link("https://www.reddit.com/r/rust/comments/abc/title/def/"), Some(RedditLink::Post("abc".into(), Some("def".into()))));
