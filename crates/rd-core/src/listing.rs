@@ -280,6 +280,11 @@ pub fn thread_request(post_id: &str, sort: CommentSort, focus_comment: Option<&s
     (path, q)
 }
 
+/// A light `/comments/<id>` for a preview pane: a few top-level comments, no replies.
+pub fn thread_preview_request(post_id: &str, sort: CommentSort) -> (String, Vec<(String, String)>) {
+    (format!("/comments/{post_id}"), vec![("sort".into(), sort.key().into()), ("limit".into(), "8".into()), ("depth".into(), "1".into())])
+}
+
 /// A vote: 1 up, 0 clear, -1 down.
 pub fn vote(fullname: &str, dir: i8) -> (&'static str, Vec<(String, String)>) {
     ("/api/vote", vec![("id".into(), fullname.into()), ("dir".into(), dir.clamp(-1, 1).to_string())])
@@ -408,6 +413,12 @@ mod tests {
         assert_eq!(short_count(15234), "15k");
         assert_eq!(vote("t3_a", 5).1[1].1, "1");
         assert_eq!(thread_request("abc", CommentSort::Top, None).0, "/comments/abc");
+        let (p, qs) = thread_request("abc", CommentSort::New, Some("def"));
+        assert_eq!((p.as_str(), q(&qs, "context").as_deref()), ("/comments/abc/_/def", Some("3")));
+        let (p, qs) = thread_preview_request("abc", CommentSort::Confidence);
+        assert_eq!((p.as_str(), q(&qs, "limit").as_deref(), q(&qs, "depth").as_deref()), ("/comments/abc", Some("8"), Some("1")));
+        // An inbox reply's context link names the comment.
+        assert_eq!(parse_reddit_link("/r/rust/comments/abc/title/def/?context=3"), Some(RedditLink::Post("abc".into(), Some("def".into()))));
         assert_eq!(parse_reddit_link("https://www.reddit.com/r/rust/comments/abc/title/def/"), Some(RedditLink::Post("abc".into(), Some("def".into()))));
         assert_eq!(parse_reddit_link("https://old.reddit.com/r/rust/"), Some(RedditLink::Sub("rust".into())));
         assert_eq!(parse_reddit_link("https://reddit.com/u/spez"), Some(RedditLink::User("spez".into())));
