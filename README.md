@@ -3,7 +3,8 @@
 > [!IMPORTANT]
 > **Bring your own API key.** rdtnative comes without a Reddit API key: it only works with a
 > client ID you supply yourself (entered in Settings › Reddit API, with the remote or from your
-> phone). There are ways to get a working API key; search Reddit for them.
+> phone). With an app address (like `myapp://`) as redirect URI, signing in takes one copy and
+> paste on a computer, once per account; the TV keeps the sign-in (see [Signing in](#signing-in)).
 
 A native Reddit client for LG webOS TVs (webOS 4+), built for the Magic Remote. It is a Rust app
 with no browser or Android runtime, built the same way as
@@ -49,7 +50,9 @@ These are screenshots from the Windows simulator, which runs the same UI code as
   subreddit; the TV stays awake while they play.
 - **Signed in:** vote, save posts and comments, hide (with undo), join and leave subreddits,
   reply (drafts are kept), inbox with new-message alerts, your saved and submitted posts. Several
-  accounts with a switcher. Sign in on the TV itself, or from a phone or computer (see below).
+  accounts with a switcher. With rdtnative's page as redirect URI, sign in on the TV itself or
+  from a phone or computer; with an app address (like `myapp://`), one copy and paste on a
+  computer, once per account (see [Signing in](#signing-in)).
 - **Typing:** the on-screen keyboard, a phone (scan a QR code and type or dictate there), a USB
   keyboard, or LG voice search. Any post or comment can be sent to a phone as a QR code.
 - **Display:** text size (70-175 %, for any TV size and distance) with a separate size for post and
@@ -66,28 +69,42 @@ These are screenshots from the Windows simulator, which runs the same UI code as
 ## Signing in
 
 Browsing works without an account once the API settings are in. Signing in adds voting, saving,
-replies, your home feed and the inbox.
+replies, your home feed and the inbox. How it goes depends on the redirect URI that comes with
+your client ID:
+
+| Redirect URI | Signing in |
+|---|---|
+| rdtnative's page, `https://danzig666.github.io/rdtnative/callback` | Nothing to copy: Reddit's answer comes back to the TV by itself, from the TV's browser, a phone or a computer. |
+| An app address such as `myapp://…` (usual for a client ID you can't change) | **One copy and paste, on a computer.** Browsers can't open such an address and never hand it to a web page, so nothing can catch it by itself. This can't be avoided; you do it once per account, and the TV keeps the sign-in. |
+| Another web address | One copy and paste, on a phone or computer: copy the address the browser ends up on and paste it on the sign-in page. If you can change the redirect URI to rdtnative's page, nothing needs copying. |
 
 1. **Settings › Reddit API:** enter your client ID, with the remote or with "Enter on phone (QR
-   code)". Leave the redirect URI empty to use rdtnative's own page; your Reddit app's redirect
-   URI must then be `https://danzig666.github.io/rdtnative/callback`. If your client ID comes with
-   another redirect URI, enter that one exactly. Press "Save and connect".
-2. **Sign in** (side menu, or Settings › Sign in to Reddit), then one of:
-   - **Sign in on this TV:** Reddit opens in the TV's browser. Log in with the remote and press
-     Allow; the browser closes and rdtnative is signed in.
-   - **A phone:** scan the QR code, press "Approve on Reddit", log in and press Allow.
-   - **A computer** on the same network: type the short address the TV shows into its browser,
-     then the same steps.
+   code)". Enter the redirect URI that comes with your client ID exactly as you got it (like
+   `myapp://callback`); leave it empty only if it is rdtnative's page. Press "Save and connect".
+2. **Sign in** (side menu, or Settings › Sign in to Reddit). The TV shows the short address of its
+   sign-in page (type it into a browser on the same Wi-Fi; a QR code where a phone can help) and
+   the steps for your kind of redirect URI. The sign-in page works for 10 minutes; after that the
+   TV shows a new address.
+   - **rdtnative's page:** choose "Sign in on this TV" (Reddit opens in the TV's browser; log in
+     with the remote and press Allow), or scan the QR code with a phone (or type the address on a
+     computer) on the same Wi-Fi as the TV, press "Approve on Reddit", log in and press Allow. The
+     TV signs in by itself.
+   - **An app address:** on a computer on the same Wi-Fi, type the sign-in page's address into
+     Chrome, Edge or Firefox and press "Approve on Reddit". Reddit opens in a new tab; log in if
+     asked, but don't press Allow yet.
+     - **Chrome or Edge:** in the Reddit tab, press Ctrl+Shift+J (Mac: Cmd+Option+J) first; a
+       panel opens. Then press Allow. The page doesn't change, but a red line "Failed to launch
+       '…' because the scheme does not have a registered handler" appears in the panel: select
+       the whole line and copy it. No such line? Press Allow again.
+     - **Firefox:** press Allow. Firefox shows an error page: copy all of its address bar.
 
-   With rdtnative's redirect page, Reddit's answer goes back to the TV by itself. With another
-   redirect URI, copy the address the browser ends up on (it contains `code=`) and paste it into
-   the phone or computer page; it goes straight to the TV. If that redirect URI is not a web
-   address (like `myapp://…`), the browser shows nothing after Allow: use Firefox on a computer
-   (the address bar holds it), or in Chrome or Edge press F12 › Console in Reddit's tab before
-   Allow and paste the red "Failed to launch" line (phones don't show it). "Sign in on this TV" needs rdtnative's
-   page (or the TV's own address shown on the sign-in screen) as the redirect URI.
+     Switch back to the sign-in page's tab and paste it: it goes straight to the TV. Phones can't
+     show this address. You do this once per account; the TV keeps the sign-in.
+   - **Another web address:** after Allow, copy the address from the address bar (it has code= in
+     it) and paste it on the sign-in page.
 3. **More accounts:** Settings › Accounts › Add account. Switch between them there or from the
-   side menu.
+   side menu. Reddit approves whoever is signed in on reddit.com in that browser, so sign out
+   there first or open the sign-in page in a private window.
 
 ## Install
 

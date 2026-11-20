@@ -97,8 +97,8 @@ pub struct FieldSpec {
 /// Short notes shown with the fields (TV and phone).
 pub const SETUP_STEPS: &[&str] = &[
     "rdtnative comes without a Reddit API key: bring your own client ID.",
-    "Enter the client ID, and the redirect URI and user agent that go with it.",
-    "There are ways to get a working API key; search Reddit for them.",
+    "Enter the client ID and the redirect URI that goes with it, exactly as you got them. The user agent is optional.",
+    "With an app address (like myapp://) as redirect URI, signing in takes one copy and paste on a computer; the TV then stays signed in.",
 ];
 
 /// The three API settings, pre-filled from `current`.
@@ -122,7 +122,7 @@ pub fn api_fields(current: Option<&ApiConfig>) -> Vec<FieldSpec> {
                 .map(|c| c.redirect_uri.clone())
                 .unwrap_or_default(),
             placeholder: crate::DEFAULT_REDIRECT_URI.into(),
-            help: "The redirect URI that goes with your client ID, exactly. Leave empty for rdtnative's page, which hands the sign-in to the TV by itself.",
+            help: "Exactly the redirect URI that goes with your client ID. Leave it empty only if that is rdtnative's page (shown greyed here): the TV then signs in by itself. With an app address (like myapp://), signing in takes one copy and paste on a computer.",
             url: true,
             max_len: MAX_REDIRECT_URI,
         },

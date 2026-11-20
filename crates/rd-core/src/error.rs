@@ -39,7 +39,7 @@ impl fmt::Display for RdError {
             RdError::InvalidGrant => write!(f, "The sign-in expired or was revoked. Please sign in again."),
             RdError::RedirectMismatch => write!(
                 f,
-                "The redirect URI on your Reddit app does not match. Set it to {}.",
+                "Reddit says the redirect URI does not match your client ID. In Settings \u{203a} Reddit API, enter exactly the one that goes with it (empty means {}).",
                 crate::DEFAULT_REDIRECT_URI
             ),
             RdError::Unauthorized => write!(f, "Reddit did not accept the access token."),

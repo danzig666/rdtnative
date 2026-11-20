@@ -164,7 +164,7 @@ pub fn parse_callback(input: &str) -> Result<Callback, String> {
     match (code, error) {
         (_, Some(error)) => Ok(Callback::Denied { error, state }),
         (Some(code), None) => Ok(Callback::Code { code, state }),
-        (None, None) => Err("no code= in the URL".into()),
+        (None, None) => Err("There is no code= in this. Copy what the browser shows after Allow (in Chrome or Edge, the red \u{201c}Failed to launch\u{201d} line), not Reddit's own address.".into()),
     }
 }
 

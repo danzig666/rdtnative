@@ -113,7 +113,7 @@ fn spec(t: &Typing) -> (String, String, String, usize) {
         Typing::FilterWord => ("Hide posts with a word".into(), "Posts whose title has it are left out of every feed.".into(), "spoiler".into(), 60),
         Typing::FilterSub => ("Hide a subreddit".into(), "Its posts are left out of Home, Popular and All.".into(), "subreddit name".into(), 30),
         Typing::Reply { .. } => ("Reply".into(), "\u{21B5} starts a new line. Done sends it.".into(), "Write a reply\u{2026}".into(), rd_phone::MULTILINE_MAX_LEN),
-        Typing::SignInCode => ("Sign-in code".into(), "The address of the page Reddit sent you to, or the code on it.".into(), "https://\u{2026}?code=\u{2026}".into(), 2048),
+        Typing::SignInCode => ("Sign-in code".into(), "The address you copied after Allow, or just the code: the part after code= in it.".into(), "https://\u{2026}?code=\u{2026}".into(), 2048),
         Typing::IdleSub => ("Idle screen subreddit".into(), "Its pictures fill the screen when the TV is idle. Empty uses r/EarthPorn.".into(), crate::prefs::DEFAULT_IDLE_SUB.into(), 30),
     }
 }

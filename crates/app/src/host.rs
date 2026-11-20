@@ -2167,17 +2167,17 @@ fn signin_form(authorize_url: &str, redirect: &str) -> rd_phone::Form {
     form.short = true;
     form.paste_submits = true;
     form.catch_redirect = Some("callback".into());
-    form.submit = "Sign in on the TV".into();
+    form.submit = "Send to the TV".into();
     form.steps = vec![
-        "Approve rdtnative on Reddit (the button opens a new tab).".into(),
-        "Reddit then sends the browser to your app's redirect URI. Copy that whole address (it has code= in it).".into(),
-        "Paste it below. Pasting sends it to the TV at once.".into(),
+        "Press \"Approve on Reddit\" below, log in to Reddit if asked, and press Allow.".into(),
+        "If your redirect URI is rdtnative's page (or this TV's address), that's all: the browser shows \"Sent to the TV.\" and the TV signs in by itself. Nothing to copy.".into(),
+        "Otherwise the browser ends up on your redirect URI's address (it has code= in it). Copy all of it, come back to this page and paste it below: pasting sends it to the TV at once. This page works for 10 minutes; after that, use the new address the TV shows.".into(),
     ];
     form.action = Some(("Approve on Reddit".into(), authorize_url.to_string()));
     form.fields.push(
-        rd_phone::Field::new("callback", "Address Reddit sent you to (or the code)")
+        rd_phone::Field::new("callback", "The address you copied, with code= in it (or just the code)")
             .kind(rd_phone::Kind::Url)
-            .placeholder("myapp://callback?state=…&code=…")
+            .placeholder("…?state=…&code=…")
             .max_len(2048),
     );
     // A redirect URI that is not a web address (myapp://...), fixed by the client ID: the browser
@@ -2186,31 +2186,31 @@ fn signin_form(authorize_url: &str, redirect: &str) -> rd_phone::Form {
     let fixed_scheme = !redirect.starts_with("http://") && !redirect.starts_with("https://");
     if fixed_scheme {
         form.intro = vec![format!(
-            "This client ID sends Reddit's answer to {redirect}, which is not a web address: after Allow the browser stays on Reddit's page. The address with code= is still there; copy it from one of these places. Use a computer: phones do not show it."
+            "This client ID sends Reddit's answer to {redirect}, an app address that browsers can't open: after Allow, Chrome and Edge stay on Reddit's page and Firefox shows an error page. No page or app can catch it by itself, so you copy it by hand and paste it here. This can't be avoided, but you do it only once per account: the TV stays signed in. Use a computer: phones can't show this address. This page works for 10 minutes; after that, use the new address the TV shows."
         )];
         form.steps = vec![
-            "Press \"Approve on Reddit\" (it opens a new tab), log in if asked, and press Allow.".into(),
-            "Firefox: the address bar now holds the address (on an error page). Copy all of it.".into(),
-            "Chrome or Edge: press F12, open Console and find the red line \"Failed to launch '...'\". Copy the whole line (or right-click the address, Copy link address). If there is no such line, press Allow again with the Console open.".into(),
-            "Paste it below. Pasting sends it to the TV at once.".into(),
+            "Press \"Approve on Reddit\" below. Reddit opens in a new tab: log in there if asked, but don't press Allow yet.".into(),
+            "If you use Chrome or Edge: in the Reddit tab, press Ctrl+Shift+J (Mac: Cmd+Option+J; or F12, then the Console tab). A panel opens. Now press Allow. The page doesn't change, but a red line appears in the panel, usually the last one: \"Failed to launch '…' because the scheme does not have a registered handler\". Select the whole line with the mouse and copy it. No red line? Press Allow again.".into(),
+            "If you use Firefox: press Allow. Firefox shows an error page; click its address bar and copy all of it.".into(),
+            "Switch back to this tab and paste it into the box below. Pasting sends it to the TV at once.".into(),
         ];
     }
     form.notes = vec![
         (
             "Firefox".into(),
-            "After you approve, Firefox shows an error page (\"The address wasn't understood\" or \"Unable to connect\"). The address bar holds the address: click it, copy all of it, paste it here.".into(),
+            "With rdtnative's page as redirect URI, Firefox shows \"Sent to the TV.\" after Allow: nothing to copy. With another web address it may show an error page such as \"Unable to connect\": that's fine. The address bar holds the address: click it, copy all of it, paste it here.".into(),
         ),
         (
             "Chrome, Edge, Brave".into(),
-            "With an http:// or https:// redirect URI, the address bar holds the address after you approve: copy it.\n\nWith another kind (like myapp://callback), Approve seems to do nothing: the browser stays on Reddit's page. The address is in the developer tools: press F12, open Console, and look for the red line \"Failed to launch '…' because the scheme does not have a registered handler\". Right-click the address in it and choose \"Copy link address\" (or copy the whole line) and paste it here. If the Console was not open when you approved, open it and approve again.".into(),
+            "With rdtnative's page as redirect URI there is nothing to copy: the TV signs in by itself. With another web address, the address bar holds that address after Allow, even on an error page: click it, copy all of it, paste it here.".into(),
         ),
         (
             "Phone".into(),
-            "If the Reddit app opens instead of the browser: come back, press \"Copy link\" and paste it into the browser's address bar (an address typed or pasted there stays in the browser). On Android the button opens Chrome.\n\nAfter you approve, the browser may show an error page or ask to open another app (cancel that). Copy the address from the address bar and paste it here. Some phone browsers show nothing for a redirect URI like myapp://; then a computer (Firefox) is easier.".into(),
+            "If the Reddit app opens instead of the browser: come back, press \"Copy link\" and paste it into the browser's address bar (an address typed or pasted there stays in the browser). On Android the button opens Chrome.\n\nWith rdtnative's page as redirect URI, the browser shows \"Sent to the TV.\" after Allow: nothing to copy. With another web address it may show an error page or ask to open another app (cancel that): copy the address from the address bar and paste it here.".into(),
         ),
         (
             "Sign in without copying".into(),
-            "If your Reddit app's redirect URI is this page's address without the last part (shown on the TV, like http://192.168.1.20:8091/), Reddit sends the browser straight here and the TV signs in by itself.".into(),
+            "Nothing needs copying when your redirect URI is rdtnative's page (https://danzig666.github.io/rdtnative/callback) or this page's address without the last part (like http://192.168.1.20:8091/): Reddit's answer comes straight back and the TV signs in by itself. If you can change your client ID's redirect URI, set it to one of these and enter the same in Settings › Reddit API.".into(),
         ),
     ];
     // The steps above already cover a fixed myapp:// redirect; the notes are about other kinds.

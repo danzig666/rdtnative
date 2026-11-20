@@ -33,12 +33,74 @@ enum Act {
     Cancel,
 }
 
-/// The rows: the ways to sign in, or (without API settings) the way to set them up.
-fn acts(configured: bool) -> &'static [Act] {
-    if configured {
-        &[Act::OnTv, Act::Code, Act::NewAddress, Act::Cancel]
+/// Where Reddit sends its answer (the code) after Allow, which decides how signing in goes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Answer {
+    /// rdtnative's page or this TV's own address: the answer comes back to the TV by itself.
+    Back,
+    /// Another web address: the browser shows it in the address bar, to copy.
+    Address,
+    /// An app address (myapp://...), fixed by a client ID the user cannot change: the browser
+    /// cannot open it and stays on Reddit's page; only a computer's Firefox (address bar) or
+    /// Chrome (console) shows it. One copy and paste that nothing can avoid.
+    AppAddress,
+}
+
+fn answer(st: &crate::store::Store) -> Answer {
+    let redirect = st.saved.as_ref().map(|s| s.redirect().to_string()).unwrap_or_default();
+    let auto = st.signin.as_ref().and_then(|v| v.auto_redirect.as_deref());
+    if redirect == rd_core::DEFAULT_REDIRECT_URI || auto == Some(redirect.as_str()) {
+        Answer::Back
+    } else if redirect.starts_with("http://") || redirect.starts_with("https://") {
+        Answer::Address
     } else {
-        &[Act::SetUpApi, Act::Cancel]
+        Answer::AppAddress
+    }
+}
+
+/// The rows: the ways to sign in, or (without API settings) the way to set them up. The TV's
+/// browser only helps when the answer comes back by itself (nothing can be copied out of it).
+fn acts(configured: bool, answer: Answer) -> &'static [Act] {
+    match (configured, answer) {
+        (false, _) => &[Act::SetUpApi, Act::Cancel],
+        (true, Answer::Back) => &[Act::OnTv, Act::Code, Act::NewAddress, Act::Cancel],
+        (true, _) => &[Act::Code, Act::NewAddress, Act::Cancel],
+    }
+}
+
+/// The page's text for each kind of answer: the intro under the title, the numbered steps and a
+/// hint under them.
+fn texts(answer: Answer) -> (&'static str, &'static [&'static str], Option<&'static str>) {
+    match answer {
+        Answer::Back => (
+            "\u{201c}Sign in on this TV\u{201d} opens Reddit in the TV's browser: log in with the remote and press Allow. Or, on a computer or phone on the same Wi-Fi, open the sign-in page: type the address below or scan the QR code.",
+            &[
+                "1.  On the phone or computer, press \u{201c}Approve on Reddit\u{201d}.",
+                "2.  Log in to Reddit if asked, and press Allow.",
+                "3.  The TV signs in by itself: nothing to copy.",
+            ],
+            Some("If a page shows a code instead, choose \u{201c}Type the code\u{201d} and enter it."),
+        ),
+        Answer::Address => (
+            "Your redirect URI is a web address other than rdtnative's page, so you copy one address back to the TV. On a computer or phone on the same Wi-Fi, open the sign-in page: type the address below or scan the QR code.",
+            &[
+                "1.  Press \u{201c}Approve on Reddit\u{201d} on the sign-in page.",
+                "2.  Log in to Reddit if asked, and press Allow.",
+                "3.  Copy the address the browser ends up on (it has code= in it).",
+                "4.  Back on the sign-in page, paste it: the TV signs in.",
+            ],
+            None,
+        ),
+        Answer::AppAddress => (
+            "Your client ID sends Reddit's answer to an app address (like myapp://) that browsers can't open, so you copy it to the TV by hand, on a computer. This can't be avoided, but only once per account: the TV stays signed in.",
+            &[
+                "1.  Open the address above in Chrome, Edge or Firefox; press \u{201c}Approve on Reddit\u{201d}.",
+                "2.  In the new Reddit tab (Chrome or Edge: press Ctrl+Shift+J first), log in if asked and press Allow.",
+                "3.  The page seems stuck or shows an error: that's expected. Chrome/Edge: copy the whole red \u{201c}Failed to launch\u{2026}\u{201d} line. Firefox: copy all of the address bar.",
+                "4.  Back in the first tab (the sign-in page), paste it: the TV signs in.",
+            ],
+            Some("Phones can't show this address: use a computer. On a Mac, Cmd+Option+J opens the Console. No red line? Press Allow again. After 10 minutes the TV shows a new address: start over from it."),
+        ),
     }
 }
 
@@ -61,7 +123,7 @@ impl SignInScreen {
     }
 
     fn acts(cx: &Cx<'_, RdHost>) -> &'static [Act] {
-        acts(cx.views.store.configured())
+        acts(cx.views.store.configured(), answer(cx.views.store))
     }
 
     fn rows(cx: &Cx<'_, RdHost>) -> Vec<Row> {
@@ -201,14 +263,15 @@ impl Screen<RdHost> for SignInScreen {
         self.list.stops(f, rows.len());
         if !st.configured() {
             let ls = ui::sz(30);
-            let why = "Signing in goes through your own Reddit app. Enter its client ID first: \u{201c}Set up Reddit API\u{201d} shows how.";
+            let why = "Signing in needs a Reddit API client ID, which you bring yourself: rdtnative comes without one. Enter it first in \u{201c}Set up Reddit API\u{201d}.";
             for (i, l) in ui::wrap_lines(f.measure, crate::i18n::tr(why), 1080.0, ls, false, 4).iter().enumerate() {
                 ui::text_raw(p, l, 160.0, 330.0 + i as f32 * ls as f32 * 1.42, ls, ui::WHITE, ui::ALIGN_LEFT, false);
             }
             common::toast(p, f.measure, cx);
             return;
         }
-        let intro = "\u{201c}Sign in on this TV\u{201d} opens Reddit in the TV's browser and comes back here when you approve. Or, on a computer or phone on the same Wi-Fi, open the sign-in page below.";
+        let kind = answer(st);
+        let (intro, steps, tip) = texts(kind);
         for (i, l) in ui::wrap_lines(f.measure, crate::i18n::tr(intro), 1600.0, hs, false, 2).iter().enumerate() {
             ui::text_raw(p, l, 160.0, 150.0 + i as f32 * hs as f32 * 1.42, hs, ui::DIM, ui::ALIGN_LEFT, false);
         }
@@ -226,36 +289,39 @@ impl Screen<RdHost> for SignInScreen {
                 ui::text_cut(p, f.measure, url, addr_box.x + 30.0, addr_box.y + (addr_box.h - size as f32 * 1.2) / 2.0, addr_box.w - 60.0, size, ui::accent(), ui::ALIGN_LEFT, true);
             }
             None => {
-                let msg = if v.is_some_and(|v| v.busy) { "Signing in\u{2026}" } else { "Not running: choose \u{201c}New address\u{201d}" };
+                let msg = if v.is_some_and(|v| v.busy) { "Signing in\u{2026}" } else { "No sign-in page now: choose \u{201c}New address\u{201d}" };
                 ui::text(p, msg, addr_box.x + 30.0, addr_box.y + 36.0, ls, ui::DIM, ui::ALIGN_LEFT, false);
             }
         }
-        let steps = [
-            "1.  Press \u{201c}Approve on Reddit\u{201d} on that page.",
-            "2.  Copy the address Reddit sends the browser to.",
-            "3.  Paste it on the page: the TV signs in.",
-        ];
-        for (i, l) in steps.iter().enumerate() {
-            ui::text(p, l, 160.0, 460.0 + i as f32 * ls as f32 * 1.6, ls, ui::WHITE, ui::ALIGN_LEFT, false);
+        // Without the phone's QR code (an app address cannot be seen on a phone) the steps may
+        // use the width up to the rows.
+        let width = if kind == Answer::AppAddress { 1140.0 } else { 740.0 };
+        let mut sy = 460.0;
+        for line in steps {
+            for l in ui::wrap_lines(f.measure, crate::i18n::tr(line), width, ls, false, 2) {
+                ui::text_raw(p, &l, 160.0, sy, ls, ui::WHITE, ui::ALIGN_LEFT, false);
+                sy += ls as f32 * 1.35;
+            }
+            sy += ls as f32 * 0.25;
         }
-        // Whether Reddit's answer comes back by itself: rdtnative's page and this TV's address
-        // hand it over; a redirect URI that is not a web address cannot even be seen in Chrome.
-        if let Some(auto) = v.and_then(|v| v.auto_redirect.as_deref()) {
-            let redirect = st.saved.as_ref().map(|s| s.redirect().to_string()).unwrap_or_default();
-            let tip = if redirect == auto || redirect == rd_core::DEFAULT_REDIRECT_URI {
-                crate::i18n::tr("Approving on Reddit signs in by itself: nothing to copy.").to_string()
-            } else if !redirect.starts_with("http://") && !redirect.starts_with("https://") {
-                crate::i18n::tr("Your client ID's redirect URI is not a web address: after Allow the browser stays on Reddit's page. On a computer, Firefox shows the address in its address bar, Chrome in its console (F12). The sign-in page explains it.").to_string()
-            } else {
-                format!("{} {auto}", crate::i18n::tr("No copying: make your Reddit app's redirect URI (and Settings \u{203a} Reddit API) this address:"))
-            };
-            let ts = ui::sz(22);
-            for (i, l) in ui::wrap_lines(f.measure, &tip, 720.0, ts, false, 5).iter().enumerate() {
-                ui::text_raw(p, l, 160.0, 640.0 + i as f32 * ts as f32 * 1.4, ts, ui::FAINT, ui::ALIGN_LEFT, false);
+        let ts = ui::sz(22);
+        let tip: Option<String> = match (kind, v.and_then(|v| v.auto_redirect.as_deref())) {
+            (Answer::Address, Some(auto)) => {
+                Some(format!("{} {auto}", crate::i18n::tr("If you can change your client ID's redirect URI, set it (and Settings \u{203a} Reddit API) to this address and nothing needs copying:")))
+            }
+            _ => tip.map(|t| crate::i18n::tr(t).to_string()),
+        };
+        if let Some(tip) = tip {
+            sy += ts as f32 * 0.4;
+            for l in ui::wrap_lines(f.measure, &tip, width, ts, false, 3) {
+                ui::text_raw(p, &l, 160.0, sy, ts, ui::FAINT, ui::ALIGN_LEFT, false);
+                sy += ts as f32 * 1.4;
             }
         }
-        ui::text(p, "Or scan with a phone:", QR.x - 20.0, QR.y - 70.0, ls, ui::WHITE, ui::ALIGN_LEFT, true);
-        draw_qr(p, &self.qr, QR);
+        if kind != Answer::AppAddress {
+            ui::text(p, "Or scan with a phone:", QR.x - 20.0, QR.y - 70.0, ls, ui::WHITE, ui::ALIGN_LEFT, true);
+            draw_qr(p, &self.qr, QR);
+        }
         let y = 800.0;
         match st.signin.as_ref() {
             Some(v) if v.busy => {
@@ -263,20 +329,20 @@ impl Screen<RdHost> for SignInScreen {
                 ui::text(p, "Signing in\u{2026}", 260.0, y + 10.0, ls, ui::WHITE, ui::ALIGN_LEFT, true);
             }
             Some(v) if v.error.is_some() => {
-                for (i, l) in ui::wrap_lines(f.measure, v.error.as_deref().unwrap_or_default(), 1100.0, ls, true, 3).iter().enumerate() {
+                for (i, l) in ui::wrap_lines(f.measure, crate::i18n::tr(v.error.as_deref().unwrap_or_default()), 1100.0, ls, true, 3).iter().enumerate() {
                     ui::text_raw(p, l, 160.0, y + i as f32 * ls as f32 * 1.4, ls, [1.0, 0.55, 0.5, 1.0], ui::ALIGN_LEFT, true);
                 }
             }
             _ => {
                 let redirect = st.saved.as_ref().map(|s| s.redirect().to_string()).unwrap_or_default();
-                let note = format!("{} {redirect}", crate::i18n::tr("Your app's redirect URI:"));
+                let note = format!("{} {redirect}", crate::i18n::tr("Redirect URI (Settings \u{203a} Reddit API):"));
                 ui::text_cut(p, f.measure, &note, 160.0, y, 1600.0, ui::sz(22), ui::FAINT, ui::ALIGN_LEFT, false);
             }
         }
         // Reddit approves whoever its site has signed in, not the account being added.
         if st.signed_in() {
             let ts = ui::sz(22);
-            let tip = "Adding an account: Reddit approves whoever is signed in on reddit.com in that browser. Sign out there first, or use a private window.";
+            let tip = "Adding an account: Reddit approves whoever is signed in on reddit.com in that browser. Sign out there first, or type the address into a private window.";
             for (i, l) in ui::wrap_lines(f.measure, crate::i18n::tr(tip), 1600.0, ts, false, 2).iter().enumerate() {
                 ui::text_raw(p, l, 160.0, y + 70.0 + i as f32 * ts as f32 * 1.4, ts, ui::FAINT, ui::ALIGN_LEFT, false);
             }
@@ -294,8 +360,11 @@ mod tests {
 
     #[test]
     fn without_api_settings_only_the_setup_is_offered() {
-        assert_eq!(acts(true).len(), ROWS);
-        assert_eq!(acts(true).last(), Some(&Act::Cancel));
-        assert_eq!(acts(false), [Act::SetUpApi, Act::Cancel]);
+        assert_eq!(acts(true, Answer::Back).len(), ROWS);
+        assert_eq!(acts(true, Answer::Back).last(), Some(&Act::Cancel));
+        assert_eq!(acts(false, Answer::Back), [Act::SetUpApi, Act::Cancel]);
+        // The TV's browser cannot hand back an answer that has to be copied.
+        assert!(!acts(true, Answer::AppAddress).contains(&Act::OnTv));
+        assert!(!acts(true, Answer::Address).contains(&Act::OnTv));
     }
 }
