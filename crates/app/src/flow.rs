@@ -256,6 +256,11 @@ impl Flow {
         cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| self.index(k.elem))
     }
 
+    /// The item focus was on last (kept while focus is elsewhere on the page).
+    pub fn last_focused(&self) -> Option<usize> {
+        self.last_focus.get()
+    }
+
     /// Focus moved to `i`: keys reveal it; the pointer does not move the page under itself.
     pub fn on_focus(&self, i: usize, by_pointer: bool) {
         if self.last_focus.get() != Some(i) {

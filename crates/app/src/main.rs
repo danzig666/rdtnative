@@ -5,6 +5,7 @@
 //! pointer, wheel and edge glide.
 
 mod accounts;
+mod awake;
 mod crashtrace; // fatal-signal tracer -> /tmp/rdtnative/crash.log (see `cargo xtask crash`)
 mod edge;
 mod flow;
@@ -60,7 +61,8 @@ pub fn log(s: &str) {
 /// The app's data (sign-in, settings) lives in /tmp, which a restart clears (Settings says so).
 pub static DATA_TEMPORARY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The app is on screen (not sent to the background): polling pauses while it is not.
+/// The app is on screen (not behind the TV's home screen or another app): comment polling and
+/// slideshows pause meanwhile.
 pub static FOREGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// Persistent, writable, survives reinstall in the Developer Mode jail (ytnative's finding);
@@ -231,6 +233,7 @@ fn main() {
         let mut prev = 0u32;
         let mut running = true;
         let mut foreground = true;
+        let mut watch = awake::Watch::new(sdl::SDL_GetTicks());
         while running {
             let now = sdl::SDL_GetTicks();
             let dt = if prev == 0 { 0.016 } else { ((now - prev) as f32 / 1000.0).min(0.05) };
@@ -238,8 +241,12 @@ fn main() {
             let tick = Tick { ms: now, dt_us: (dt * 1e6) as u32 };
 
             let mut inputs = Vec::new();
+            // A key, the pointer or the wheel (the idle screen's clock; not the app's own events).
+            let mut real_input = false;
             while sdl::SDL_PollEvent(ev.as_mut_ptr().cast()) != 0 {
-                match input::rd_u32(&ev, 0) {
+                let kind = input::rd_u32(&ev, 0);
+                real_input |= matches!(kind, sdl::SDL_MOUSEMOTION | sdl::SDL_MOUSEBUTTONDOWN | sdl::SDL_MOUSEBUTTONUP | sdl::SDL_MOUSEWHEEL | sdl::SDL_KEYDOWN | sdl::SDL_KEYUP);
+                match kind {
                     sdl::SDL_QUIT => running = false,
                     sdl::SDL_MOUSEMOTION => {
                         cursor_motion_at = now;
@@ -304,7 +311,9 @@ fn main() {
             }
             if let Some(r) = remote.as_mut() {
                 let mut quit = false;
-                inputs.extend(r.poll(tick, &mut quit));
+                let keys = r.poll(tick, &mut quit);
+                real_input |= !keys.is_empty();
+                inputs.extend(keys);
                 if quit {
                     running = false;
                 }
@@ -327,9 +336,9 @@ fn main() {
             {
                 const V_BAND: f32 = 48.0;
                 let top = d.top_screen().map(|s| s.name());
-                // Full-screen media (the video, the picture viewer) takes no edge scrolling: there
-                // Up/Down mean seek and caption.
-                let full_screen = matches!(top, Some("player" | "viewer"));
+                // Full-screen media (the video, the picture viewer, the slideshow) takes no edge
+                // scrolling: there Up/Down mean seek, caption and sound.
+                let full_screen = matches!(top, Some("player" | "viewer" | "slideshow"));
                 let v_side = pointer_at.filter(|_| !mouse_down && !full_screen).and_then(|(_, y)| {
                     if y < V_BAND {
                         Some((1i8, y, V_BAND))
@@ -355,7 +364,7 @@ fn main() {
                 }
             }
             // Idle pointer: hide it after a few seconds without motion (sooner over a video).
-            let idle_ms = if d.top_screen().map(|s| s.name()) == Some("player") { 3000 } else { 5000 };
+            let idle_ms = if matches!(d.top_screen().map(|s| s.name()), Some("player" | "slideshow")) { 3000 } else { 5000 };
             if !cursor_hidden && !mouse_down && now.wrapping_sub(cursor_motion_at) > idle_ms {
                 hide_cursor();
                 cursor_hidden = true;
@@ -369,6 +378,26 @@ fn main() {
             // Words said to LG's voice search: into the open keyboard, else a Reddit search.
             for q in voice::take() {
                 rig.voice_text(q, d.top_screen().map(|s| s.name()) == Some("keyboard"));
+            }
+            // Lean-back: the idle screen after a while without a button (never over a video, a
+            // slideshow or a menu), and the TV kept awake while pictures or a video move.
+            {
+                let video = matches!(rig.store.play.phase, player::Phase::Playing | player::Phase::Loading);
+                let busy = video || screens::slideshow::open() || !foreground || ui::menu_open() || !rig.store.configured();
+                watch.note(now, real_input, busy);
+                if watch.idle_due(now, rig.store.prefs.num("idle_after").max(0) as u32) && rig.store.nav_request.is_none() {
+                    log("idle: opening the idle screen");
+                    rig.store.nav_request = Some(screens::slideshow::idle_arg(&rig.store.prefs));
+                }
+                let moving = foreground && (screens::slideshow::advancing() || rig.store.play.phase == player::Phase::Playing);
+                if let Some(on) = watch.awake(now, moving) {
+                    log(if on { "screensaver: held off while pictures or a video move" } else { "screensaver: allowed" });
+                    if on {
+                        sdl::SDL_DisableScreenSaver();
+                    } else {
+                        sdl::SDL_EnableScreenSaver();
+                    }
+                }
             }
             // The automatic update check found a newer version: ask once, on the feed (never over
             // a video or a page being read).

@@ -9,5 +9,6 @@ pub mod profile;
 pub mod settings;
 pub mod signin;
 pub mod subinfo;
+pub mod slideshow;
 pub mod subs;
 pub mod viewer;

@@ -3,6 +3,7 @@
 //! account switcher. OK runs the row and closes the menu; BACK closes it.
 
 use super::common::{self, State};
+use super::slideshow::ShowMode;
 use crate::host::{Confirm, MenuKind, RdArg, RdFx, RdHost, RdMsg, Typing};
 use crate::ui::{self, icon::Kind as Icon, Row, VList};
 use plx_machine::machine::{Cx, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Machine, NavOp, ScreenEvent};
@@ -156,6 +157,9 @@ impl MenuScreen {
                 rows.push((about_row(sub), Act::Push(RdArg::SubInfo { sub: sub.clone(), from_feed: false })));
                 rows.push((Row::new(format!("Search in r/{sub}")).icon(Icon::Search).raw(), Act::Push(RdArg::Type(Typing::Search { sub: Some(sub.clone()) }))));
                 rows.push((Row::new("Hide its posts from Home, Popular and All").icon(Icon::Shield), Act::FilterSub(sub.clone())));
+                let key = st.key_for(Feed::Sub(sub.clone()));
+                rows.push((Row::new("Slideshow").icon(Icon::Film), Act::Push(RdArg::Slideshow { key: key.clone(), start: None, mode: ShowMode::Media })));
+                rows.push((Row::new("Video channel").icon(Icon::Live), Act::Push(RdArg::Slideshow { key, start: None, mode: ShowMode::Videos })));
                 if let Some(a) = st.about.get(&sub.to_ascii_lowercase()) {
                     if !a.sub.public_description.is_empty() {
                         title = format!("r/{sub} \u{b7} {}", a.sub.public_description);
@@ -216,6 +220,11 @@ impl MenuScreen {
                 title = format!("{} {v} (you have {})", crate::i18n::tr("rdtnative update available:"), crate::update::current_version());
                 rows.push((Row::new("Install now (closes the app)").icon(Icon::Check), Act::InstallUpdate));
                 rows.push((Row::new("Later (Settings \u{203a} Updates)"), Act::Close));
+            }
+            MenuKind::Play(key, start) => {
+                title = crate::i18n::tr(&key.feed.title()).to_string();
+                rows.push((Row::new("Slideshow").icon(Icon::Film), Act::Push(RdArg::Slideshow { key: key.clone(), start: start.clone(), mode: ShowMode::Media })));
+                rows.push((Row::new("Video channel").icon(Icon::Live), Act::Push(RdArg::Slideshow { key: key.clone(), start: start.clone(), mode: ShowMode::Videos })));
             }
             MenuKind::Sort(_) | MenuKind::Time(_) | MenuKind::CommentSort(_) => {
                 rows.push((Row::new("Close"), Act::Close));

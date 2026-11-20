@@ -51,6 +51,9 @@ extern "C" {
     pub fn SDL_Delay(ms: u32);
     pub fn SDL_GetWindowWMInfo(win: *mut c_void, info: *mut c_void) -> c_int;
     pub fn SDL_GetVersion(ver: *mut u8);
+    /// Holds the TV's screensaver off (webOS SDL answers its requests while this is set).
+    pub fn SDL_DisableScreenSaver();
+    pub fn SDL_EnableScreenSaver();
 
     pub fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
     pub fn glGetIntegerv(pname: u32, params: *mut c_int);

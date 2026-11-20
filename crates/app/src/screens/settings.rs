@@ -51,6 +51,7 @@ enum Act {
     ClearHistory,
     CheckUpdate,
     InstallUpdate,
+    IdleSub,
     Nothing,
 }
 
@@ -160,6 +161,9 @@ impl SettingsScreen {
                         if let Some(o) = prefs::opt(k) {
                             v.push((Row::new(o.label).value(p.label(k)), Act::Option(o.key), o.help));
                         }
+                        if *k == "idle_after" {
+                            v.push((Row::new("Idle screen subreddit").value(format!("r/{}", p.idle_sub())), Act::IdleSub, "The subreddit whose pictures the idle screen shows (its hot posts). OK types another one."));
+                        }
                     }
                 }
             }
@@ -266,6 +270,7 @@ impl SettingsScreen {
             Act::ClearHistory => fx.push(Fx::App(RdFx::EditPrefs(|p, _| p.history.clear(), String::new()))),
             Act::CheckUpdate => crate::update::check_now(),
             Act::InstallUpdate => crate::update::install(),
+            Act::IdleSub => fx.push(Fx::Nav(NavOp::Push(RdArg::Type(Typing::IdleSub)))),
             Act::Nothing => {}
         }
     }

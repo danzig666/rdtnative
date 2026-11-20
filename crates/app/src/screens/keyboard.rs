@@ -114,6 +114,7 @@ fn spec(t: &Typing) -> (String, String, String, usize) {
         Typing::FilterSub => ("Hide a subreddit".into(), "Its posts are left out of Home, Popular and All.".into(), "subreddit name".into(), 30),
         Typing::Reply { .. } => ("Reply".into(), "\u{21B5} starts a new line. Done sends it.".into(), "Write a reply\u{2026}".into(), rd_phone::MULTILINE_MAX_LEN),
         Typing::SignInCode => ("Sign-in code".into(), "The address of the page Reddit sent you to, or the code on it.".into(), "https://\u{2026}?code=\u{2026}".into(), 2048),
+        Typing::IdleSub => ("Idle screen subreddit".into(), "Its pictures fill the screen when the TV is idle. Empty uses r/EarthPorn.".into(), crate::prefs::DEFAULT_IDLE_SUB.into(), 30),
     }
 }
 
@@ -137,7 +138,7 @@ fn problem(target: &Typing, text: &str) -> Option<String> {
         Typing::Api(Field::ClientId) => rd_core::auth::ClientId::parse(t).err(),
         Typing::Api(Field::RedirectUri) => rd_core::config::check_redirect_uri(t).err(),
         Typing::Api(Field::UserAgent) => rd_core::config::check_user_agent(t).err(),
-        Typing::GoToSub | Typing::FilterSub => {
+        Typing::GoToSub | Typing::FilterSub | Typing::IdleSub => {
             let n = t.trim_start_matches("r/").trim_start_matches("/r/");
             (!n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then(|| "Subreddit names have letters, digits and _ only".to_string())
         }

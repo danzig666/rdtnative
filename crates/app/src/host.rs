@@ -37,6 +37,8 @@ pub enum Typing {
     /// A reply to this fullname (a post or a comment), on post `post`.
     Reply { parent: String, post: String },
     SignInCode,
+    /// The subreddit the idle screen shows.
+    IdleSub,
 }
 
 /// The pop-up menus.
@@ -69,6 +71,8 @@ pub enum MenuKind {
     SignInPrompt(bool),
     /// Switch to another account on this TV (from the side menu).
     Accounts,
+    /// Slideshow or video channel of a feed, from post `1` (the one focused).
+    Play(FeedKey, Option<String>),
 }
 
 /// What a [`MenuKind::Confirm`] asks about.
@@ -124,6 +128,8 @@ pub enum RdArg {
     Profile(String),
     /// Subreddits, opened on the signed-in user's custom feeds.
     CustomFeeds,
+    /// A feed's pictures and videos one after another, from post `start`.
+    Slideshow { key: FeedKey, start: Option<String>, mode: screens::slideshow::ShowMode },
 }
 
 impl ScreenArg for RdArg {
@@ -154,6 +160,7 @@ impl ScreenArg for RdArg {
             RdArg::SubInfo { .. } => 40,
             RdArg::Profile(_) => 41,
             RdArg::CustomFeeds => 42,
+            RdArg::Slideshow { .. } => 20,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -248,6 +255,8 @@ pub enum RdFx {
     SeekVideo(i64),
     /// Speed, quality, loop, replay, the play and pause keys.
     VideoControl(crate::player::Control),
+    /// Sound off (true) or on for the playing video.
+    MuteVideo(bool),
     /// Play a YouTube video in ytnative (or LG's YouTube app).
     OpenYouTube(String),
     /// Open a web address in the TV's browser.
@@ -316,6 +325,7 @@ impl Mounter<RdHost> for Mount {
                     Typing::Api(f) => cx.views.store.draft.get(*f).to_string(),
                     Typing::ImgurId => cx.views.store.prefs.imgur_client_id.clone().unwrap_or_default(),
                     Typing::Reply { parent, .. } => cx.views.store.drafts.get(parent).cloned().unwrap_or_default(),
+                    Typing::IdleSub => cx.views.store.prefs.idle_sub.clone().unwrap_or_default(),
                     _ => String::new(),
                 };
                 Box::new(keyboard::KeyboardScreen::new(entry, t.clone(), &current, cx))
@@ -331,6 +341,7 @@ impl Mounter<RdHost> for Mount {
             RdArg::SubInfo { sub, from_feed } => Box::new(subinfo::SubInfoScreen::new(entry, sub.clone(), *from_feed)),
             RdArg::Profile(name) => Box::new(profile::ProfileScreen::new(entry, name.clone())),
             RdArg::CustomFeeds => Box::new(subs::SubsScreen::custom_feeds(entry)),
+            RdArg::Slideshow { key, start, mode } => Box::new(slideshow::SlideshowScreen::new(entry, key.clone(), start.clone(), *mode)),
         }
     }
 }
@@ -1941,6 +1952,11 @@ impl AppRig {
             Typing::FindSub if !text.is_empty() => self.search_subs(from, text),
             Typing::Reply { parent, post } if !text.is_empty() => self.reply(from, parent, post, text),
             Typing::SignInCode if !text.is_empty() => self.signin_code(&text),
+            Typing::IdleSub => {
+                let sub = text.trim_start_matches("/r/").trim_start_matches("r/");
+                self.store.prefs.idle_sub = (!sub.is_empty()).then(|| sub.to_string());
+                store::store_prefs(&self.store.prefs);
+            }
             _ => {}
         }
         self.store.bump();
@@ -2400,6 +2416,7 @@ impl Rig<RdHost> for AppRig {
             RdFx::PauseVideo => self.player.toggle_pause(),
             RdFx::SeekVideo(d) => self.player.seek_by(d),
             RdFx::VideoControl(c) => self.player.control(c),
+            RdFx::MuteVideo(on) => self.player.set_muted(on),
             RdFx::OpenShare(url) => {
                 self.store.toast("Opening the shared link\u{2026}", now);
                 self.spawn(from, "share", move || {

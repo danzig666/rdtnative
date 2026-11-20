@@ -64,6 +64,8 @@ pub struct Status {
     pub reload: Option<u64>,
     /// A message for the viewer (a speed the TV refused), shown once as a toast.
     pub notice: Option<String>,
+    /// Sound off (the video channel's switch); every new video starts with sound.
+    pub muted: bool,
 }
 
 /// What the viewer asks of the playing video, beside pause and seek.
@@ -118,8 +120,9 @@ mod tv {
         format!(r#"{{"mediaId":{}}}"#, json_str(mid))
     }
 
-    fn rate_json(mid: &str, rate: f32) -> String {
-        format!(r#"{{"mediaId":{},"playRate":{rate},"audioOutput":true}}"#, json_str(mid))
+    /// setPlayRate's payload: the speed and the sound (`muted`: the video channel's switch).
+    fn rate_json(mid: &str, rate: f32, muted: bool) -> String {
+        format!(r#"{{"mediaId":{},"playRate":{rate},"audioOutput":{}}}"#, json_str(mid), !muted)
     }
 
     pub struct Player {
@@ -395,6 +398,23 @@ mod tv {
             });
         }
 
+        /// Sound off or on for the playing video: the `audioOutput` flag of uMediaServer's
+        /// `setPlayRate`, at the video's speed. Per pipeline: a new video starts with sound.
+        pub fn set_muted(&mut self, on: bool) {
+            let Some(luna) = self.luna else { return };
+            let Some(mid) = self.media_id.lock().unwrap().clone() else { return };
+            let rate = {
+                let mut s = self.status.lock().unwrap();
+                s.muted = on;
+                s.rate.0
+            };
+            let payload = rate_json(&mid, rate, on);
+            let _ = plx_base::task::spawn("media", move || {
+                let r = luna.call("luna://com.webos.media/setPlayRate", &payload);
+                crate::log(&format!("player: setPlayRate audioOutput {} -> {r}", !on));
+            });
+        }
+
         /// Main thread. Unloads the pipeline and destroys the video window.
         pub fn stop(&mut self) {
             self.gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -479,12 +499,14 @@ mod tv {
     /// Worker. Asks pipeline `mid` for speed `rate`. When the TV refuses it, the video goes back
     /// to normal speed and the viewer is told.
     fn apply_rate(luna: &'static Luna, mid: &str, rate: f32, status: &Mutex<Status>, current: &Mutex<Option<String>>) {
-        let r = luna.call("luna://com.webos.media/setPlayRate", &rate_json(mid, rate));
+        // The same call carries the sound: keep the video channel's switch.
+        let muted = status.lock().unwrap().muted;
+        let r = luna.call("luna://com.webos.media/setPlayRate", &rate_json(mid, rate, muted));
         crate::log(&format!("player: setPlayRate {rate} -> {r}"));
         if replied_ok(&r) || rate == 1.0 || current.lock().unwrap().as_deref() != Some(mid) {
             return;
         }
-        let r = luna.call("luna://com.webos.media/setPlayRate", &rate_json(mid, 1.0));
+        let r = luna.call("luna://com.webos.media/setPlayRate", &rate_json(mid, 1.0, muted));
         crate::log(&format!("player: setPlayRate 1 -> {r}"));
         let mut s = status.lock().unwrap();
         s.rate = Rate(1.0);
@@ -634,6 +656,10 @@ mod sim {
             if self.started.is_some() {
                 self.started = Some(std::time::Instant::now());
             }
+        }
+        /// No sound to switch here: only the flag.
+        pub fn set_muted(&mut self, on: bool) {
+            self.status.lock().unwrap().muted = on;
         }
         pub fn stop(&mut self) {
             self.active = false;
