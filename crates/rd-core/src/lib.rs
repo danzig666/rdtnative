@@ -6,6 +6,7 @@ pub mod auth;
 pub mod comments;
 pub mod config;
 pub mod error;
+pub mod hls;
 pub mod listing;
 pub mod markdown;
 pub mod media;

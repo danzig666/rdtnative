@@ -126,6 +126,13 @@ pub const OPTS: &[Opt] = &[
         values: &[("hls", "HLS (default)"), ("dash", "DASH"), ("mp4", "MP4 (no sound)")],
         default: "hls",
     },
+    Opt {
+        key: "video_quality",
+        label: "Video quality",
+        help: "The highest quality Reddit videos play at (HLS). Lower uses less data on a slow network; Auto lets the TV choose. Down in the player changes it for one video.",
+        values: &[("auto", "Auto"), ("1080", "1080p"), ("720", "720p"), ("480", "480p"), ("360", "360p")],
+        default: "auto",
+    },
     Opt { key: "hide_stickied", label: "Hide pinned posts", help: "Leave out the moderators' pinned posts at the top of subreddits.", values: OFF_ON, default: "off" },
     // Browsing
     Opt {
@@ -223,7 +230,7 @@ pub fn pages() -> [Page; 4] {
         Page {
             title: "Content",
             icon: K::Shield,
-            keys: &["nsfw", "spoilers", "dim_read", "hide_read", "hide_stickied", "show_flair", "show_scores", "show_domain", "video_stream"],
+            keys: &["nsfw", "spoilers", "dim_read", "hide_read", "hide_stickied", "show_flair", "show_scores", "show_domain", "video_stream", "video_quality"],
         },
         Page {
             title: "Feeds and comments",
