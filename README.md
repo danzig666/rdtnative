@@ -49,7 +49,7 @@ These are screenshots from the Windows simulator, which runs the same UI code as
   subreddit; the TV stays awake while they play.
 - **Signed in:** vote, save posts and comments, hide (with undo), join and leave subreddits,
   reply (drafts are kept), inbox with new-message alerts, your saved and submitted posts. Several
-  accounts with a switcher. Sign in by scanning a QR code; paste the code back on the phone.
+  accounts with a switcher. Sign in on the TV itself, or from a phone or computer (see below).
 - **Typing:** the on-screen keyboard, a phone (scan a QR code and type or dictate there), a USB
   keyboard, or LG voice search. Any post or comment can be sent to a phone as a QR code.
 - **Display:** text size (70-175 %, for any TV size and distance) with a separate size for post and
@@ -62,6 +62,29 @@ These are screenshots from the Windows simulator, which runs the same UI code as
   comments) with a key hints line, BACK opens the side menu (twice leaves).
 - **Setup:** Reddit API settings (client ID, any redirect URI scheme, user agent) and an Imgur
   client ID, typed with the remote or entered on a phone through a QR code.
+
+## Signing in
+
+Browsing works without an account once the API settings are in. Signing in adds voting, saving,
+replies, your home feed and the inbox.
+
+1. **Settings › Reddit API:** enter your client ID, with the remote or with "Enter on phone (QR
+   code)". Leave the redirect URI empty to use rdtnative's own page; your Reddit app's redirect
+   URI must then be `https://danzig666.github.io/rdtnative/callback`. If your client ID comes with
+   another redirect URI, enter that one exactly. Press "Save and connect".
+2. **Sign in** (side menu, or Settings › Sign in to Reddit), then one of:
+   - **Sign in on this TV:** Reddit opens in the TV's browser. Log in with the remote and press
+     Allow; the browser closes and rdtnative is signed in.
+   - **A phone:** scan the QR code, press "Approve on Reddit", log in and press Allow.
+   - **A computer** on the same network: type the short address the TV shows into its browser,
+     then the same steps.
+
+   With rdtnative's redirect page, Reddit's answer goes back to the TV by itself. With another
+   redirect URI, copy the address the browser ends up on (it contains `code=`) and paste it into
+   the phone or computer page; it goes straight to the TV. "Sign in on this TV" needs rdtnative's
+   page (or the TV's own address shown on the sign-in screen) as the redirect URI.
+3. **More accounts:** Settings › Accounts › Add account. Switch between them there or from the
+   side menu.
 
 ## Install
 
