@@ -173,10 +173,10 @@ fn run(s: &str, style: u8, link: Option<&str>, out: &mut Vec<Span>) {
             }
         }
         // Spoilers >!text!<
-        if rest.starts_with(">!") {
-            if let Some(e) = rest[2..].find("!<") {
+        if let Some(inner) = rest.strip_prefix(">!") {
+            if let Some(e) = inner.find("!<") {
                 flush(out, text_start, i);
-                run(&rest[2..2 + e], style | SPOILER, link, out);
+                run(&inner[..e], style | SPOILER, link, out);
                 i += 2 + e + 2;
                 text_start = i;
                 continue;
