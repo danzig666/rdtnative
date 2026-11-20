@@ -79,6 +79,31 @@ fn prefs_sig() -> u64 {
     (ui::text_scale() * 100.0) as u64 | ((ui::content_scale() * 100.0) as u64) << 12 | (ui::font_code(false) as u64) << 24
 }
 
+/// "1 point", "12 points", "1.2k points".
+fn points(n: i64) -> String {
+    match n {
+        1 => crate::i18n::tr("1 point").to_string(),
+        n => crate::i18n::tr("{} points").replace("{}", &common::short_count(n)),
+    }
+}
+
+/// How much of `laid` shows when it is cut to `max`: down to its last whole line in that room.
+fn cut_h(laid: &richtext::Laid, max: f32) -> f32 {
+    if laid.h <= max {
+        return laid.h;
+    }
+    let bottom = laid
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            richtext::Item::Text { y, size, .. } => Some(y + (*size as f32 * 1.42).round()),
+            _ => None,
+        })
+        .filter(|b| *b <= max)
+        .fold(0.0, f32::max);
+    if bottom > 0.0 { bottom } else { max }
+}
+
 /// A post's thumbnail: (picture server, url), blurred for NSFW or spoilers as the settings ask.
 fn post_pic(cx: &Cx<'_, RdHost>, it: &PostItem) -> Option<(u16, String)> {
     let prefs = &cx.views.store.prefs;
@@ -106,8 +131,8 @@ pub struct ProfileScreen {
     flow: Flow,
     /// The sizes the list was placed for.
     rect_sig: u64,
-    /// (page gen, store gen, sizes, entries) the rows were measured for.
-    sig: Cell<(u32, u32, u64, usize)>,
+    /// (page gen, store gen, sizes) the rows were measured for; a new tab or sort resets it.
+    sig: Cell<(u32, u32, u64)>,
     /// The entries shown (the page after the user's filters).
     rows: RefCell<Vec<UserItem>>,
     bar_rects: RefCell<Vec<Rect>>,
@@ -137,7 +162,7 @@ impl ProfileScreen {
             sort: Sort::New,
             flow,
             rect_sig: u64::MAX,
-            sig: Cell::new((u32::MAX, 0, 0, 0)),
+            sig: Cell::new((u32::MAX, 0, 0)),
             rows: Default::default(),
             bar_rects: Default::default(),
             choice: None,
@@ -159,7 +184,7 @@ impl ProfileScreen {
         self.rect_sig = sig;
         let top = header_h();
         self.flow.rect = Rect::new(LEFT, top, 1920.0 - 2.0 * LEFT, 1080.0 - top);
-        self.sig.set((u32::MAX, 0, 0, 0));
+        self.sig.set((u32::MAX, 0, 0));
     }
 
     fn key(&self) -> FeedKey {
@@ -222,7 +247,7 @@ impl ProfileScreen {
                 (richtext::title_h(n, ts) + 6.0 + ms as f32 * 1.42).max(if pic { th } else { 0.0 }) + 2.0 * PAD
             }
             UserItem::Comment(c) => {
-                let body = Self::comment_laid(c, w).h.min(ui::csz(24) as f32 * 1.42 * COMMENT_LINES);
+                let body = cut_h(&Self::comment_laid(c, w), ui::csz(24) as f32 * 1.42 * COMMENT_LINES);
                 PAD + ms as f32 * 1.42 + 8.0 + body + 8.0 + ms as f32 * 1.42 + PAD
             }
         }
@@ -230,12 +255,13 @@ impl ProfileScreen {
 
     /// Rebuilds the rows and their heights when the page, the store or the sizes changed.
     fn relayout(&self, cx: &Cx<'_, RdHost>) {
-        let rows = self.shown(cx);
-        let sig = (self.page(cx).map_or(0, |p| p.gen), cx.views.store.gen, prefs_sig(), rows.len());
+        // Filters and votes bump the store's gen.
+        let sig = (self.page(cx).map_or(0, |p| p.gen), cx.views.store.gen, prefs_sig());
         if sig == self.sig.get() {
             return;
         }
         self.sig.set(sig);
+        let rows = self.shown(cx);
         let w = self.flow.col_w();
         let heights: Vec<f32> = rows.iter().map(|r| self.item_h(cx, r, w)).collect();
         self.flow.set_heights(&heights);
@@ -267,7 +293,7 @@ impl ProfileScreen {
         self.tab = tab;
         self.sort = sort;
         self.flow.to_top();
-        self.sig.set((u32::MAX, 0, 0, 0));
+        self.sig.set((u32::MAX, 0, 0));
         self.asked_more_at.set(usize::MAX);
         self.auto_focus.set(false);
         // Choosing the tab already shown loads it again.
@@ -590,7 +616,15 @@ impl ProfileScreen {
         let labels: Vec<(&str, Icon, bool)> = bar_items()
             .into_iter()
             .map(|b| match b {
-                Bar::Tab(t) => (tab_label(t), if t == UserTab::Comments { Icon::Chat } else { Icon::List }, t == self.tab),
+                Bar::Tab(t) => (
+                    tab_label(t),
+                    match t {
+                        UserTab::Comments => Icon::Chat,
+                        UserTab::Submitted => Icon::List,
+                        _ => Icon::User,
+                    },
+                    t == self.tab,
+                ),
                 Bar::Sort => (self.sort.label_in(&feed), Icon::Trending, false),
                 Bar::Refresh => ("Refresh", Icon::Repeat, false),
             })
@@ -638,7 +672,7 @@ impl ProfileScreen {
         let mut meta = format!(
             "r/{}  \u{b7}  {}  \u{b7}  {}  \u{b7}  {}",
             it.post.subreddit,
-            crate::i18n::tr("{} points").replace("{}", &common::short_count(it.post.score)),
+            points(it.post.score),
             common::comments(it.post.num_comments),
             rd_core::listing::age(it.post.created_utc, rd_core::now_secs() as i64)
         );
@@ -671,7 +705,7 @@ impl ProfileScreen {
         y += ms as f32 * 1.42 + 8.0;
         // The text, cut after a few lines.
         let laid = Self::comment_laid(c, r.w);
-        let body_h = laid.h.min(ui::csz(24) as f32 * 1.42 * COMMENT_LINES);
+        let body_h = cut_h(&laid, ui::csz(24) as f32 * 1.42 * COMMENT_LINES);
         let clip = Rect::new(hx, y, r.x + r.w - PAD - hx, body_h);
         {
             let _scope = plx_ui::screen::ClipScope::open_in(p, clip);
@@ -679,7 +713,7 @@ impl ProfileScreen {
         }
         y += body_h + 8.0;
         let mut meta = vec![
-            crate::i18n::tr("{} points").replace("{}", &common::short_count(c.comment.score)),
+            points(c.comment.score),
             rd_core::listing::age(c.comment.created_utc, rd_core::now_secs() as i64),
         ];
         if c.over_18 {
@@ -742,7 +776,7 @@ impl Screen<RdHost> for ProfileScreen {
         self.flow.animate(cx.views.now_ms);
         let p = f.painter;
         let focus = self.flow.focused(cx);
-        let rows = self.rows.borrow().clone();
+        let rows = self.rows.borrow();
         let area = self.flow.rect;
         if rows.is_empty() {
             self.draw_empty(f, area);

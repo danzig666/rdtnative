@@ -547,8 +547,6 @@ impl Screen<RdHost> for SubInfoScreen {
                 self.draw_side(f, focus);
                 self.rules.stops(f);
                 self.side.stops(f);
-                self.rules.draw_more_marks(p);
-                self.side.draw_more_marks(p);
                 if pg.loading {
                     ui::spinner(p, cx.views.now_ms, 1920.0 - LEFT - 40.0, bar_y() + bar_h() / 2.0);
                 }
