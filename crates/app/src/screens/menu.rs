@@ -39,6 +39,8 @@ enum Act {
     Share(String),
     /// Go ahead with what a confirmation asked about.
     Confirmed(Confirm),
+    /// Forget the recent subreddits.
+    ClearRecent,
     /// Use this account ("" browses without one), from a fresh Home.
     Switch(String),
     Nav(NavOp<RdArg>),
@@ -295,6 +297,15 @@ impl MenuScreen {
                 }
                 rows.push((Row::new("Add account").icon(Icon::ListPlus), Act::Push(RdArg::SignIn)));
             }
+            MenuKind::RecentSubs => {
+                title = crate::i18n::tr("Recent subreddits").to_string();
+                for s in &st.prefs.recent_subs {
+                    let fav = st.prefs.is_favorite(s);
+                    let r = Row::new(format!("r/{s}")).icon(if fav { Icon::Star } else { Icon::Subs }).raw();
+                    rows.push((r, Act::Push(RdArg::Feed(Feed::Sub(s.clone())))));
+                }
+                rows.push((Row::new("Clear the list").icon(Icon::History), Act::ClearRecent));
+            }
         }
         // Size and place the panel for its rows.
         let n = rows.len().max(1);
@@ -417,6 +428,10 @@ impl MenuScreen {
             Act::Nav(op) => {
                 close(fx);
                 fx.push(Fx::Nav(op));
+            }
+            Act::ClearRecent => {
+                close(fx);
+                fx.push(Fx::App(RdFx::EditPrefs(|p, _| p.recent_subs.clear(), String::new())));
             }
             Act::Close => close(fx),
         }

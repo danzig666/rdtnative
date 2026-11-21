@@ -280,6 +280,9 @@ pub const DEFAULT_IDLE_SUB: &str = "EarthPorn";
 /// The Imgur client ID used until the user enters their own.
 pub const DEFAULT_IMGUR_ID: &str = "981c2f80e996ca3";
 
+/// How many recent subreddits are kept.
+pub const RECENT_MAX: usize = 20;
+
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct Prefs {
     #[serde(default)]
@@ -289,6 +292,9 @@ pub struct Prefs {
     pub favorites: Vec<String>,
     #[serde(default)]
     pub history: Vec<String>,
+    /// Subreddits opened lately, newest first (the side menu's "Recent subreddits").
+    #[serde(default)]
+    pub recent_subs: Vec<String>,
     /// Subreddits whose posts are left out of every feed.
     #[serde(default)]
     pub filter_subs: Vec<String>,
@@ -365,6 +371,17 @@ impl Prefs {
         self.history.retain(|h| !h.eq_ignore_ascii_case(q));
         self.history.insert(0, q.to_string());
         self.history.truncate(30);
+    }
+    /// Puts `sub` first in the recent subreddits; false when it already was.
+    pub fn remember_sub(&mut self, sub: &str) -> bool {
+        let sub = sub.trim();
+        if sub.is_empty() || self.recent_subs.first().is_some_and(|f| f.eq_ignore_ascii_case(sub)) {
+            return false;
+        }
+        self.recent_subs.retain(|h| !h.eq_ignore_ascii_case(sub));
+        self.recent_subs.insert(0, sub.to_string());
+        self.recent_subs.truncate(RECENT_MAX);
+        true
     }
     /// The picture width to ask for, for a tile `w` px wide on screen.
     pub fn pic_width(&self, w: f32) -> u32 {
@@ -477,6 +494,14 @@ mod tests {
         p.remember_search("dogs");
         p.remember_search("Cats");
         assert_eq!(p.history, ["Cats", "dogs"]);
+        assert!(p.remember_sub("pics") && p.remember_sub("aww") && p.remember_sub("Pics"));
+        assert!(!p.remember_sub("pics"));
+        assert_eq!(p.recent_subs, ["Pics", "aww"]);
+        for i in 0..30 {
+            p.remember_sub(&format!("s{i}"));
+        }
+        assert_eq!(p.recent_subs.len(), RECENT_MAX);
+        assert_eq!(p.recent_subs[0], "s29");
         p.filter_words.push("spoiler".into());
         assert!(!p.keeps("a", "Big SPOILER here", false, false, false));
         assert!(p.keeps("a", "fine", false, false, false));

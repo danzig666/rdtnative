@@ -89,6 +89,8 @@ enum NavItem {
     Search,
     Feed(Feed),
     Subs,
+    /// The subreddits opened lately, in a menu.
+    Recent,
     CustomFeeds,
     Inbox,
     Settings,
@@ -491,6 +493,9 @@ impl FeedScreen {
     fn nav_items(&self, cx: &Cx<'_, RdHost>) -> Vec<NavItem> {
         let st = cx.views.store;
         let mut v = vec![NavItem::Search, NavItem::Feed(Feed::Front), NavItem::Feed(Feed::Popular), NavItem::Feed(Feed::All), NavItem::Subs];
+        if !st.prefs.recent_subs.is_empty() {
+            v.push(NavItem::Recent);
+        }
         if let Some(u) = st.username() {
             v.push(NavItem::CustomFeeds);
             v.push(NavItem::Feed(Feed::User(u.to_string(), UserTab::Saved)));
@@ -524,6 +529,7 @@ impl FeedScreen {
             NavItem::Feed(Feed::User(_, _)) => Row::new("My posts").icon(Icon::User).active(active),
             NavItem::Feed(f) => Row::new(f.title()).icon(Icon::Subs).active(active).raw(),
             NavItem::Subs => Row::new("Subreddits").icon(Icon::Users),
+            NavItem::Recent => Row::new("Recent subreddits").icon(Icon::History),
             NavItem::CustomFeeds => Row::new("Custom feeds").icon(Icon::Folder),
             NavItem::Inbox => {
                 let r = Row::new("Inbox").icon(Icon::Bell);
@@ -640,6 +646,9 @@ impl FeedScreen {
             return;
         }
         fx.push(Fx::App(RdFx::LoadFeed { key: self.key.clone(), reload }));
+        if let Feed::Sub(s) = &self.key.feed {
+            fx.push(Fx::App(RdFx::VisitSub(s.clone())));
+        }
         if let Some(sub) = self.key.feed.sub() {
             fx.push(Fx::App(RdFx::LoadAbout(sub.to_string())));
         }
@@ -763,6 +772,7 @@ impl FeedScreen {
                 self.focus_req.set(Some(POST_BASE));
             }
             NavItem::Subs => fx.push(Fx::Nav(NavOp::Push(RdArg::Subs))),
+            NavItem::Recent => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::RecentSubs)))),
             NavItem::CustomFeeds => fx.push(Fx::Nav(NavOp::Push(RdArg::CustomFeeds))),
             NavItem::Inbox => fx.push(Fx::Nav(NavOp::Push(RdArg::Inbox))),
             NavItem::Settings => fx.push(Fx::Nav(NavOp::Push(RdArg::Settings))),

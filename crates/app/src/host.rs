@@ -72,6 +72,8 @@ pub enum MenuKind {
     SignInPrompt(bool),
     /// Switch to another account on this TV (from the side menu).
     Accounts,
+    /// The subreddits opened lately (from the side menu).
+    RecentSubs,
     /// Slideshow or video channel of a feed, from post `1` (the one focused).
     Play(FeedKey, Option<String>),
 }
@@ -237,6 +239,8 @@ pub enum RdFx {
     SetPref(&'static str, String),
     /// Change the user's lists (favourites, filters, history).
     EditPrefs(fn(&mut crate::prefs::Prefs, &str), String),
+    /// A subreddit's feed was opened: it goes first in the recent subreddits.
+    VisitSub(String),
     /// A typed text arrived for `Typing`.
     Typed(Typing, String),
     SignInStart,
@@ -2572,6 +2576,12 @@ impl Rig<RdHost> for AppRig {
                     fd.gen = fd.gen.wrapping_add(1);
                 }
                 self.store.bump();
+            }
+            RdFx::VisitSub(sub) => {
+                if self.store.prefs.remember_sub(&sub) {
+                    store::store_prefs(&self.store.prefs);
+                    self.store.bump();
+                }
             }
             RdFx::Typed(t, text) => self.typed(from, t, text),
             RdFx::SignInStart => {

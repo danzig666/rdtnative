@@ -28,9 +28,10 @@ Screenshots from the Windows simulator, which runs the same UI code as the TV.
 ## Features
 
 - **Feeds:** Home, Popular, All, any subreddit, favourites (one or all together), custom feeds
-  (multireddits), users, saved posts and search. Sorts (Best, Hot, New, Top, Rising,
-  Controversial) with time ranges, remembered per feed. Endless paging; each feed keeps its
-  place, and the start page can be the last feed shown.
+  (multireddits), users, saved posts and search; "Recent subreddits" in the side menu lists the
+  ones opened lately. Sorts (Best, Hot, New, Top, Rising, Controversial) with time ranges,
+  remembered per feed. Endless paging; each feed keeps its place, and the start page can be the
+  last feed shown.
 - **Six layouts:** Two panes (a list with a live preview of the selected post; the default),
   Cards (2-6 per row), List, Large, Compact and Dense (one line per post).
 - **Posts:** pictures, galleries with captions, v.redd.it videos, GIFs, Imgur, RedGIFs, YouTube
