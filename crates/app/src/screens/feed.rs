@@ -4,7 +4,9 @@
 //! pages, favourite subreddits, Settings, Account), which slides in with Left or BACK.
 //!
 //! OK opens a post; holding OK opens its menu; the colour buttons vote, save and open comments.
-//! In two panes Right moves to the preview, where OK shows the post's media full screen.
+//! In two panes Right moves to the preview: the post with its whole thread under it. There Up
+//! and Down go through the comments, OK on the post shows its media full screen and on a comment
+//! opens or closes it, Right skips to the next thread and Left goes back to the list.
 //!
 //! The feed keeps the user going: a page that leaves nothing to show after filters fetches the
 //! next ones, a failed next page is tried again with Down on the last post (or after the rate
@@ -12,6 +14,7 @@
 //! says how old it is), and each feed of the start page keeps its place while others are shown.
 
 use super::common::{self, Color, State};
+use super::ctree::{self, CItem};
 use crate::flow::Flow;
 use crate::host::{MenuKind, RdArg, RdFx, RdHost, RdMsg, Typing};
 use crate::i18n::tr;
@@ -26,15 +29,15 @@ use plx_ui::{Painter, Rect};
 use rd_core::listing::{Feed, Sort, Time, UserTab};
 use rd_core::media::Media;
 use std::borrow::Cow;
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 
 const G_POSTS: GroupId = GroupId(1);
 const G_BAR: GroupId = GroupId(2);
 const G_NAV: GroupId = GroupId(3);
 const G_PREVIEW: GroupId = GroupId(4);
 const POST_BASE: u32 = 0x1000_0000;
-/// The two-pane layout's preview, as one focusable element (OK: the media full screen).
+/// The two-pane layout's preview: the post (item 0), then its comments.
 const PREVIEW_ELEM: u32 = 0x2000_0000;
 const BAR_BASE: u32 = 0x3000_0000;
 const NAV_BASE: u32 = 0x4000_0000;
@@ -141,6 +144,14 @@ pub struct FeedScreen {
     preview_shown: std::cell::RefCell<(String, u32)>,
     /// Where the preview drew the post's picture, and whose: clicking it opens the media.
     preview_media: std::cell::RefCell<Option<(Rect, String)>>,
+    /// The preview pane's column: the post, then its comment rows.
+    pv: Flow,
+    /// The preview's comment rows (item `i + 1` is row `i`).
+    pv_rows: RefCell<Vec<CItem>>,
+    /// What the preview was laid out for: (post id, thread gen, store gen).
+    pv_sig: RefCell<(String, u32, u32)>,
+    /// Comments in the preview whose spoilers were revealed.
+    pv_revealed: RefCell<HashSet<String>>,
     /// The feed's `gen` and the store's `resume_gen` last looked at (results only show in the store).
     watched: (Option<u32>, u32),
     /// Posts shown when the feed last changed, and how many pages in a row were fetched by
@@ -221,6 +232,76 @@ fn preview_pane() -> Rect {
     Rect::new(x0, header_h() + 8.0, 1920.0 - LEFT - x0, 1080.0 - header_h() - 40.0 - common::hint_band())
 }
 
+/// The preview's scrolling column, inside the pane's padding.
+fn preview_inner() -> Rect {
+    let r = preview_pane();
+    Rect::new(r.x + PV_PAD, r.y + PV_PAD, r.w - 2.0 * PV_PAD, r.h - 2.0 * PV_PAD)
+}
+
+const PV_PAD: f32 = 26.0;
+
+/// A picture or video post: the preview gives the media the whole pane (the comments are under it).
+fn media_post(it: &PostItem, thumbs: bool) -> bool {
+    thumbs && matches!(it.media, Media::Image(_) | Media::Gallery(_) | Media::Video(_) | Media::Imgur(_) | Media::YouTube { .. })
+}
+
+/// The picture the preview shows for a post: (address, width, height).
+fn preview_pic(it: &PostItem) -> Option<(String, u32, u32)> {
+    rd_core::media::preview(&it.post, 1100).map(|p| (p.url, p.w, p.h)).or_else(|| match &it.media {
+        Media::Image(p) => Some((p.url.clone(), p.w, p.h)),
+        Media::Gallery(g) => g.first().map(|i| (i.pic.url.clone(), i.pic.w, i.pic.h)),
+        Media::Video(v) => v.poster.as_ref().map(|p| (p.url.clone(), p.w, p.h)),
+        Media::YouTube { id, .. } => Some((format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"), 480, 360)),
+        Media::Link { preview: Some(p), .. } => Some((p.url.clone(), p.w, p.h)),
+        _ => None,
+    })
+}
+
+/// The preview's post part, laid out for a column `w` wide and a pane `view` tall.
+struct Head {
+    title: Vec<String>,
+    /// The picture's height (none: no picture).
+    pic_h: Option<f32>,
+    /// The post's text (none: no text shown).
+    text: Option<std::rc::Rc<richtext::Laid>>,
+    link: bool,
+    /// Room the whole part takes.
+    h: f32,
+}
+
+fn head_layout(it: &PostItem, w: f32, view: f32, thumbs: bool) -> Head {
+    let ms = ui::sz(21) as f32 * 1.42;
+    let ts = ui::sz(32);
+    let title = richtext::wrap_title(&it.post.title, w, ts, true, 3);
+    let mut y = ms + 6.0 + richtext::title_h(title.len(), ts) + 8.0 + ms + 16.0;
+    let (mut pic_h, mut text, mut link) = (None, None, false);
+    match preview_pic(it).filter(|_| thumbs) {
+        Some((_, pw, ph)) => {
+            // A picture or video post fills the pane; a link's picture takes about half of it.
+            // (Exactly the pane's height: Down then moves on to the comments at once.)
+            let max = if media_post(it, thumbs) { view - y - 18.0 } else { (view - y) * 0.55 };
+            let h = if pw > 0 && ph > 0 { (w * ph as f32 / pw as f32).min(max) } else { max.min(480.0) };
+            let h = h.max(120.0);
+            pic_h = Some(h);
+            y += h + 18.0;
+        }
+        None if !it.post.selftext.trim().is_empty() => {
+            let laid = richtext::cached(&format!("prev:{}:{}", it.post.id, w as u32), &it.post.selftext, w, ui::csz(24));
+            y += laid.h + 18.0;
+            text = Some(laid);
+        }
+        None => {
+            if matches!(it.media, Media::Link { .. }) {
+                link = true;
+                y += ui::sz(21) as f32 * 1.6;
+            }
+        }
+    }
+    // A picture or video post: its comments start under the pane's bottom edge.
+    let h = if media_post(it, thumbs) && pic_h.is_some() { y.max(view) } else { y };
+    Head { title, pic_h, text, link, h }
+}
+
 impl FeedScreen {
     pub fn home(entry: EntryId, cx: &Cx<'_, RdHost>) -> Self {
         let mut s = Self::new(entry, start_feed(cx), cx);
@@ -254,6 +335,17 @@ impl FeedScreen {
             auto_focus: Cell::new(true),
             preview_shown: Default::default(),
             preview_media: Default::default(),
+            pv: {
+                let mut pv = Flow::new(entry, G_PREVIEW, PREVIEW_ELEM, preview_inner());
+                pv.pad_top = 0.0;
+                pv.pad_bottom = 20.0;
+                pv.row_gap = 14.0;
+                pv.margin = 30.0;
+                pv
+            },
+            pv_rows: Default::default(),
+            pv_sig: Default::default(),
+            pv_revealed: Default::default(),
             watched: (None, cx.views.store.resume_gen),
             shown_n: 0,
             auto_pages: 0,
@@ -798,7 +890,47 @@ impl FeedScreen {
     }
 
     fn on_preview(&self, cx: &Cx<'_, RdHost>) -> bool {
-        cx.focus.current.is_some_and(|k| k.entry == self.entry && k.elem == PREVIEW_ELEM)
+        cx.focus.current.is_some_and(|k| k.entry == self.entry && self.pv.index(k.elem).is_some())
+    }
+
+    /// The preview's comment row under focus.
+    fn pv_comment(&self, cx: &Cx<'_, RdHost>) -> Option<CItem> {
+        let i = self.pv.focused(cx)?.checked_sub(1)?;
+        self.pv_rows.borrow().get(i).cloned()
+    }
+
+    /// Lays the preview out again when its post, thread or the sizes changed.
+    fn relayout_preview(&self, cx: &Cx<'_, RdHost>) {
+        if self.layout != Layout::Split {
+            return;
+        }
+        let st = cx.views.store;
+        let Some(it) = self.preview_post(cx) else {
+            self.pv.set_heights(&[]);
+            self.pv_rows.borrow_mut().clear();
+            return;
+        };
+        let thread = st.thread(&it.post.id);
+        let sig = (it.post.id.clone(), thread.map_or(0, |t| t.gen), st.gen);
+        let inner = preview_inner();
+        if *self.pv_sig.borrow() == sig && self.pv.rect == inner && self.pv.len() > 0 {
+            return;
+        }
+        if self.pv_sig.borrow().0 != sig.0 {
+            // Another post: from its top, spoilers hidden again.
+            self.pv.to_top();
+            self.pv_revealed.borrow_mut().clear();
+        }
+        *self.pv_sig.borrow_mut() = sig;
+        let rows = match thread {
+            Some(t) => ctree::rows(t, &it.post.author, st.username().unwrap_or_default(), None, &HashSet::new()),
+            None => vec![],
+        };
+        let w = inner.w;
+        let mut heights = vec![head_layout(it, w, inner.h, Self::thumbs_on(cx)).h];
+        heights.extend(rows.iter().map(|c| ctree::height(c, w)));
+        self.pv.set_heights(&heights);
+        *self.pv_rows.borrow_mut() = rows;
     }
 
     /// The post the two-pane preview shows: the one focused last.
@@ -841,6 +973,16 @@ impl Machine<RdHost> for FeedScreen {
         }
         // The pointer edge glide: scroll by pixels, focus stays on a post in view.
         if let Some(dy) = common::wheel_dy(ev) {
+            let (x, _) = ui::pointer();
+            if self.layout == Layout::Split && self.pv.contains_x(x) {
+                if self.pv.glide(dy) {
+                    if let Some(j) = self.pv.focused(cx).and_then(|i| self.pv.keep_in_view(i)) {
+                        self.focus_req.set(Some(self.pv.elem(j)));
+                    }
+                    fx.invalidate(plx_machine::present::Provenance::Input);
+                }
+                return Handled::Yes;
+            }
             if self.flow.glide(dy) {
                 if let Some(j) = self.flow.focused(cx).and_then(|i| self.flow.keep_in_view(i)) {
                     self.focus_req.set(Some(self.flow.elem(j)));
@@ -851,7 +993,14 @@ impl Machine<RdHost> for FeedScreen {
         }
         // Holding OK on a post: its menu.
         if let Some(e) = common::press_hold(ev, cx) {
-            if let Some(i) = self.flow.index(e) {
+            if let Some(i) = self.pv.index(e) {
+                let id = self.preview_post(cx).map(|it| it.post.id.clone());
+                match (id, i.checked_sub(1).and_then(|r| self.pv_rows.borrow().get(r).cloned())) {
+                    (Some(id), Some(CItem::Comment { name, .. })) => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Comment(id, name))))),
+                    (Some(id), None) if i == 0 => fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Post(id))))),
+                    _ => {}
+                }
+            } else if let Some(i) = self.flow.index(e) {
                 if let Some(it) = self.items(cx).get(i) {
                     fx.push(Fx::Nav(NavOp::Present(RdArg::Menu(MenuKind::Post(it.post.id.clone())))));
                 }
@@ -872,6 +1021,23 @@ impl Machine<RdHost> for FeedScreen {
             }
             // Yellow right after a hide puts the post back (its toast says so).
             if common::undo_hide_first(c, cx, fx) {
+                return Handled::Yes;
+            }
+            if self.pv_comment(cx).is_some() {
+                if c != Color::Blue && common::sign_in_first(c, cx, fx) {
+                    return Handled::Yes;
+                }
+                let row = self.pv_comment(cx);
+                match c {
+                    Color::Green => ctree::vote(row, 1, fx),
+                    Color::Red => ctree::vote(row, -1, fx),
+                    Color::Yellow => ctree::save(row, fx),
+                    Color::Blue => {
+                        if let Some(it) = self.preview_post(cx) {
+                            fx.push(Fx::Nav(NavOp::Push(RdArg::PostComments { id: it.post.id.clone() })));
+                        }
+                    }
+                }
                 return Handled::Yes;
             }
             match self.target_post(cx) {
@@ -1011,11 +1177,7 @@ impl Machine<RdHost> for FeedScreen {
             ScreenEvent::Timer(T_PREVIEW) => {
                 if let Some(it) = self.focused_post(cx) {
                     let id = it.post.id.clone();
-                    // The preview shows a picture or video post's media, not its comments.
-                    let media = Self::thumbs_on(cx) && matches!(it.media, Media::Image(_) | Media::Gallery(_) | Media::Video(_) | Media::Imgur(_) | Media::YouTube { .. });
-                    if !media {
-                        fx.push(Fx::App(RdFx::PrefetchThread { id: id.clone() }));
-                    }
+                    fx.push(Fx::App(RdFx::PrefetchThread { id: id.clone() }));
                     if matches!(it.media, Media::Imgur(_)) {
                         fx.push(Fx::App(RdFx::ResolveImgur(id)));
                     }
@@ -1062,8 +1224,13 @@ impl Machine<RdHost> for FeedScreen {
                 } else if (BAR_BASE..NAV_BASE).contains(&to.elem) {
                     self.nav_open.set(false);
                     self.content_last.set(to.elem);
-                } else if to.elem == PREVIEW_ELEM {
+                } else if let Some(i) = self.pv.index(to.elem) {
                     self.nav_open.set(false);
+                    self.pv.on_focus(i, *by == By::Pointer);
+                    // In the preview: the whole thread, not just the light first load.
+                    if let Some(it) = self.preview_post(cx) {
+                        fx.push(Fx::App(RdFx::LoadThread { id: it.post.id.clone(), sort: None, reload: false }));
+                    }
                 }
                 fx.invalidate(plx_machine::present::Provenance::Input);
             }
@@ -1083,6 +1250,8 @@ impl Machine<RdHost> for FeedScreen {
                     }
                 } else if e >= BAR_BASE {
                     self.activate_bar((e - BAR_BASE) as usize, cx, fx);
+                } else if let Some(i) = self.pv.index(e).filter(|&i| i > 0) {
+                    self.activate_comment(i - 1, cx, fx);
                 } else if e == PREVIEW_ELEM {
                     // The preview: its media full screen (a text post opens).
                     if let Some(it) = self.preview_post(cx) {
@@ -1126,17 +1295,11 @@ impl Focusable<RdHost> for FeedScreen {
         });
         if self.flow.len() > 0 {
             out.push(self.flow.spec());
-            if self.layout == Layout::Split {
-                out.push(GroupSpec {
-                    id: G_PREVIEW,
-                    kind: GroupKind::Column,
-                    seat: Seat::Remembered,
-                    reachable: AxisMask::BOTH,
-                    edge: [EdgeRule::Stop; 4],
-                    extent: preview_pane(),
-                    len: 1,
-                    elem: ElemKind::Bare,
-                });
+            self.relayout_preview(cx);
+            if self.layout == Layout::Split && self.pv.len() > 0 {
+                let mut g = self.pv.spec();
+                g.edge = [EdgeRule::Stop; 4];
+                out.push(g);
             }
         }
         if self.root {
@@ -1153,7 +1316,7 @@ impl Focusable<RdHost> for FeedScreen {
             G_NAV
         } else if *key >= BAR_BASE {
             G_BAR
-        } else if *key == PREVIEW_ELEM {
+        } else if self.pv.owns(*key) {
             G_PREVIEW
         } else {
             G_POSTS
@@ -1182,15 +1345,31 @@ impl Focusable<RdHost> for FeedScreen {
                 Step::Edge
             }
         };
-        if key.elem == PREVIEW_ELEM {
+        if let Some(i) = self.pv.index(key.elem) {
             return match dir {
                 // Back to the post it shows.
                 Dir::Left => match self.flow.index(self.content_last.get()) {
                     Some(i) => Step::Move(self.flow.key(i)),
                     None => Step::Move(self.flow.key(self.flow.visible().start.min(self.flow.len().saturating_sub(1)))),
                 },
-                Dir::Up => Step::Move(FocusKey { entry: self.entry, elem: BAR_BASE + self.bar_items(cx).len().saturating_sub(1) as u32 }),
-                _ => Step::Edge,
+                // The next thread (from the post: the first comment).
+                Dir::Right => {
+                    let to = match i.checked_sub(1) {
+                        None => (self.pv.len() > 1).then_some(1),
+                        Some(r) => ctree::next_sibling(&self.pv_rows.borrow(), r).map(|j| j + 1),
+                    };
+                    match to {
+                        Some(j) => {
+                            self.pv.reveal(j);
+                            Step::Move(self.pv.key(j))
+                        }
+                        None => Step::Edge,
+                    }
+                }
+                _ => match self.pv.neighbour(key, dir) {
+                    Step::Edge if dir == Dir::Up => Step::Move(FocusKey { entry: self.entry, elem: BAR_BASE + self.bar_items(cx).len().saturating_sub(1) as u32 }),
+                    s => s,
+                },
             };
         }
         if key.elem >= BAR_BASE {
@@ -1244,9 +1423,8 @@ impl Focusable<RdHost> for FeedScreen {
             let r = *self.bar_rects.borrow().get((*key - BAR_BASE) as usize)?;
             return Some(Placed { rect: r, rest_rect: r, clip: Rect::new(0.0, 0.0, 1920.0, 1080.0), index: Some(*key - BAR_BASE) });
         }
-        if *key == PREVIEW_ELEM {
-            let r = preview_pane();
-            return Some(Placed { rect: r, rest_rect: r, clip: Rect::new(0.0, 0.0, 1920.0, 1080.0), index: Some(0) });
+        if self.pv.owns(*key) {
+            return self.pv.place(*key);
         }
         self.flow.place(*key)
     }
@@ -1271,8 +1449,8 @@ impl Focusable<RdHost> for FeedScreen {
             self.root && self.nav.index(want.elem, self.nav_items(cx).len()).is_some()
         } else if want.elem >= BAR_BASE {
             ((want.elem - BAR_BASE) as usize) < self.bar_items(cx).len()
-        } else if want.elem == PREVIEW_ELEM {
-            self.layout == Layout::Split && self.flow.len() > 0
+        } else if self.pv.owns(want.elem) {
+            self.layout == Layout::Split && self.flow.len() > 0 && self.pv.index(want.elem).is_some()
         } else {
             self.flow.index(want.elem).is_some()
         };
@@ -1288,7 +1466,7 @@ impl Focusable<RdHost> for FeedScreen {
     fn seat(&self, g: GroupId, _from: Placed, _cx: &Cx<'_, RdHost>) -> FocusKey<u32> {
         match g {
             G_POSTS if self.flow.len() > 0 => self.flow.key(self.flow.visible().start.min(self.flow.len() - 1)),
-            G_PREVIEW => FocusKey { entry: self.entry, elem: PREVIEW_ELEM },
+            G_PREVIEW => self.pv.key(0),
             G_NAV => self.nav.key(0),
             _ => FocusKey { entry: self.entry, elem: BAR_BASE },
         }
@@ -1670,13 +1848,14 @@ impl FeedScreen {
         let m = f.measure;
         let cx = f.cx;
         let prefs = &cx.views.store.prefs;
+        let now = cx.views.now_ms;
         let pane = preview_pane();
         ui::fill(p, pane, 22.0, ui::surface(0.05));
-        if self.on_preview(cx) {
+        let focus = self.pv.focused(cx);
+        if focus == Some(0) {
             p.rring(pane, 22.0, 4.0, ui::accent());
         }
         // A new selection fades in (and slides a little), instead of popping.
-        let now = cx.views.now_ms;
         {
             let mut shown = self.preview_shown.borrow_mut();
             if shown.0 != it.post.id {
@@ -1690,126 +1869,125 @@ impl FeedScreen {
         let a = ui::ease_out(t);
         let p = p.alpha(a).translate(0.0, (1.0 - a) * 14.0);
         let _scope = plx_ui::screen::ClipScope::open_in(p, pane);
-        let pad = 26.0;
-        let (x, w) = (pane.x + pad, pane.w - 2.0 * pad);
-        let mut y = pane.y + pad;
-        let ms = ui::sz(21);
-        let meta = common::post_meta(it, cx, true);
-        ui::text_cut(p, m, &meta, x, y, w, ms, ui::DIM, ui::ALIGN_LEFT, false);
-        y += ms as f32 * 1.42 + 6.0;
-        let ts = ui::sz(32);
-        let lines = richtext::wrap_title(&it.post.title, w, ts, true, 3);
-        y = richtext::draw_lines(p, m, &lines, x, y, w, ts, ui::WHITE, true) + 8.0;
-        let w_score = common::score_line(p, m, it, x, y, ms, ui::DIM, prefs.on("show_scores"));
-        if let (Some(fl), true) = (&it.post.link_flair_text, prefs.on("show_flair")) {
-            common::badge(p, m, x + w_score + 20.0, y + 2.0, fl, ui::with_alpha(ui::accent(), 0.3), ui::WHITE, (ms as f32 * 0.85) as i32);
-        }
-        y += ms as f32 * 1.42 + 16.0;
-        let bottom = pane.y + pane.h - pad;
-        // Media, at most about half the pane.
-        let blur = (it.post.over_18 && prefs.get("nsfw") == "blur") || (it.post.spoiler && prefs.get("spoilers") == "blur");
-        let pic = rd_core::media::preview(&it.post, 1100).map(|p| (p.url, p.w, p.h)).or_else(|| match &it.media {
-            Media::Image(p) => Some((p.url.clone(), p.w, p.h)),
-            Media::Gallery(g) => g.first().map(|i| (i.pic.url.clone(), i.pic.w, i.pic.h)),
-            Media::Video(v) => v.poster.as_ref().map(|p| (p.url.clone(), p.w, p.h)),
-            Media::YouTube { id, .. } => Some((format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"), 480, 360)),
-            Media::Link { preview: Some(p), .. } => Some((p.url.clone(), p.w, p.h)),
-            _ => None,
-        });
         *self.preview_media.borrow_mut() = None;
-        // A picture or video post shows its media in the whole pane and no comments (they would
-        // shrink it when they arrive); link and text posts keep their top comments.
-        let media_post = pic.is_some()
-            && Self::thumbs_on(cx)
-            && matches!(it.media, Media::Image(_) | Media::Gallery(_) | Media::Video(_) | Media::Imgur(_) | Media::YouTube { .. });
-        let has_comments = cx.views.store.thread(&it.post.id).is_some_and(|t| !t.tree.is_empty());
-        let max_media = if has_comments && !media_post { (bottom - y) * 0.55 } else { bottom - y };
-        if let (Some((url, pw, ph)), true) = (pic, Self::thumbs_on(cx)) {
-            let h = if pw > 0 && ph > 0 { (w * ph as f32 / pw as f32).min(max_media) } else { max_media.min(480.0) };
-            let r = Rect::new(x, y, w, h.max(120.0));
-            *self.preview_media.borrow_mut() = Some((r, it.post.id.clone()));
-            ui::fill(p, r, 14.0, [0.0, 0.0, 0.0, 0.4]);
-            let drawn = if blur {
-                let small = rd_core::media::preview(&it.post, 140).map_or(url.clone(), |p| p.url);
-                images::draw(p, images::BLUR, &small, r, 14.0, Fit::Cover, ui::WHITE)
-            } else {
-                // The list's copy shows at once; the sharper one replaces it when it arrives.
-                // A sharp copy that failed keeps the list's copy rather than an empty box.
-                match images::draw(p, images::FULL, &url, r, 14.0, Fit::Contain, ui::WHITE) {
-                    full @ (images::Drawn::Loading | images::Drawn::Failed) => {
-                        let small = rd_core::media::preview(&it.post, prefs.pic_width(split_thumb().0)).map_or(url.clone(), |p| p.url);
-                        match images::draw(p, images::THUMB, &small, r, 14.0, Fit::Contain, ui::WHITE) {
-                            images::Drawn::Loading if matches!(full, images::Drawn::Failed) => images::Drawn::Failed,
-                            d => d,
+        let inner = self.pv.rect;
+        let thumbs = Self::thumbs_on(cx);
+        let head = head_layout(it, inner.w, inner.h, thumbs);
+        let Some(r0) = self.pv.screen_rect(0) else { return };
+        // What scrolls is cut at the padding, out of the pane's rounded edge.
+        let inner_clip = plx_ui::screen::ClipScope::open_in(p, Rect::new(pane.x, inner.y - 6.0, pane.w, inner.h + 12.0));
+        let (x, w) = (r0.x, r0.w);
+        if r0.y + r0.h > pane.y {
+            let mut y = r0.y;
+            let ms = ui::sz(21);
+            let meta = common::post_meta(it, cx, true);
+            ui::text_cut(p, m, &meta, x, y, w, ms, ui::DIM, ui::ALIGN_LEFT, false);
+            y += ms as f32 * 1.42 + 6.0;
+            let ts = ui::sz(32);
+            y = richtext::draw_lines(p, m, &head.title, x, y, w, ts, ui::WHITE, true) + 8.0;
+            let w_score = common::score_line(p, m, it, x, y, ms, ui::DIM, prefs.on("show_scores"));
+            if let (Some(fl), true) = (&it.post.link_flair_text, prefs.on("show_flair")) {
+                common::badge(p, m, x + w_score + 20.0, y + 2.0, fl, ui::with_alpha(ui::accent(), 0.3), ui::WHITE, (ms as f32 * 0.85) as i32);
+            }
+            y += ms as f32 * 1.42 + 16.0;
+            let blur = (it.post.over_18 && prefs.get("nsfw") == "blur") || (it.post.spoiler && prefs.get("spoilers") == "blur");
+            if let (Some(h), Some((url, _, _))) = (head.pic_h, preview_pic(it)) {
+                let r = Rect::new(x, y, w, h);
+                *self.preview_media.borrow_mut() = Some((r, it.post.id.clone()));
+                ui::fill(p, r, 14.0, [0.0, 0.0, 0.0, 0.4]);
+                let drawn = if blur {
+                    let small = rd_core::media::preview(&it.post, 140).map_or(url.clone(), |p| p.url);
+                    images::draw(p, images::BLUR, &small, r, 14.0, Fit::Cover, ui::WHITE)
+                } else {
+                    // The list's copy shows at once; the sharper one replaces it when it arrives.
+                    // A sharp copy that failed keeps the list's copy rather than an empty box.
+                    match images::draw(p, images::FULL, &url, r, 14.0, Fit::Contain, ui::WHITE) {
+                        full @ (images::Drawn::Loading | images::Drawn::Failed) => {
+                            let small = rd_core::media::preview(&it.post, prefs.pic_width(split_thumb().0)).map_or(url.clone(), |p| p.url);
+                            match images::draw(p, images::THUMB, &small, r, 14.0, Fit::Contain, ui::WHITE) {
+                                images::Drawn::Loading if matches!(full, images::Drawn::Failed) => images::Drawn::Failed,
+                                d => d,
+                            }
                         }
+                        d => d,
                     }
-                    d => d,
+                };
+                if let images::Drawn::Loading = drawn {
+                    ui::spinner(p, now, r.x + r.w / 2.0, r.y + r.h / 2.0);
                 }
+                if let Some(b) = common::media_badge(it) {
+                    let bs = ui::sz(20);
+                    common::badge(p, m, r.x + 12.0, r.y + r.h - bs as f32 * 1.45 - 12.0, &b, common::BADGE_BG, ui::WHITE, bs);
+                }
+                if blur {
+                    common::badge(p, m, r.x + 12.0, r.y + 12.0, if it.post.over_18 { "NSFW" } else { "SPOILER" }, common::NSFW_RED, ui::WHITE, ui::sz(20));
+                }
+            } else if let Some(laid) = &head.text {
+                richtext::draw(p, laid, x, y, pane, [0.9, 0.9, 0.92, 1.0], false);
+            } else if head.link {
+                if let Media::Link { url, .. } = &it.media {
+                    ui::text_cut(p, m, url, x, y, w, ui::sz(21), ui::accent(), ui::ALIGN_LEFT, false);
+                }
+            }
+        }
+        // The comments under the post.
+        let thread = cx.views.store.thread(&it.post.id);
+        let rows = self.pv_rows.borrow();
+        if rows.is_empty() {
+            let y = r0.y + r0.h + 40.0;
+            if thread.is_some_and(|t| t.loading) && y < pane.y + pane.h - 20.0 {
+                ui::spinner(p, now, x + w / 2.0, y);
+            }
+        } else {
+            let sep = r0.y + r0.h - 8.0;
+            if sep > pane.y && sep < pane.y + pane.h {
+                ui::fill(p, Rect::new(x, sep, w, 1.5), 0.0, [1.0, 1.0, 1.0, 0.1]);
+            }
+        }
+        for i in self.pv.visible() {
+            let (Some(r), Some(c)) = (self.pv.screen_rect(i), i.checked_sub(1).and_then(|j| rows.get(j))) else { continue };
+            let look = ctree::Look {
+                focus: (focus == Some(i)).then(|| self.pv.focus_t(now)),
+                glow: 0.0,
+                target: false,
+                revealed: matches!(c, CItem::Comment { name, .. } if self.pv_revealed.borrow().contains(name)),
+                loading: matches!(c, CItem::More { id, .. } if thread.is_some_and(|t| t.loading_more.contains(id))),
+                clip: pane,
+                now_ms: now,
             };
-            if let images::Drawn::Loading = drawn {
-                ui::spinner(p, cx.views.now_ms, r.x + r.w / 2.0, r.y + r.h / 2.0);
-            }
-            if let Some(b) = common::media_badge(it) {
-                let bs = ui::sz(20);
-                common::badge(p, m, r.x + 12.0, r.y + r.h - bs as f32 * 1.45 - 12.0, &b, common::BADGE_BG, ui::WHITE, bs);
-            }
-            if blur {
-                common::badge(p, m, r.x + 12.0, r.y + 12.0, if it.post.over_18 { "NSFW" } else { "SPOILER" }, common::NSFW_RED, ui::WHITE, ui::sz(20));
-            }
-            y = r.y + r.h + 18.0;
-        } else if !it.post.selftext.trim().is_empty() {
-            let laid = richtext::cached(&format!("prev:{}:{}", it.post.id, w as u32), &it.post.selftext, w, ui::csz(24));
-            let h = laid.h.min(max_media);
-            let clip = Rect::new(x, y, w, h);
-            {
-                let _s = plx_ui::screen::ClipScope::open_in(p, clip);
-                richtext::draw(p, &laid, x, y, clip, [0.9, 0.9, 0.92, 1.0], false);
-            }
-            if laid.h > h {
-                p.rect(Rect::new(x, y + h - 60.0, w, 60.0), 0.0, ui::with_alpha(ui::surface(0.05), 0.0), ui::surface(0.05), 0.0);
-            }
-            y += h + 18.0;
-        } else if let Media::Link { url, .. } = &it.media {
-            ui::text_cut(p, m, url, x, y, w, ui::sz(21), ui::accent(), ui::ALIGN_LEFT, false);
-            y += ui::sz(21) as f32 * 1.6;
+            ctree::draw(p, m, prefs, c, r, &look);
         }
-        if media_post {
-            return;
+        drop(inner_clip);
+        // More under the bottom edge (a picture post's comments): a faint arrow says so.
+        if self.pv.len() > 1 && self.pv.scroll() < self.pv.max_scroll() - 4.0 {
+            ui::text(p, "\u{25BC}", pane.x + pane.w / 2.0, pane.y + pane.h - 23.0, 18, ui::FAINT, ui::ALIGN_CENTER, false);
         }
-        // Top comments.
-        let Some(t) = cx.views.store.thread(&it.post.id) else {
-            ui::text(p, "OK opens the post and its comments", x, bottom - ui::sz(22) as f32 * 1.4, ui::sz(22), ui::FAINT, ui::ALIGN_LEFT, false);
-            return;
-        };
-        if t.loading && t.tree.is_empty() {
-            ui::spinner(p, cx.views.now_ms, x + w / 2.0, (y + bottom) / 2.0);
-            return;
+    }
+
+    /// OK on comment row `r` of the preview: reveal its spoilers, open or close it, or load more.
+    fn activate_comment(&self, r: usize, cx: &Cx<'_, RdHost>, fx: &mut Effects<'_, RdHost>) {
+        let Some(id) = self.preview_post(cx).map(|it| it.post.id.clone()) else { return };
+        let row = self.pv_rows.borrow().get(r).cloned();
+        match row {
+            Some(CItem::Comment { name, body, .. }) => {
+                if body.contains(">!") && !self.pv_revealed.borrow().contains(&name) {
+                    self.pv_revealed.borrow_mut().insert(name);
+                } else {
+                    fx.push(Fx::App(RdFx::ToggleComment { post: id, name }));
+                }
+            }
+            Some(CItem::More { id: more_id, cont, parent, .. }) => {
+                if cont {
+                    // "Continue this thread": that comment's thread on the post page.
+                    let c = parent.trim_start_matches("t1_").to_string();
+                    fx.push(Fx::Nav(NavOp::Push(RdArg::Post { id, comment: Some(c) })));
+                } else {
+                    fx.push(Fx::App(RdFx::MoreComments { post: id, more_id }));
+                }
+            }
+            None => {}
         }
-        ui::fill(p, Rect::new(x, y, w, 1.5), 0.0, [1.0, 1.0, 1.0, 0.1]);
-        y += 14.0;
-        let cs = ui::csz(22);
-        let hs = ui::sz(21);
-        for n in &t.tree {
-            let rd_core::comments::Node::Comment(c) = n else { continue };
-            if c.stickied && c.distinguished.is_some() {
-                continue;
-            }
-            if y + hs as f32 * 1.4 + cs as f32 * 1.4 > bottom {
-                break;
-            }
-            let head = format!("{}  \u{b7}  {} points", c.author, common::short_count(c.score));
-            ui::text_cut(p, m, &head, x, y, w, hs, ui::DIM, ui::ALIGN_LEFT, true);
-            y += hs as f32 * 1.42;
-            let laid = richtext::cached(&format!("pc:{}", c.name), &c.body, w - 10.0, cs);
-            let room = (bottom - y).min(cs as f32 * 1.42 * 4.0);
-            let h = laid.h.min(room);
-            let clip = Rect::new(x, y, w, h);
-            {
-                let _s = plx_ui::screen::ClipScope::open_in(p, clip);
-                richtext::draw(p, &laid, x, y, clip, [0.88, 0.88, 0.9, 1.0], false);
-            }
-            y += h + 16.0;
-        }
+        fx.invalidate(plx_machine::present::Provenance::Input);
     }
 
     /// "Updated 2h ago · Refresh" over the top of a list that is out of date (a click refreshes).
@@ -1982,8 +2160,14 @@ impl Screen<RdHost> for FeedScreen {
                 self.flow.stops(f);
             }
             if self.layout == Layout::Split {
+                self.pv.rect = preview_inner();
+                self.relayout_preview(cx);
+                self.pv.animate(cx.views.now_ms);
                 if let Some(it) = self.preview_post(cx) {
                     self.draw_preview(f, it);
+                    if self.choice.is_none() && !self.nav_open.get() {
+                        self.pv.stops(f);
+                    }
                 }
             }
             if focus.is_some() || self.on_preview(cx) {

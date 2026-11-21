@@ -32,8 +32,9 @@ Screenshots from the Windows simulator, which runs the same UI code as the TV.
   ones opened lately. Sorts (Best, Hot, New, Top, Rising, Controversial) with time ranges,
   remembered per feed. Endless paging; each feed keeps its place, and the start page can be the
   last feed shown.
-- **Six layouts:** Two panes (a list with a live preview of the selected post; the default),
-  Cards (2-6 per row), List, Large, Compact and Dense (one line per post).
+- **Six layouts:** Two panes (the default: the list beside the selected post and its whole
+  thread; Right goes over to read the comments, Left back to the list), Cards (2-6 per row),
+  List, Large, Compact and Dense (one line per post).
 - **Posts:** pictures, galleries with captions, v.redd.it videos, GIFs, Imgur, RedGIFs, YouTube
   (opens in ytnative or LG's YouTube app), crossposts, and Reddit markdown (headings, quotes,
   lists, code, tables, spoilers, links). Links open in the TV's browser or as a QR code for a
