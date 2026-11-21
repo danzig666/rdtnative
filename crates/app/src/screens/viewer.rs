@@ -349,14 +349,22 @@ impl Screen<RdHost> for ViewerScreen {
                     let r = Rect::new((1920.0 - dw) / 2.0 + self.pan.0, (1080.0 - dh) / 2.0 + self.pan.1, dw, dh);
                     match images::draw(p, images::FULL, &pic.url, r, 0.0, Fit::Contain, ui::WHITE) {
                         images::Drawn::Loading => {
-                            // The feed's smaller copy while the full one loads.
-                            if let Some(pv) = rd_core::media::preview(&it.post, 640) {
-                                images::draw(p, images::THUMB, &pv.url, screen, 0.0, Fit::Contain, [0.7, 0.7, 0.7, 1.0]);
+                            // A smaller copy while the full one loads: in a gallery this page's
+                            // own (the strip's thumbnail; the post's preview is the first
+                            // picture), else the feed's.
+                            let small = if n > 1 { Some(pic.url.clone()) } else { rd_core::media::preview(&it.post, 640).map(|pv| pv.url) };
+                            if let Some(u) = small {
+                                images::draw(p, images::THUMB, &u, screen, 0.0, Fit::Contain, [0.7, 0.7, 0.7, 1.0]);
                             }
                             ui::spinner(p, cx.views.now_ms, 960.0, 540.0);
                         }
                         images::Drawn::Failed => common::message(p, f.measure, Rect::new(0.0, 300.0, 1920.0, 400.0), "Couldn't load the picture", &pic.url),
-                        _ => {}
+                        _ => {
+                            // This one is shown: the next picture loads meanwhile.
+                            if let Some(Page::Pic(next, _)) = pg.get(self.index + 1) {
+                                images::warm(images::FULL, &next.url, 1920.0, 1080.0);
+                            }
+                        }
                     }
                 }
             }

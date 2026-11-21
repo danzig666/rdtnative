@@ -275,6 +275,14 @@ pub fn draw(p: Painter, srv: u16, url: &str, r: Rect, rad: f32, fit: Fit, tint: 
     }
 }
 
+/// Starts loading picture `url` of class `srv` for a `w` x `h` box without drawing it (the next
+/// page of a gallery, so it is there when the user moves on).
+pub fn warm(srv: u16, url: &str, w: f32, h: f32) {
+    if !url.is_empty() {
+        let _ = plx_ui::tex::warm_on(srv, url, w as i32, h as i32, false);
+    }
+}
+
 /// The size of a loaded picture, if it is loaded.
 pub fn size_of(srv: u16, url: &str) -> Option<(f32, f32)> {
     let (id, w, h) = plx_ui::tex::resolve_wh_on(srv, url, 0, 0, false);
