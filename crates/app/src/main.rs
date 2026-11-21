@@ -149,6 +149,16 @@ unsafe fn sim_window() -> *mut std::os::raw::c_void {
 
 fn main() {
     crashtrace::install(); // first: every later crash gets a record
+    // Every panic's message and place goes to the app log (`cargo xtask logs`): a panic in a
+    // frame is caught and the app goes on, and stderr is not kept on the TV.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info.payload().downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| info.payload().downcast_ref::<String>().cloned()).unwrap_or_default();
+        let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        let thread = std::thread::current().name().unwrap_or("?").to_string();
+        log(&format!("PANIC in {thread} at {at}: {msg}"));
+        default_hook(info);
+    }));
     START.get_or_init(Instant::now);
     #[cfg(any(windows, feature = "sim"))]
     if std::env::var_os("PLXNATIVE_RUNTIME_DIR").is_none() {
