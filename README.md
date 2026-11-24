@@ -1,10 +1,19 @@
 # rdtnative
 
 > [!IMPORTANT]
-> **Bring your own API key.** rdtnative comes without a Reddit API key: it only works with a
-> client ID you supply yourself (entered in Settings › Reddit API, with the remote or from your
-> phone). With an app address (like `myapp://`) as redirect URI, signing in takes one copy and
-> paste on a computer, once per account; the TV keeps the sign-in (see [Signing in](#signing-in)).
+> **Bring your own authorized API credentials.**
+>
+> rdtnative is an independent, open-source Reddit client for LG webOS TVs. It does not include,
+> distribute or provide Reddit API credentials.
+>
+> Users must supply their own Reddit OAuth client ID authorized for their intended use and comply
+> with Reddit's applicable terms and policies.
+>
+> This project does not authorize, endorse or support the unauthorized use of credentials assigned
+> to other applications.
+>
+> rdtnative is not affiliated with, endorsed by or sponsored by Reddit or LG. API availability is
+> subject to Reddit's policies and may change or be discontinued at any time.
 
 A native Reddit client for LG webOS TVs, built for the remote: arrows, OK, BACK, the colour
 buttons and the Magic Remote pointer. It is a Rust app with no browser or Android runtime, built
@@ -13,8 +22,6 @@ the same way as [ytnative](https://github.com/danzig666/ytnative): the UI core i
 
 Runs on webOS 4 and newer; videos need webOS 5 or newer. Install it from the webOS Homebrew
 Channel (see [Install](#install)).
-
-> Not affiliated with Reddit or LG. Use at your own risk.
 
 | | |
 |---|---|
@@ -88,7 +95,7 @@ your client ID:
 | Redirect URI | Signing in |
 |---|---|
 | rdtnative's page, `https://danzig666.github.io/rdtnative/callback` | Nothing to copy: Reddit's answer comes back to the TV by itself, from the TV's browser, a phone or a computer. |
-| An app address such as `myapp://…` (usual for a client ID you can't change) | **One copy and paste, on a computer.** Browsers can't open such an address and never hand it to a web page, so nothing can catch it by itself. This can't be avoided; you do it once per account, and the TV keeps the sign-in. |
+| An app address such as `myapp://…` | **One copy and paste, on a computer.** Browsers can't open such an address and never hand it to a web page, so nothing can catch it by itself. This can't be avoided; you do it once per account, and the TV keeps the sign-in. |
 | Another web address | One copy and paste, on a phone or computer: copy the address the browser ends up on and paste it on the sign-in page. If you can change the redirect URI to rdtnative's page, nothing needs copying. |
 
 1. **Settings › Reddit API:** enter your client ID, with the remote or with "Enter on phone (QR

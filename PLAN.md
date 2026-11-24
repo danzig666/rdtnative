@@ -66,8 +66,7 @@ dodging and CDP login past reCAPTCHA) stays out of scope.
 
 ### What the user brings
 Their own API key: a client ID (about 14–22 characters, no secret), with the redirect URI and user
-agent that go with it. rdtnative ships without one and does not say where to get one; there are
-ways to get a working API key, which users find by searching Reddit.
+agent that go with it. rdtnative ships without one.
 
 ### Getting the ID onto the TV and signing in (no typing on the remote)
 ```

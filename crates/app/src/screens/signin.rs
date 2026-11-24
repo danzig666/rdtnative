@@ -40,7 +40,7 @@ enum Answer {
     Back,
     /// Another web address: the browser shows it in the address bar, to copy.
     Address,
-    /// An app address (myapp://...), fixed by a client ID the user cannot change: the browser
+    /// An app address (myapp://...) as the client ID's redirect URI: the browser
     /// cannot open it and stays on Reddit's page; only a computer's Firefox (address bar) or
     /// Chrome (console) shows it. One copy and paste that nothing can avoid.
     AppAddress,

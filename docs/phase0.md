@@ -6,8 +6,7 @@ client ID**. It saves real responses as test data for `rd-core`. It runs on a PC
 ## 1. Bring your own API key
 
 rdtnative comes without a Reddit API key: you need your own client ID (with no secret), plus the
-redirect URI and user agent that go with it. There are ways to get a working API key; search Reddit
-for them.
+redirect URI and user agent that go with it.
 
 A client ID is not a secret, but keep your **refresh token** private. `rd-spike login` stores
 it in `.rdt-spike.json`, which is git-ignored and readable only by you.
