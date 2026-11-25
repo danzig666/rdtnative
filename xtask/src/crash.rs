@@ -186,6 +186,9 @@ fn selftest() -> Result<()> {
     let elf = Elf::parse(&data)?;
     let mut funcs = elf.functions();
     funcs.retain(|(n, _, s)| *s >= 16 && (n.contains("crashtrace") || n.contains("9rdtnative4main") || n.contains("now_us")));
+    // Compiler shims (a closure called through a vtable) carry no debug name of their own: the
+    // debug info names the generic they wrap, so they cannot be expected by name.
+    funcs.retain(|(n, _, _)| !format!("{:#}", rustc_demangle::demangle(n)).contains("{shim"));
     funcs.sort_by(|a, b| a.0.cmp(&b.0));
     funcs.dedup_by(|a, b| a.1 == b.1);
     if funcs.len() < 2 {
