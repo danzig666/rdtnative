@@ -205,6 +205,7 @@ fn run(s: &str, style: u8, link: Option<&str>, out: &mut Vec<Span>) {
             }
         }
         // Emphasis.
+        let mut matched = false;
         for (delim, bit) in [("***", BOLD | ITALIC), ("**", BOLD), ("__", BOLD), ("~~", STRIKE), ("*", ITALIC), ("_", ITALIC)] {
             if !rest.starts_with(delim) {
                 continue;
@@ -226,14 +227,12 @@ fn run(s: &str, style: u8, link: Option<&str>, out: &mut Vec<Span>) {
                 run(&inner[..e], style | bit, link, out);
                 i += delim.len() + e + delim.len();
                 text_start = i;
+                matched = true;
                 break;
             }
             break;
         }
-        if text_start > i {
-            continue;
-        }
-        if i < text_start {
+        if matched {
             continue;
         }
         // Superscript ^word or ^(several words)
@@ -632,6 +631,26 @@ pub fn links(blocks: &[Block]) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    /// Short mixes of markup and multi-byte characters never panic (a matched emphasis followed
+    /// by a no-break space used to step into the middle of it).
+    #[test]
+    fn no_panic_on_multibyte_after_markup() {
+        let atoms = ["\u{a0}", "*", "**", "_", "~~", "^", "(", ")", "[", "]", "!", "<", ">", "`", "\\", "a", " ", "r/", "http://x.y", "é", "&nbsp;", "."];
+        let n = atoms.len();
+        for a in 0..n {
+            for b in 0..n {
+                for c in 0..n {
+                    for d in 0..n {
+                        let s = format!("{}{}{}{}", atoms[a], atoms[b], atoms[c], atoms[d]);
+                        super::inline(&s);
+                        super::inline(&format!("{s}\u{a0}x"));
+                    }
+                }
+            }
+        }
+        assert_eq!(super::inline("\u{a0}*_*\u{a0}").len(), 3);
+    }
+
     use super::*;
 
     fn sp(text: &str, style: u8) -> Span {
@@ -701,3 +720,4 @@ mod tests {
         assert_eq!(l.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["https://a.com", "https://b.com"]);
     }
 }
+
