@@ -1374,7 +1374,7 @@ dependencies = [
 
 [[package]]
 name = "rd-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "getrandom 0.2.17",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "rd-phone"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "getrandom 0.2.17",
  "qrcode",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "rd-spike"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "rd-core",
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "rdtnative-app"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "cc",
@@ -2250,7 +2250,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "addr2line",
  "anyhow",
